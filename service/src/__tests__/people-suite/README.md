@@ -20,7 +20,7 @@ change to `people.js`, `routes/link.js`, the person branch of `server.js`, `rout
 | unit | `../person-voice.test.js` | Fake owner data is planted in the database (name, facts about him, personality, a memory, a screen title, his talk). 70 lines by 6 kinds of person by 2 kinds of model (840 prompts): none holds a word of it, including lines that pretend to be the owner or the system. A name cannot write the prompt. The owner's threads and computers get no answer at all and nothing is sent. Opened by the owner, an adult reaches them and a child does not. Camera, mute and room talk for every kind of person. |
 | unit | `../pan-link-routes.test.js` | Pairing codes for a person are limited from the start; handing a device over sets the limit first; taking it back lifts it; a device PAN Link does not know cannot be handed over. |
 | unit | `../pan-link-auth.test.js` | A device's identity comes from PAN Link's secret, and forged headers are refused. |
-| unit | `../notes-sender.test.js` | A note's sender is the PAN Link device, not what the note says; six spoken notes a minute per device. |
+| unit | `../notes-sender.test.js` | A note's sender is the PAN Link device, not what the note says; six spoken notes a minute per device; a note goes to the device of the person it is for (pinned device, the device he last talked on, the asker of a thread, what happens when that device is away, expiry). |
 | link | `pan-link/allow_test.go` | PAN Link's own wall (runs when Go is installed). |
 | hub | `hub_suite.py` | A dev hub with its own port and database and a stand-in for PAN Link's admin. Five people (child, guest, adult, manager, admin), each with a paired device, plus the owner's two devices, a device whose person was removed and a device nobody knows. |
 
@@ -41,8 +41,11 @@ The hub part, by group:
   threads (no answer, nothing queued), their own name, a question about the owner with the
   owner's phone named in a header. No words of theirs in the owner's events. A person's device
   naming the owner's phone cannot cancel his turn.
-- **notes**: the rate limit, the real sender, no person can send a note or read the queue, the
-  old door for another hub's messages is gone.
+- **notes**: the rate limit, the real sender, no person can send a note. A note the owner
+  sends to the child reaches the child's device and no other role's, whatever name a device
+  sends; the owner's own note stays his; a note for nobody is refused; a device limited to
+  sending notes cannot say who a note is for; with a device pinned, the owner's notes go to
+  it and not to whichever asks first. The old door for another hub's messages is gone.
 - **admin**: no role can add, rename, promote or remove people, pair a device, free their own
   device or change the limits; the owner can; handing over and taking back; removal.
 

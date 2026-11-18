@@ -259,6 +259,11 @@ Removed with the old relay between hubs (`hub/`, `hub-client.js`, `hub-crypto.js
   for `pan-link pair` on a PC (see `pan-link/README.md`, "A second computer"), and "Make a
   limited code". Until 2026-11-08 the page's script never ran (an apostrophe in a quoted
   string), so it stayed on "Checking PAN Link…".
+- **People's devices keep up:** the list of what a person's device may send (`PERSON_ALLOW`)
+  grows as more of ΠAN becomes a person's own. `POST /api/v1/link/people/sync` gives every
+  person's device the current list at pan-link (it also runs 30 s after the hub code starts),
+  and answers `{ set, failed }`. After any change the hub asks pan-link to make, the hub reads
+  pan-link's device list again at once instead of on its one minute timer.
 - **Preserves:** no `link.json` → 503 "PAN Link is not set up on this computer", and pan-link
   is never asked. pan-link not running → 503 with the reason. Unused codes live only in
   pan-link's memory and expire. A device id that isn't letters and digits → 400, pan-link not
@@ -268,6 +273,39 @@ Removed with the old relay between hubs (`hub/`, `hub-client.js`, `hub-crypto.js
   device in as the owner. A paired device is the owner, so it can make codes too; a limited
   one never reaches these routes. Tests: `node service/src/__tests__/pan-link-routes.test.js`
   (11), and `go test` in `pan-link/` for the limit itself.
+
+---
+
+## Notes for a device (`service/src/phone-notes.js`, routes in `service/src/routes/api.js`)
+
+A note is something ΠAN wants shown or read out on a device: a Slack message, a reminder, a
+thread's answer that came after the voice turn closed. Devices cannot be pushed to, so each
+asks for its notes every few seconds.
+
+- **Calls:** `POST /api/v1/notify/inbound { type, title, body, data?, to_user? }` and
+  `POST /api/v1/slack/inbound` queue one; `GET /api/v1/slack/pending` gives the asking device
+  its notes and takes them off the queue; `GET /api/v1/notify/devices` shows the owner which
+  of his devices are asking, which is pinned and which he last talked on. Inside the hub:
+  `enqueuePhoneNote(fields, from, { user, device })`.
+- **Who gets a note:** the device of the person it is for (the owner unless `to_user` says).
+  A person's device gets only that person's notes and is known by its PAN Link key alone. The
+  owner's notes go to the device named in the setting `notes_device`, else to the one he last
+  talked to ΠAN on (a real answered turn, within 12 hours), else to whichever of his asks. A
+  thread's late answer goes to the device that asked (`thread-relay.js`).
+- **Nothing is lost when that device is away** (it has not asked for 30 s): another of the
+  owner's devices takes the note after a wait, two minutes for the pinned device and 20 s
+  otherwise. A spoken note nobody took in ten minutes is dropped, other notes after 12 hours.
+- **Preserves:** the sender is the PAN Link device whose key carried the request, never what
+  the note says; six spoken notes a minute per sending device, then 429; ids come from the
+  clock so a device's place in the queue survives a Craft swap. The queue is in memory: a swap
+  empties it.
+- **Replaces:** one queue emptied by whichever device asked first (until 2026-11-18), so a
+  reminder was read out by the phone, the tablet or the car, whichever asked first.
+- **Pre-gate:** `to_user` is taken only from the hub itself and the owner's full devices; a
+  device limited to sending notes gets 403, an unknown person 400. A person's device may ask
+  for its notes (`PERSON_ALLOW` in `people.js`) and cannot send one.
+- **Tests:** `service/src/__tests__/notes-sender.test.js` (13) and the notes group of the
+  people suite.
 
 ---
 

@@ -16,6 +16,9 @@ import { followUpOf, historyLines } from '../intuition/conversation.js';
 import { plainLook, spokenLook } from '../camera-ask.js';
 import { noteSaid, dropOwnTail } from '../own-tail.js';
 import { scopeFor, may, refusal } from '../people.js';
+import { addNote, takeNotesFor, noteSender, maySpeakNow, noteOwnerSpokeOn, notesDevices, SPEAK_PER_MINUTE } from '../phone-notes.js';
+import { linkDevice } from '../pan-link-auth.js';
+import { getDataDir as notesDataDir } from '../platform.js';
 
 const execFilePromise = promisify(execFile);
 warmHubAsr();
@@ -876,60 +879,38 @@ function carrierRelay(payload, timeoutMs = 10000) {
     body: JSON.stringify(payload), signal: AbortSignal.timeout(timeoutMs),
   });
 }
-// The phone is NOT a pan-client and has no working push channel (its only live
-// server->phone path is polling, same as permissions/intuition). So /slack/inbound
-// ENQUEUES and the phone drains via GET /slack/pending on its ~5s poll. Single global
-// FIFO on purpose: the phone polls with a device id that never matches the server's
-// stored phone hostname, and this is a single-phone bridge, so per-device keying would
-// silently drop everything. Seq is seeded from the clock so a Craft swap (which resets
-// this module) still mints ids higher than the phone's last-seen high-water mark.
-let slackQueue = [];
-let slackSeq = Date.now();
-// WHO SENT A NOTE is what PAN Link says, never what the note says about itself: the device whose
-// key carried the request (server.js sets req.panLinkDevice), or null for the hub's own notes and
-// for a request that did not come through the link. A device limited to sending notes
-// (LIMITED_ALLOW) could make the phone read out 2,000 characters as often as it liked with nothing
-// recording that it was the one (docs/PEOPLE-PLAN.md, holes). Now every note carries `from`, the
-// log names it, and one device gets SPEAK_PER_MINUTE spoken notes a minute.
-const SPEAK_PER_MINUTE = 6;
-const spokenBy = new Map();
-export function noteSender(req) {
-  const d = req?.panLinkDevice;
-  return d?.id ? { device: String(d.id), name: String(d.name || '').slice(0, 60) } : null;
-}
-export function maySpeakNow(from, now = Date.now()) {
-  if (!from) return true;
-  const recent = (spokenBy.get(from.device) || []).filter((t) => now - t < 60_000);
-  if (recent.length >= SPEAK_PER_MINUTE) { spokenBy.set(from.device, recent); return false; }
-  recent.push(now);
-  spokenBy.set(from.device, recent);
-  return true;
-}
+// The phone is NOT a pan-client and has no working push channel (its only live server->phone
+// path is polling, same as permissions/intuition). So a note is queued and each device asks for
+// its own every few seconds (GET /slack/pending). Who a note is for and which device gets it:
+// phone-notes.js. Who sent it is what PAN Link says, never what the note says about itself.
+export { noteSender, maySpeakNow };
 router.post('/slack/inbound', async (req, res) => {
   try {
     const { message } = req.body || {};
     if (!message || !message.channelId) return res.status(400).json({ ok: false, error: 'missing message.channelId' });
-    const note = {
-      id: ++slackSeq, type: 'slack', channelId: message.channelId, channel: message.channel || null,
+    const note = addNote({
+      type: 'slack', channelId: message.channelId, channel: message.channel || null,
       sender: message.sender || 'Slack', text: message.text || '',
-      kind: message.kind || null, received: message.received || null, from: noteSender(req),
-    };
-    slackQueue.push(note);
-    if (slackQueue.length > 50) slackQueue = slackQueue.slice(-50);   // bound backlog
+      kind: message.kind || null, received: message.received || null,
+    }, { from: noteSender(req) });
     console.log(`[/slack/inbound] queued #${note.id} ${note.sender}: ${(note.text || '').slice(0, 50)}`);
     res.json({ ok: true, queued: note.id });
   } catch (e) { res.json({ ok: false, error: e.message }); }
 });
 // Generic PAN notification enqueue — meeting reminders (and anything else that used to
-// go to ntfy) POST here with a type. Shares the same queue as slack; the phone drains it
-// and renders by type ('slack' = reply notification, 'speak' = read aloud + notification,
-// 'meeting'/other = plain notification).
-export function enqueuePhoneNote({ type = 'info', title = 'PAN', body = '', data = null } = {}, from = null) {
+// go to ntfy) POST here with a type. Rendered by type on the device ('slack' = reply
+// notification, 'speak' = read aloud + notification, 'meeting'/other = plain notification).
+// to: { user, device } — who it is for (the owner unless said) and the one device it answers.
+// A device key of the form "person<id>-<link id>" (a person's device, routes/api.js /query/stream)
+// names both.
+export function enqueuePhoneNote({ type = 'info', title = 'PAN', body = '', data = null } = {}, from = null, to = {}) {
   const limit = type === 'speak' ? 2000 : 500;
-  const note = { id: ++slackSeq, type: String(type).slice(0, 20), title: String(title).slice(0, 200), body: String(body).slice(0, limit), data, from };
-  slackQueue.push(note);
-  if (slackQueue.length > 50) slackQueue = slackQueue.slice(-50);
-  console.log(`[notify] queued #${note.id} [${note.type}] from ${from ? `${from.name || 'a device'} (${from.device})` : 'the hub'} ${title}: ${String(body).slice(0, 50)}`);
+  let { user, device } = to || {};
+  const theirs = /^person(\d+)-(.+?)(?:-bench)?$/.exec(String(device || ''));
+  if (theirs) { user = Number(theirs[1]); device = theirs[2]; }
+  const note = addNote({ type: String(type).slice(0, 20), title: String(title).slice(0, 200), body: String(body).slice(0, limit), data },
+    { from, toUser: user, toDevice: device });
+  console.log(`[notify] queued #${note.id} [${note.type}] from ${from ? `${from.name || 'a device'} (${from.device})` : 'the hub'} for ${note.to_user === 1 ? 'the owner' : `person ${note.to_user}`}${note.to_device ? ` on ${note.to_device}` : ''} ${title}: ${String(body).slice(0, 50)}`);
   return note;
 }
 router.post('/notify/inbound', (req, res) => {
@@ -939,14 +920,31 @@ router.post('/notify/inbound', (req, res) => {
       console.warn(`[notify] ${from.name || 'a device'} (${from.device}) is over ${SPEAK_PER_MINUTE} spoken notes a minute: refused`);
       return res.status(429).json({ ok: false, error: 'too many spoken notes, wait a minute' });
     }
-    const note = enqueuePhoneNote(req.body || {}, from);
+    // Who a note is for can be said by the hub and by the owner's own full devices. A device that
+    // is limited to sending notes (a work computer) sends to the owner and to nobody else.
+    let user;
+    if (req.body?.to_user !== undefined && req.body.to_user !== null) {
+      const limited = from ? linkDevice(notesDataDir(), from.device)?.limited !== false : false;
+      if (limited) return res.status(403).json({ ok: false, error: 'this device may not say who a note is for' });
+      const id = req.body.to_user;
+      if (!Number.isInteger(id) || !db.prepare('SELECT id FROM users WHERE id = ? AND is_active = 1').get(id)) return res.status(400).json({ ok: false, error: 'no such person' });
+      user = id;
+    }
+    const note = enqueuePhoneNote(req.body || {}, from, { user });
     res.json({ ok: true, queued: note.id });
   } catch (e) { res.json({ ok: false, error: e.message }); }
 });
-// Phone drains ALL pending PAN notifications every ~5s (slack + meeting + …).
+// A device asks for its notes, every few seconds. It gets the ones for the person it belongs to
+// (phone-notes.js): a person's device is known by its PAN Link key alone, the owner's devices
+// also by the name they send.
 router.get('/slack/pending', (req, res) => {
-  const notes = slackQueue; slackQueue = [];
-  res.json({ ok: true, notifications: notes });
+  const person = req.user?.person ? req.user : null;
+  const key = person ? '' : String(req.headers['x-device-id'] || req.query.device_id || '');
+  res.json({ ok: true, notifications: takeNotesFor({ key, linkDevice: req.panLinkDevice?.id || '', person }) });
+});
+// Which of the owner's devices his notes go to (phone-notes.js). Not open to a person's device.
+router.get('/notify/devices', (req, res) => {
+  res.json({ ok: true, ...notesDevices() });
 });
 router.post('/slack/reply', async (req, res) => {
   try {
@@ -2013,6 +2011,8 @@ router.post('/query/stream', async (req, res) => {
             if (spoken && !spoken.startsWith('[') && !['ambient', 'cancelled'].includes(event.result?.intent)) noteSaid(tailKey, spoken);
           }
           if (!bench && !person) recordVoiceTurn(req, { text, result: event.result, deviceId, turnId, sensors: parsedSensors });
+          // His notes follow him to the device he is talking to PAN on (phone-notes.js).
+          if (!bench && !person && String(event.result?.response || '').trim() && !['ambient', 'cancelled'].includes(event.result?.intent)) noteOwnerSpokeOn(deviceName);
           // The situational state program's turn book: what it saw, what PAN did; the next
           // turn labels this one (intuition/turn-book.js).
           if (!bench && !person) {

@@ -46,6 +46,9 @@ export async function callAdmin(path, { method = 'GET', body } = {}, dataDir = g
       signal: AbortSignal.timeout(5000),
     });
     const text = await r.text();
+    // pan-link has just changed a device (limited, handed over, removed): read its list again now,
+    // not up to a minute later, so the hub does not go on treating the device as it was.
+    if (method !== 'GET') linkSecret(dataDir, Date.now(), true);
     let parsed;
     try { parsed = JSON.parse(text); } catch { parsed = { error: text.trim() || r.statusText }; }
     return { status: r.status, body: parsed };
@@ -136,6 +139,25 @@ router.put('/devices/:id/person', async (req, res) => {
 router.get('/people', (req, res) => {
   res.json({ devices: devicePeople() });
 });
+
+// PERSON_ALLOW grows as more of PAN is made a person's own. A device paired earlier still holds
+// the list it was paired with at pan-link, so each one is given the current list: when this code
+// starts, and on POST /people/sync. Answers how many were set and how many could not be.
+export async function syncPersonAllow() {
+  let set = 0, failed = 0;
+  for (const d of devicePeople()) {
+    if (d.role === 'owner') continue;
+    const { status } = await callAdmin(`/admin/devices/${d.link_device_id}/allow`, { method: 'PUT', body: { allow: [...PERSON_ALLOW] } }).catch(() => ({ status: 0 }));
+    if (status === 200) set++; else failed++;
+  }
+  return { set, failed };
+}
+router.post('/people/sync', async (req, res) => {
+  res.json({ ok: true, ...(await syncPersonAllow()) });
+});
+if (!process.argv.some((a) => /__tests__/.test(a))) {
+  setTimeout(() => syncPersonAllow().then((r) => { if (r.set || r.failed) console.log(`[PAN Link] people's devices given the current list: ${r.set} set, ${r.failed} not reachable`); }).catch(() => {}), 30_000).unref?.();
+}
 
 // Limits a paired device to LIMITED_ALLOW, or lifts the limit. Body: { limited: boolean }.
 // It holds from the device's next request. Answers the device as pan-link now has it.

@@ -13,6 +13,7 @@ Nothing here touches a live hub. Usage: python run.py --hub   (or python hub_sui
 """
 import json
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -92,9 +93,11 @@ class LinkAdmin:
                     if self.command == "PUT" and parts[3:] == ["allow"]:
                         dev["allow"] = body.get("allow") or []
                         suite.allow_calls.append((parts[2], dev["allow"]))
+                        suite.save()
                         return self._send(200, dev)
                     if self.command == "DELETE" and len(parts) == 3:
                         suite.devices.remove(dev)
+                        suite.save()
                         return self._send(200, {"ok": True})
                 self._send(404, {"error": "not found"})
 
@@ -104,7 +107,21 @@ class LinkAdmin:
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
     def add(self, device_id, name, ip):
-        self.devices.append({"id": device_id, "name": name, "tunnel_ip": ip, "allow": []})
+        allow = next((p.get("allow") for p in reversed(self.pairs) if p.get("ip") == ip), None)
+        self.devices.append({"id": device_id, "name": name, "tunnel_ip": ip, "allow": allow or []})
+        self.save()
+
+    def save(self, restore=False):
+        """link.json's device list, as pan-link writes it: the hub reads who is limited from it."""
+        path = os.path.join(DATA, "link.json")
+        try:
+            state = json.load(open(path, encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        if not hasattr(self, "found"):
+            self.found = state.get("devices") or []
+        state["devices"] = self.found if restore else self.found + self.devices
+        json.dump(state, open(path, "w", encoding="utf-8"))
 
 
 def link_secret():
@@ -289,7 +306,7 @@ def main():
             src = open(os.path.join(SRC, "people.js"), encoding="utf-8").read()
             block = src[src.index("export const PERSON_ALLOW"):]
             block = block[:block.index("]);")]
-            allow = {tuple(line.strip().strip("',").split(" ", 1)) for line in block.splitlines() if line.strip().startswith("'")}
+            allow = set(re.findall(r"'([A-Z]+) (/[^']*)'", block))
         except (OSError, ValueError):
             pass
         check("wall", "the list of what a person may reach is read from people.js (%d paths)" % len(allow), 5 <= len(allow) <= 20, allow)
@@ -389,10 +406,51 @@ def main():
         s, j = call("GET", "/api/v1/slack/pending", device=OWNER)
         notes = [n for n in ((j or {}).get("notifications", []) if isinstance(j, dict) else []) if str(n.get("body", "")).startswith("note ")]
         check("notes", "each note carries the device that really sent it, whatever the note claims", len(notes) == 6 and all((n.get("from") or {}).get("device") == own2 for n in notes), [n.get("from") for n in notes])
+        # Whose device gets a note. Each device asks first, so the hub has seen all of them.
+        PHONE = {"x-device-id": "suite-owner-phone"}
+        TABLET = {"x-device-id": "suite-owner-tablet"}
+
+        def bodies(got):
+            return sorted(str(n.get("body", "")) for n in ((got or {}).get("notifications", []) if isinstance(got, dict) else []))
+
+        def pending(device, headers=None):
+            s_, j_ = call("GET", "/api/v1/slack/pending", device=device, headers=headers)
+            return s_, bodies(j_)
         for role in ROLES:
             s, j = call("POST", "/api/v1/notify/inbound", {"type": "speak", "body": "hi"}, device=people[role]["device"])
-            s2, j2 = call("GET", "/api/v1/slack/pending", device=people[role]["device"])
-            check("notes", "%s: cannot send a note or read the queue" % role, s == 403 and s2 == 403, (s, s2))
+            check("notes", "%s: cannot send a note" % role, s == 403, s)
+        pending(OWNER, PHONE)
+        pending(own2, TABLET)
+        child, user = people["child"], people["user"]
+        s, j = call("POST", "/api/v1/notify/inbound", {"type": "info", "title": "t", "body": "for the child", "to_user": child["id"]}, device=OWNER)
+        check("notes", "the owner sends a note to a person", s == 200, (s, j))
+        call("POST", "/api/v1/notify/inbound", {"type": "info", "title": "t", "body": "for the owner"}, device=OWNER)
+        got = {role: pending(people[role]["device"], PHONE) for role in ROLES}
+        wrong = {r: g for r, g in got.items() if g != (200, ["for the child"] if r == "child" else [])}
+        check("notes", "a person's device gets that person's notes and nobody else's, whatever name it sends", not wrong, wrong)
+        s, mine = pending(OWNER, PHONE)
+        check("notes", "the owner's note is still his, and the child's did not come to him", s == 200 and mine == ["for the owner"], (s, mine))
+        s, j = call("POST", "/api/v1/notify/inbound", {"type": "info", "body": "x", "to_user": 987654}, device=OWNER)
+        check("notes", "a note for somebody who is not there is refused", s == 400, (s, j))
+        s, j = call("PUT", "/api/v1/link/devices/%s/limited" % own2, {"limited": True}, device=OWNER)
+        s2, j2 = call("POST", "/api/v1/notify/inbound", {"type": "info", "body": "sneak", "to_user": child["id"]}, device=own2)
+        s3, _ = call("POST", "/api/v1/notify/inbound", {"type": "info", "body": "plain"}, device=own2)
+        check("notes", "a device limited to sending notes cannot say who a note is for", s == 200 and s2 == 403 and s3 == 200, (s, s2, s3))
+        call("PUT", "/api/v1/link/devices/%s/limited" % own2, {"limited": False}, device=OWNER)
+        pending(OWNER, PHONE)
+        # His notes go to one device of his: the one pinned, else the one he last talked on.
+        call("PUT", "/api/v1/settings", {"notes_device": "suite-owner-tablet"}, device=OWNER)
+        time.sleep(11)  # the pin is read every ten seconds
+        pending(OWNER, PHONE)
+        pending(own2, TABLET)
+        call("POST", "/api/v1/notify/inbound", {"type": "info", "body": "pinned"}, device=OWNER)
+        s, a = pending(OWNER, PHONE)
+        s2, b = pending(own2, TABLET)
+        check("notes", "his notes go to the device he pinned, not to whichever asks first", a == [] and b == ["pinned"], (a, b))
+        call("PUT", "/api/v1/settings", {"notes_device": ""}, device=OWNER)
+        time.sleep(11)
+        for role in ROLES:
+            call("GET", "/api/v1/slack/pending", device=people[role]["device"])
         s, j = call("POST", "/api/v1/chat/incoming", {"from_instance_id": "stranger", "body": "hello"}, device=OWNER)
         check("notes", "the old door for another hub's messages is gone", s == 404, (s, j))
 
@@ -446,8 +504,9 @@ def main():
                 if p.get("id"):
                     call("DELETE", "/api/v1/auth/users/%s" % p["id"], device=OWNER)
             call("POST", "/api/v1/threads/report", {"host": "people-suite", "threads": []}, device=OWNER)
-            call("PUT", "/api/v1/settings", {"display_name": restore_name or ""}, device=OWNER)
+            call("PUT", "/api/v1/settings", {"display_name": restore_name or "", "notes_device": ""}, device=OWNER)
             call("GET", "/api/v1/slack/pending", device=OWNER)
+            admin.save(restore=True)
         except Exception as e:
             print("cleanup:", e)
         proc.terminate()

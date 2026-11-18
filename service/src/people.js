@@ -50,6 +50,7 @@ export const PERSON_ALLOW = Object.freeze([
   'POST /api/v1/voice/warm',
   'POST /api/v1/reading',
   'POST /api/v1/vision',
+  'GET /api/v1/slack/pending',     // their own notes only (phone-notes.js)
 ]);
 
 /** The allow rules for a device of this person's: none for the owner (no limit). */

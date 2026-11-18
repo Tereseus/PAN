@@ -447,8 +447,9 @@ async function finish(job) {
   const speech = spokenOutcome(job);
   try {
     const { enqueuePhoneNote } = await import('./routes/api.js');
+    // To the device that asked, not to whichever device asks for notes first.
     enqueuePhoneNote({ type: 'speak', title: `${shortTitle(job.title)} thread`, body: speech,
-      data: { job_id: job.id, session_id: job.session_id } });
+      data: { job_id: job.id, session_id: job.session_id } }, null, { device: job.device_id || null });
     run(`UPDATE thread_relay_jobs SET spoken = 1 WHERE id = :id`, { ':id': job.id });
     return { ok: true, delivered_to: 'phone_queue', job };
   } catch (e) {
