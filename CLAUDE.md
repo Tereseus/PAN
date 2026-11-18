@@ -225,7 +225,6 @@ The Instances panel in the dashboard sidebar has **Open** and **Restart** button
 | `service/src/activity-tracker.js` | Foreground window tracker — polls every 3s, logs to activity_events table |
 | `service/src/dashboard-watchdog.js` | Stuck-screen detector — brightness check every 10s, triggers Craft swap on black screen |
 | `service/src/pan-notify.js` | Service messaging — Scout/Dream/Pipeline → user via ΠΑΝ chat thread |
-| `service/src/hooks/skill-learner.js` | Stop hook — auto-generates SKILL.md for novel sessions |
 | `service/src/routes/orgs.js` | Organization CRUD — per-org DBs, roles, ACL, cross-org sharing |
 | `service/src/routes/chat.js` | Chat system — threads, messages, ΠΑΝ system channel |
 | `service/src/routes/intuition.js` | Intuition engine — aggregates presence signals into voice router context |

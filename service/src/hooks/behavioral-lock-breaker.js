@@ -22,7 +22,7 @@
  *      Code prepends to the user prompt before the model sees it. Loop broken
  *      on turn N+1 instead of turn ∞.
  *
- * Wired in ~/.claude/settings.json under Stop hooks, AFTER skill-learner.js.
+ * Wired in ~/.claude/settings.json under Stop hooks.
  * Always exit(0) — never break the Stop chain.
  */
 

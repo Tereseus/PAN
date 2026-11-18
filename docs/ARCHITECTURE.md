@@ -203,7 +203,6 @@ Loop restarts on crash (exit ≠ 0), stops on clean exit (code 0).
 | Terminal sessions | `claude` (claude -p) | Best reasoning, subscription |
 | Scout | `cerebras:gpt-oss-120b` | Discovery + synthesis |
 | Augur classifier | `cerebras:qwen-3-235b` | Classification at scale |
-| Skill Learner | `cerebras:qwen-3-235b` | Fast, cheap for eval |
 | Pan Notify replies | `cerebras:qwen-3-235b` | Conversational responses |
 
 Model selection is in `service/src/claude.js` `getModelForCaller()`.

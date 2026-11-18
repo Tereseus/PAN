@@ -19,9 +19,6 @@ const LOCAL_MARKETPLACE_DIR = path.join(PLUGINS_DIR, 'local');
 const LOCAL_MARKETPLACE_JSON = path.join(LOCAL_MARKETPLACE_DIR, '.claude-plugin', 'marketplace.json');
 const SETTINGS_JSON = path.join(CLAUDE_DIR, 'settings.json');
 
-const PAN_SERVICE_DIR = path.dirname(new URL(import.meta.url).pathname).replace(/^\/([A-Z]:)/, '$1');
-const SKILL_LEARNER_PATH = path.join(PAN_SERVICE_DIR, 'hooks', 'skill-learner.js').replace(/\//g, '/');
-
 const log = (msg) => console.log(`[setup-plugins] ${msg}`);
 const warn = (msg) => console.warn(`[setup-plugins] WARN: ${msg}`);
 
@@ -154,7 +151,7 @@ function ensureMarketplaceJson() {
     });
   }
 
-  // Add any auto-learned skills that exist on disk but aren't in manifest
+  // Add any local plugins that exist on disk but aren't in manifest
   try {
     const entries = fs.readdirSync(LOCAL_MARKETPLACE_DIR, { withFileTypes: true });
     for (const entry of entries) {
@@ -169,41 +166,35 @@ function ensureMarketplaceJson() {
         category: 'productivity',
         source: `./${entry.name}`,
       });
-      log(`  + Re-registered auto-learned skill: ${entry.name}`);
+      log(`  + Re-registered local plugin: ${entry.name}`);
     }
   } catch {}
 
   fs.writeFileSync(LOCAL_MARKETPLACE_JSON, JSON.stringify(marketplace, null, 2));
 }
 
-// ─── 7. Ensure skill-learner Stop hook is wired ───────────────────────────────
+// ─── 7. Drop the retired skill-learner Stop hook ──────────────────────────────
+// The hook file was removed on 2026-11-18. A settings.json written by an older
+// setup still points at it, and a Stop hook whose file is gone errors on every
+// Stop, so take the entry out. Nothing else in settings.json is touched.
 
-function ensureSkillLearnerHook() {
-  let settings = {};
-  try { settings = JSON.parse(fs.readFileSync(SETTINGS_JSON, 'utf8')); } catch {}
+export function removeSkillLearnerHook() {
+  let settings;
+  try { settings = JSON.parse(fs.readFileSync(SETTINGS_JSON, 'utf8')); } catch { return; }
+  const groups = settings?.hooks?.Stop;
+  if (!Array.isArray(groups)) return;
 
-  settings.hooks = settings.hooks || {};
-  settings.hooks.Stop = settings.hooks.Stop || [{ hooks: [] }];
-
-  const stopHooks = settings.hooks.Stop[0].hooks;
-  const alreadyWired = stopHooks.some(h =>
-    h.type === 'command' && h.command?.includes('skill-learner')
-  );
-
-  if (alreadyWired) {
-    log('skill-learner hook already wired');
-    return;
+  let removed = 0;
+  for (const g of groups) {
+    if (!Array.isArray(g?.hooks)) continue;
+    const keep = g.hooks.filter(h => !(h?.type === 'command' && h.command?.includes('skill-learner')));
+    removed += g.hooks.length - keep.length;
+    g.hooks = keep;
   }
-
-  const winPath = SKILL_LEARNER_PATH.replace(/\//g, '\\');
-  stopHooks.push({
-    type: 'command',
-    command: `node ${winPath}`,
-    timeout: 30,
-  });
+  if (!removed) return;
 
   fs.writeFileSync(SETTINGS_JSON, JSON.stringify(settings, null, 2));
-  log('  ✔ skill-learner Stop hook wired');
+  log('  ✔ retired skill-learner Stop hook removed');
 }
 
 // ─── 8. Main ──────────────────────────────────────────────────────────────────
@@ -253,8 +244,7 @@ export async function setupPlugins() {
     }
   }
 
-  // Wire skill-learner hook
-  ensureSkillLearnerHook();
+  removeSkillLearnerHook();
 
   log('Plugin setup complete.');
 }

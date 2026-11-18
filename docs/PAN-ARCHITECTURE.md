@@ -178,7 +178,6 @@ distinct from a device (where it runs) and a job (when it runs).
 | Wrappers (action shims) | `wrappers/` |
 | MCP server (exposes capabilities to Claude Code) | `mcp-server.js` |
 | Voice command router (maps user utterance → capability) | `router.js`, `context-router.js` |
-| Skill auto-generation | `hooks/skill-learner.js` |
 
 ---
 
@@ -250,7 +249,6 @@ This is where PAN is the *subject*, not the user.
 | Benchmarks | Performance tracking over time | `benchmark.js`, `perf/` |
 | Stack scanner | Dependency / vulnerability awareness | `stack-scanner.js` |
 | Self-monitoring | GitHub issues, error patterns | `github-monitor.js`, `issue-checker.js` |
-| Skill auto-gen | Stop-hook generates `SKILL.md` for novel sessions | `hooks/skill-learner.js` |
 | Operating modes | dev / prod / incognito / etc | `mode.js` |
 | Resistance | rate limiting + back-pressure | `resistance.js` |
 
@@ -287,11 +285,11 @@ Wraps every other section. Two adjacent concerns kept together:
 | `intuition.js`, `thoughts.js`, `screen-watcher.js`, `webcam-watcher.js`, `activity-tracker.js`, `transcript-watcher.js`, `face-id.js`, `classifier.js`, `verifier.js` | Intuition |
 | `smart-router.js` | Intuition (scorer) — currently also serves Devices |
 | `memory/`, `memory-search.js`, `evolution/`, `dream.js`, `db.js`, `org-db.js`, `db-registry.js`, `schema.sql`, `migrations/` | Memory |
-| `skills/`, `skills.js`, `modules/`, `modules.js`, `wrappers/`, `mcp-server.js`, `router.js`, `context-router.js`, `hooks/skill-learner.js` | Capabilities |
+| `skills/`, `skills.js`, `modules/`, `modules.js`, `wrappers/`, `mcp-server.js`, `router.js`, `context-router.js` | Capabilities |
 | `jobs.js`, `orchestrator.js`, `steward.js`, `dashboard-watchdog.js`, `project-runner.js`, `routes/runner.js` | Jobs |
 | `terminal.js`, `super-carrier.js`, `carrier.js`, `platform.js`, `wezterm.js`, `playwright-bridge.js`, `discovery.js`, `client-manager.js`, `routes/client.js`, `routes/devices.js`, `screen-recorder.js`, `screen-buffer.js`, `remote-screen-watcher.js`, `pan-client/` | Devices |
 | `tts.js`, `tts-worker.py`, `whisper-server.py`, `dictate-vad.py`, `audio-recorder.py`, `pan-voice.cs/.exe`, `pan-notify.js`, `routes/email.js`, `routes/chat.js`, `routes/messaging-prefs.js`, `email.js` | Comms |
-| `scout.js`, `dream.js`, `evolution/`, `autodev.js`, `benchmark.js`, `perf/`, `stack-scanner.js`, `github-monitor.js`, `issue-checker.js`, `hooks/skill-learner.js`, `mode.js`, `resistance.js` | Learning |
+| `scout.js`, `dream.js`, `evolution/`, `autodev.js`, `benchmark.js`, `perf/`, `stack-scanner.js`, `github-monitor.js`, `issue-checker.js`, `mode.js`, `resistance.js` | Learning |
 | `routes/orgs.js`, `routes/auth.js`, `routes/audit.js`, `routes/privacy.js`, `routes/incognito.js`, `routes/zones.js`, `routes/guardian.js`, `routes/preferences.js`, `routes/hooks.js`, `anonymize.js`, `anonymizer.js`, `sensitivity.js`, `permissions.js`, `org-policy.js`, `guardian.js`, `cloudflare-tunnel.js` | Security + Governance |
 
 ---
@@ -309,8 +307,6 @@ doesn't think the table above is more precise than it is:
   (Devices) on a schedule (Jobs).
 - **`router.js` is in Capabilities but also Comms** — it parses user voice
   input (Comms) and dispatches it to capabilities.
-- **`hooks/skill-learner.js` is in Learning but also Capabilities** — it
-  generates capabilities through learning.
 - **The MCP server is the bridge** between PAN's capabilities and external
   Claude Code instances. Lives in Capabilities, but functionally it's a
   cross-process integration layer.

@@ -32,7 +32,6 @@ Last updated: 2026-05-04
 | **Evolution Engine** | Memory | Memory merge, decay, relevance bump — every 6h | Running |
 | **Activity Tracker** | Presence | Polls foreground window every 3s (Win32 API), logs to activity_events | Running |
 | **Dashboard Watchdog** | Reliability | Detects stuck black screen via brightness check, triggers Craft swap auto-recovery | Running |
-| **Skill Learner** | Learning | Stop hook — evaluates each session for reusable skills, auto-generates SKILL.md | Running |
 | **Webcam Watcher** | Presence | Face ID every 30s (face-api), identity lock, auto-enroll to cluster | Running |
 | **Screen Watcher** | Presence | Vision AI screenshot every 60s via Tauri/FFmpeg, stores screen_context | Running |
 | **PAN Notify** | Comms | Unified service → user messaging via ΠΑΝ chat thread | Running |
@@ -87,7 +86,7 @@ Last updated: 2026-05-04
 | Concept | Description |
 |---------|-------------|
 | **Data Staking** | PAN captures everything. Users stake their data for AI training, get paid. See docs/DATA-DIVIDENDS.md. |
-| **Skill Marketplace** | Skills anyone can write and share — already started with skill-learner.js. |
+| **Skill Marketplace** | Skills anyone can write and share. |
 | **BLE Mesh** | Pendants communicate nearby presence without server. See docs/BLE-MESH.md. |
 | **Agent Network** | Via Aganium — PAN discovers and calls other agents' tools across a network. |
 | **Home Assistant** | PAN + HA integration for smart home control. See docs/HOME-ASSISTANT.md. |

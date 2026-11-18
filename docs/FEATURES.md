@@ -627,8 +627,12 @@ around a query does not change that.
   - At boot `db.js` drops what still points at it: those settings (and `ai_model`) when the
     value starts with `cerebras:`, the `llm_billing_blocked` row, `model_selections` rows
     with provider `cerebras`. No `reasoning_cloud` seed on a new install.
-  - `hooks/skill-learner.js` no longer carries a key in the source. It only runs with
-    `CEREBRAS_API_KEY` in the environment, so today it does nothing.
+  - `hooks/skill-learner.js` is deleted. It was a Claude Code Stop hook that asked
+    Cerebras whether a session showed a reusable skill and wrote a SKILL.md if so. It
+    could reach no other model, so it had made nothing since August. `setup-plugins.js`
+    no longer wires it, and at boot it takes the old entry out of the Stop hooks in
+    `~/.claude/settings.json` (only that entry; a hook whose file is gone errors on every
+    Stop).
   - Kept: `cerebras_api_key` stays in `SECRET_KEYS` (`secrets.js`) so a key still stored
     in an old database is never returned by the settings API.
   - Not done here, they need a dashboard build or are another change's files: the
@@ -2103,22 +2107,13 @@ children can have adult-sounding voices and vice versa).
 
 ---
 
-## Skill Learner (Auto-Skill Generation)
+## Skill Learner (removed 2026-11-18)
 
-- **Purpose:** After every Claude session, evaluate if a novel reusable skill
-  was demonstrated. If yes, auto-generate a SKILL.md and add it to the
-  pan-local plugin marketplace.
-- **File:** `service/src/hooks/skill-learner.js`
-- **Trigger:** Claude Code Stop hook (runs after every session ends)
-- **Flow:**
-  1. Reads session transcript from stdin
-  2. Calls Cerebras (fast, cheap) to evaluate if session was novel + reusable
-  3. If yes (min 4 turns, clear skill demonstrated): generates SKILL.md
-  4. Saves to `~/.claude/plugins/local/<skill-name>/`
-  5. Updates `marketplace.json` with new skill entry
-  6. Logs to PAN server (best-effort)
-- **Format:** SKILL.md = YAML frontmatter + Markdown instructions + optional JS
-- **Threshold:** Session must have ≥4 turns and demonstrate a reusable capability
+- Was `service/src/hooks/skill-learner.js`, a Claude Code Stop hook that wrote a SKILL.md
+  for a session that showed a reusable skill. It only knew Cerebras, which stopped
+  answering in August, so it is deleted. See "Cerebras removed" above.
+- Plugins already in `~/.claude/plugins/local/` stay, and `setup-plugins.js` still lists
+  them in the pan-local marketplace.
 
 ---
 
