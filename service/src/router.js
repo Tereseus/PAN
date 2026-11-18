@@ -2810,7 +2810,8 @@ async function _raiseVoiceAlert(reason, source) {
 // is stored on the hub. It is its own short path, not the owner's path with pieces switched off:
 // a block added to routeStream later cannot reach a person by being forgotten here. Before
 // anything that acts, may() is asked, and a no is said out loud (a model left to answer "tell the
-// PAN thread ..." says "Got it" and does nothing). Not here yet: interpreting, and a memory of
+// PAN thread ..." says "Got it" and does nothing); a no about the owner's own threads and
+// computers is not said at all, the line simply gets no answer. Not here yet: interpreting, and a memory of
 // the person's own.
 const PERSON_AMBIENT_JSON = 'reply {"intent":"ambient","addressed":0.1,"response":"[AMBIENT]"}';
 const PERSON_IDENTITY = /\b(?:who are you|what are you(?=\W*$)|your name|(?:what(?:'s|s| is)|know|remember|say|tell me) my name|what my name is|who am i(?=\W*$)|who (?:made|built) you)\b/i;
@@ -2853,6 +2854,10 @@ export function personPrompt(text, context, { liveBlock = '', hubModel = '' } = 
   const middle = [voiceHistoryBlock(context.conversation_history).trim(), personNowLine(context.sensors), String(liveBlock || '').trim(),
     `Mic heard: "${clipToTokens(anonymizeForAI(text), HEARD_TOKENS)}"`].filter(Boolean);
   const self = personSelfLine(person);
+  // Their name once more, next to their line, as the owner's path does for him: with the facts a
+  // block away a small model answers "PAN" to "what is my name?" (seen again for a person, Nov 18).
+  const theirName = String(person?.display_name || '').replace(/[^\p{L}\p{N} .'-]/gu, '').trim().slice(0, 40);
+  if (kind === 'SELF' && theirName) middle.splice(middle.length - 1, 0, `Your name is PAN. The name of the person talking to you is ${theirName}.`);
   if (hubModel) return { kind, plain: true, prompt: hubPrompt(kind, middle, self) };
   // No model of the hub's own: the same rule, asked for as JSON, for whatever the voice chain has.
   const rule = HUB_RULES[kind].replace(HUB_AMBIENT, PERSON_AMBIENT_JSON)
@@ -2887,9 +2892,12 @@ async function* personTurn(text, context, withProsody) {
   if (cmd) {
     const action = /computer/.test(String(cmd.kind)) || cmd.computer ? 'computer' : 'thread';
     if (!may(person, action) || !may(person, 'thread')) {
-      console.log(`[person] ${person.id} asked for a ${action} - refused`);
+      // Not answered at all (the owner, 2026-11-18: "why would you even say a no to somebody
+      // else"). A line about the owner's threads or computers from someone who may not use them
+      // gets silence: a spoken no would confirm they are there. The hub's log keeps who asked.
+      console.log(`[person] ${person.id} (${person.role}) asked for a ${action} on ${context.device_id} - not theirs, no answer: ${JSON.stringify(String(text).slice(0, 80))}`);
       notePath('person_refused');
-      yield* say(refusal(action), { refused: action });
+      yield* quiet('not_theirs');
       return;
     }
     let handled = false;

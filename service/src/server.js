@@ -384,11 +384,22 @@ async function cleanupStaleTailscaleNode(staleHostname) {
 // Runs before every other /api route, the auth routes included, so the link headers
 // are always checked and stripped. Inert until pan-link runs here (no link.json);
 // forged link headers are refused.
-app.use('/api', (req, res, next) => {
+//
+// On EVERY path since 2026-11-18, not only /api: a device that belongs to a person other than
+// the owner (people.js) is held to PERSON_ALLOW here, pages, downloads and /dashboard included.
+// pan-link refuses the same things before PAN sees them; this is PAN's own wall behind that one,
+// and until now it stood only in front of /api. (WebSockets are opened by the Carrier, not here:
+// for those pan-link's list is the only wall, and no /ws path is on a person's list.)
+app.use((req, res, next) => {
   const link = panLinkIdentify(req, getDataDir());
   if (link.forged) return res.status(403).json({ error: 'bad device identity' });
-  if (link.ok) req.panLinkDevice = { id: link.deviceId, name: link.deviceName };
-  next();
+  if (!link.ok) return next();
+  req.panLinkDevice = { id: link.deviceId, name: link.deviceName };
+  linkPerson(link.deviceId).then((person) => {
+    if (person === undefined) return res.status(503).json({ error: 'PAN Link is not answering, try again' });
+    if (person && person.role !== 'owner' && !personMaySend(req.method, req.path)) return res.status(403).json({ error: 'not open to this person' });
+    next();
+  }).catch(next);
 });
 
 // Auth routes (some endpoints skip auth — login-related stuff)

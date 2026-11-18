@@ -8,8 +8,17 @@ import { get, all, insert, run } from '../db.js';
 import { randomBytes } from 'crypto';
 import { requireRole, getRoleLevels } from '../middleware/auth.js';
 import { auditLog } from '../middleware/org-context.js';
+import { resetPeopleCache } from '../people.js';
 
 const router = Router();
+
+// A change to a person (removed, renamed, another role or power) holds from their device's next
+// request: people.js remembers whose a device is for half a minute, and a removed person's
+// device must not go on being them for that long.
+router.use('/users', (req, res, next) => {
+  if (req.method !== 'GET') res.on('finish', () => { try { resetPeopleCache(); } catch {} });
+  next();
+});
 
 // Verify OAuth token with provider and extract user info
 async function verifyOAuthToken(provider, token) {
@@ -501,6 +510,16 @@ router.get('/users', (req, res) => {
     power: u.power_lvl ?? roleLevels[u.role] ?? 0,
   }));
   res.json({ users: enriched });
+});
+
+// PUT /api/v1/auth/users/:id/name — rename a person (owner only). Body: { display_name }.
+router.put('/users/:id/name', requireRole('owner'), (req, res) => {
+  const userId = parseInt(req.params.id);
+  const name = typeof req.body?.display_name === 'string' ? req.body.display_name.trim().slice(0, 60) : '';
+  if (!Number.isInteger(userId) || !name) return res.status(400).json({ error: 'display_name is required' });
+  const done = run('UPDATE users SET display_name = :n WHERE id = :id', { ':n': name, ':id': userId });
+  if (!done.changes) return res.status(404).json({ error: 'no such person' });
+  res.json({ ok: true, user: get('SELECT id, display_name, role, power_lvl, is_active FROM users WHERE id = :id', { ':id': userId }) });
 });
 
 // PUT /api/v1/auth/users/:id/role — change user role (owner only)
