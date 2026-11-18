@@ -209,3 +209,6 @@ pan-client/thread-relay/.state/
 
 # Scratch copy of an old dashboard build's _app/immutable tree. Not source.
 service/dashboard/.immutable-backup/
+
+# Research reports and notes stay on the owner's machines, not in the public repo (2026-11-18)
+/docs/research/
