@@ -6,6 +6,14 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -35,6 +43,7 @@ import androidx.compose.material3.Badge
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -710,6 +719,37 @@ private fun MetPart(viewModel: PeopleViewModel) {
 }
 
 /** One line about a call, with the one thing to do about it. */
+/**
+ * A call, on every tab that is not People (the owner, 2026-11-18: answering meant finding the
+ * People tab first). Small, in the top corner: who is calling with Answer and Not now, or who
+ * this person is on with and End.
+ */
+@Composable
+fun CallStrip(viewModel: PeopleViewModel, modifier: Modifier = Modifier) {
+    val people by viewModel.people.collectAsState()
+    val talkWith by viewModel.talkWith.collectAsState()
+    val talkJoined by viewModel.talkJoined.collectAsState()
+    val callingMe by viewModel.callingMe.collectAsState()
+    val caller = people?.firstOrNull { it.id == callingMe }
+    val other = people?.firstOrNull { it.id == talkWith }
+    if (caller == null && other == null) return
+    Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = RoundedCornerShape(12.dp), shadowElevation = 4.dp, modifier = modifier) {
+        Row(modifier = Modifier.padding(start = 12.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.Call, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer, modifier = Modifier.size(18.dp))
+            if (caller != null) {
+                Text("${firstName(caller.name)} is calling", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    modifier = Modifier.padding(horizontal = 8.dp))
+                TextButton(onClick = { viewModel.declineTalk(caller.id) }) { Text("Not now") }
+                TextButton(onClick = { viewModel.startTalk(caller.id, firstName(caller.name)) }) { Text("Answer") }
+            } else if (other != null) {
+                Text(if (talkJoined) "On with ${firstName(other.name)}" else "Calling ${firstName(other.name)}", style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer, modifier = Modifier.padding(horizontal = 8.dp))
+                TextButton(onClick = { viewModel.endTalk() }) { Text("End") }
+            }
+        }
+    }
+}
+
 @Composable
 private fun CallBar(text: String, action: String, second: String? = null, onSecond: () -> Unit = {}, onAction: () -> Unit) {
     Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = RoundedCornerShape(12.dp),
@@ -800,18 +840,23 @@ private fun Conversation(viewModel: PeopleViewModel, person: PersonLine, actions
             Text(if (readingFor != null) "${firstName(readingFor.name)} and $first" else person.name,
                 style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
             // A call: after this, what this person says goes to them without "ΠAN, tell ..." each time.
-            if (canSend && !onCall) IconButton(onClick = { viewModel.startTalk(person.id, first) }) {
-                Icon(Icons.Default.Call, contentDescription = "Talk to $first")
+            // A call: after this, what this person says goes to them without "ΠAN, tell ..." each time.
+            // A button with its name on it: beside a bare microphone it read as "talk" (the owner, 2026-11-18).
+            if (canSend && !onCall) FilledTonalButton(onClick = { viewModel.startTalk(person.id, first) }) {
+                Icon(Icons.Default.Call, contentDescription = null, modifier = Modifier.size(18.dp))
+                Text("Call", modifier = Modifier.padding(start = 6.dp))
             }
-            if (readingFor == null) MicButton(on = micOn, diameter = 40.dp, onClick = {
-                context.startService(android.content.Intent(context, PanForegroundService::class.java).apply { action = "TOGGLE_MIC" })
-            })
-            // Everything the owner can do to this person lives here, not on the list.
-            if (owner && readingFor == null && person.role != "owner") Box {
+            // Everything about this person lives here, not on the list.
+            if (readingFor == null) Box {
                 IconButton(onClick = { menu = true }, enabled = !actions.busy) {
                     Icon(Icons.Default.MoreVert, contentDescription = "More for ${person.name}")
                 }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    // Anyone's own choice: take calls from this person or not.
+                    DropdownMenuItem(text = { Text(if (person.callsOff) "Take calls from $first" else "Don't take calls from $first") },
+                        onClick = { menu = false; viewModel.setCalls(person.id, person.callsOff) })
+                    // The rest is the owner's, about a person on his ΠAN.
+                    if (owner && person.role != "owner") {
                     // A child's conversations with others are the owner's to read (the hub holds this to children).
                     if (person.role == "child") DropdownMenuItem(text = { Text("$first's messages") }, onClick = { menu = false; viewModel.closeTalk(); viewModel.watch(person) })
                     DropdownMenuItem(text = { Text("Groups") }, onClick = { menu = false; actions.groupsFor = person })
@@ -823,11 +868,18 @@ private fun Conversation(viewModel: PeopleViewModel, person: PersonLine, actions
                     DropdownMenuItem(text = { Text("Add device") }, onClick = { menu = false; menuScope.launch { codeFor(viewModel, actions, snackbar, person.id, person.name) } })
                     DropdownMenuItem(text = { Text("Rename") }, onClick = { menu = false; actions.renaming = person })
                     DropdownMenuItem(text = { Text("Remove") }, onClick = { menu = false; actions.removing = person })
+                    }
                 }
             }
         }
-        if (readingFor == null && !micOn) Text("Muted: ΠAN cannot hear you, and what $first sends is shown here, not read out. Tap the microphone to unmute.",
-            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        // Where this person's voice is going right now, in words: nobody should have to guess.
+        if (readingFor == null) Text(when {
+            !micOn && onCall -> "Muted: $first cannot hear you. What $first says shows here. Tap the microphone below to talk."
+            !micOn -> "Muted. What $first sends shows here, not read out."
+            onCall && talkJoined -> "What you say goes to $first. Start with \"ΠAN\" to ask ΠAN something."
+            onCall -> "What you say is passed on to $first once they answer. Start with \"ΠAN\" to ask ΠAN something."
+            else -> "ΠAN is listening, and what you say goes to ΠAN, not to $first. To talk to $first, tap Call."
+        }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp))
         if (onCall) CallBar(if (talkJoined) "On with $first. Just talk." else "Calling $first. What you say is passed on.", "End") { viewModel.endTalk() }
         HorizontalDivider()
@@ -850,13 +902,39 @@ private fun Conversation(viewModel: PeopleViewModel, person: PersonLine, actions
             }
         }
         if (canSend) {
-            Row(modifier = Modifier.fillMaxWidth().padding(start = 12.dp, end = 4.dp, top = 6.dp, bottom = 8.dp),
+            // The same box as on Home (the owner, 2026-11-18): the words, the send arrow at their
+            // end, and the microphone to the right of it.
+            Row(modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 12.dp),
                 verticalAlignment = Alignment.CenterVertically) {
-                OutlinedTextField(value = draft, onValueChange = { draft = it.take(500) },
-                    placeholder = { Text("Message $first") }, maxLines = 4, modifier = Modifier.weight(1f))
-                IconButton(enabled = draft.isNotBlank() && !sending, onClick = {
-                    viewModel.send(draft) { sent -> if (sent) draft = "" }
-                }) { Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send to $first") }
+                val shape = RoundedCornerShape(26.dp)
+                val sendNow = { if (draft.isNotBlank() && !sending) viewModel.send(draft) { sent -> if (sent) draft = "" } }
+                Row(modifier = Modifier.weight(1f).heightIn(min = 52.dp).clip(shape)
+                        .background(MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 18.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    BasicTextField(
+                        value = draft,
+                        onValueChange = { draft = it.take(500) },
+                        modifier = Modifier.weight(1f),
+                        textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
+                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                        maxLines = 4,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                        keyboardActions = KeyboardActions(onSend = { sendNow() }),
+                        decorationBox = { inner ->
+                            if (draft.isEmpty()) Text("Type to $first", style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            inner()
+                        }
+                    )
+                    IconButton(onClick = { sendNow() }, enabled = draft.isNotBlank() && !sending, modifier = Modifier.size(36.dp)) {
+                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send to $first",
+                            tint = if (draft.isNotBlank()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+                Spacer(Modifier.width(12.dp))
+                MicButton(on = micOn, onClick = {
+                    context.startService(android.content.Intent(context, PanForegroundService::class.java).apply { action = "TOGGLE_MIC" })
+                })
             }
         }
     }

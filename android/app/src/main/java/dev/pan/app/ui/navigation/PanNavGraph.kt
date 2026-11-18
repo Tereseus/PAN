@@ -2,7 +2,9 @@ package dev.pan.app.ui.navigation
 
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Person
@@ -16,10 +18,13 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
@@ -31,6 +36,7 @@ import dev.pan.app.ui.dashboard.DashboardScreen
 import dev.pan.app.ui.home.HomeScreen
 import dev.pan.app.ui.main.MainViewModel
 import dev.pan.app.ui.memory.MemoryScreen
+import dev.pan.app.ui.people.CallStrip
 import dev.pan.app.ui.people.PeopleScreen
 import dev.pan.app.ui.people.PeopleViewModel
 import dev.pan.app.ui.settings.SettingsScreen
@@ -101,10 +107,21 @@ fun PanNavGraph() {
             }
         }
     ) { inner ->
+        // A call shows on every tab, not only People: who is calling, with Answer and Not now.
+        val talkWith by peopleViewModel.talkWith.collectAsState()
+        val callingMe by peopleViewModel.callingMe.collectAsState()
+        val inCall = talkWith != 0 || callingMe != 0
+        LaunchedEffect(inCall, route) {
+            // While a call is open or ringing, keep its state fresh off the People tab too.
+            while (inCall && route != Screen.People.route) {
+                kotlinx.coroutines.delay(3000)
+                peopleViewModel.refresh()
+            }
+        }
+        Box(modifier = Modifier.padding(inner).consumeWindowInsets(inner)) {
         NavHost(
             navController = navController,
             startDestination = Screen.Home.route,
-            modifier = Modifier.padding(inner).consumeWindowInsets(inner)
         ) {
             composable(Screen.Home.route) { HomeScreen(viewModel = mainViewModel) }
             composable(Screen.People.route) { PeopleScreen(viewModel = peopleViewModel) }
@@ -122,6 +139,9 @@ fun PanNavGraph() {
             composable(Screen.Dashboard.route) {
                 DashboardScreen(onBack = { navController.popBackStack() })
             }
+        }
+        if (onTab && route != Screen.People.route) CallStrip(peopleViewModel,
+            modifier = Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(top = 8.dp, end = 12.dp))
         }
     }
 }

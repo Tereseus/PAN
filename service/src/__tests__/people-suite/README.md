@@ -81,7 +81,8 @@ The hub part, by group:
 - **groups**: the owner makes a group and puts someone in it and everyone sees it; only the
   owner changes them; a person in two groups, then taken out of one; renamed, then deleted, the
   person stays on the hub in no group.
-- **calls, saying no**: the called person declines, the caller is told and their side closes.
+- **calls, saying no**: the called person declines, the caller is told and their side closes;
+  a person who takes no calls from someone: the call is refused and their device hears nothing.
 - **met**: an adult adds someone she met and only her list has it; a child cannot unless the
   owner opens it; the owner's record of the same person is his own; a code with no name or a
   bad key is refused; nobody forgets another person's record.

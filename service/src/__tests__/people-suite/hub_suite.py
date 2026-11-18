@@ -675,6 +675,17 @@ def main():
         told = pending(OWNER, PHONE)[1]
         left = call("GET", "/api/v1/people", device=OWNER, headers=PHONE)[1].get("talk", {}).get("with")
         check("calls", "she says no to his call: he is told and his side closes", s == 200 and j.get("declined") is True and told == ["Zora can't talk right now."] and left is None, (s, j, told, left))
+        # Not taking calls from someone.
+        s, j = call("PUT", "/api/v1/people/calls", {"from": 1, "take": False}, device=zora["device"])
+        s2, j2 = call("POST", "/api/v1/people/talk", {"with": zora["id"]}, device=OWNER, headers=PHONE)
+        hers = pending(zora["device"])[1]
+        off = [p.get("calls_off") for p in call("GET", "/api/v1/people", device=zora["device"])[1].get("people", []) if p.get("id") == 1]
+        s3, j3 = call("PUT", "/api/v1/people/calls", {"from": 1, "take": True}, device=zora["device"])
+        s4, j4 = call("POST", "/api/v1/people/talk", {"with": zora["id"]}, device=OWNER, headers=PHONE)
+        call("DELETE", "/api/v1/people/talk", device=OWNER, headers=PHONE)
+        pending(zora["device"])
+        check("calls", "she takes no calls from him: his call is refused and her device hears nothing; then she takes them again", s == 200 and j.get("take") is False and s2 == 409 and j2.get("error") == "not_taking"
+              and hers == [] and off == [True] and s3 == 200 and s4 == 200, (s, j, s2, j2, hers, off, s3, s4))
         pending(OWNER, PHONE)
         # What the owner's first real call showed (2026-11-18): "hang up" was heard inside one
         # long line and did nothing, and a name came back from the speech model respelled.
@@ -683,7 +694,7 @@ def main():
         s, done, said = turn("Okay, I will go now. Hang up. Stop calling.", OWNER, headers=PHONE)
         left = call("GET", "/api/v1/people", device=OWNER, headers=PHONE)[1].get("talk", {}).get("with")
         check("calls", "\"hang up\" inside a longer line, without PAN's name, ends the call and is not passed on", (done or {}).get("intent") == "talk" and (done or {}).get("ended") is True
-              and "ended" in str((done or {}).get("response")) and pending(zora["device"])[1] == [] and left is None, (done, left))
+              and "ended" in str((done or {}).get("response")) and pending(zora["device"])[1] == ["Missed call from %s." % boss] and left is None, (done, left))
         s, done, said = turn("PAN, talk to Zora and tell her the oven is on.", OWNER, headers=PHONE)
         got = pending(zora["device"])[1]
         left = call("GET", "/api/v1/people", device=OWNER, headers=PHONE)[1].get("talk", {}).get("with")

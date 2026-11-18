@@ -26,6 +26,7 @@ function clear() {
   pm.resetTalks();
   run(`DELETE FROM settings WHERE key = 'people_message_mode'`);
   run(`DELETE FROM settings WHERE key = 'people_nicknames'`);
+  run(`DELETE FROM settings WHERE key = 'people_call_block'`);
   pm.ensureMessagesSchema();
   run(`DELETE FROM person_messages`);
 }
@@ -456,6 +457,50 @@ test('saying no to a call: the caller is told and their side closes; nothing of 
   // A call both are on is not declined: it is ended.
   pm.startTalk(null, mia.id); pm.startTalk(mia, 1);
   ok(pm.declineTalk(mia, 1) === null && pm.talkState(1).joined === true, 'a joined call was declined');
+  pm.resetTalks();
+});
+
+test('the device is told what a call note is: ringing, answered, ended, gone', () => {
+  pm.resetTalks();
+  pm.startTalk(null, mia.id);
+  const ring = take(MIA_PHONE, Date.now());
+  ok(ring.length === 1 && ring[0].data.kind === 'talk' && ring[0].data.call === 'ring' && ring[0].data.from_user === 1, J(ring));
+  // He gives up before she answers: her device is told to stop ringing, shown and not said.
+  pm.endTalk(null);
+  const gone = take(MIA_PHONE, Date.now());
+  ok(gone.length === 1 && gone[0].data.call === 'gone' && gone[0].type === 'message' && gone[0].body === 'Missed call from Alex.', J(gone));
+  pm.startTalk(null, mia.id); take(MIA_PHONE, Date.now());
+  pm.startTalk(mia, 1);
+  ok(take(OWNER_PHONE, Date.now())[0].data.call === 'on', 'answered');
+  pm.endTalk(mia);
+  ok(take(OWNER_PHONE, Date.now())[0].data.call === 'ended', 'ended');
+  pm.startTalk(null, mia.id); take(MIA_PHONE, Date.now());
+  pm.declineTalk(mia, 1);
+  ok(take(OWNER_PHONE, Date.now())[0].data.call === 'declined', 'declined');
+});
+
+test('not taking calls from someone: their call is not opened and they are told; messages still arrive', () => {
+  pm.resetTalks();
+  ok(pm.callsBlocked(mia.id, 1) === false, 'before');
+  ok(pm.setCallsBlocked(mia.id, 1, true).blocked === true && pm.callsBlocked(mia.id, 1) === true && pm.callsBlocked(1, mia.id) === false, 'her choice, one way');
+  const r = pm.messageTurn('PAN, call Mia.', { addressed: true });
+  ok(r.response === "Mia isn't taking calls right now." && pm.talkState(1).with === null, J(r));
+  ok(take(MIA_PHONE, Date.now()).length === 0, 'her device was told of the call');
+  ok(pm.startTalk(null, mia.id).reason === 'not_taking', 'the app\'s way');
+  // The list tells her app what she chose, and not him.
+  ok(pm.peopleFor(mia.id).find((p) => p.id === 1).calls_off === true && pm.peopleFor(1).find((p) => p.id === mia.id).calls_off === false, 'the lists');
+  // A message is not a call.
+  ok(pm.messageTurn('PAN, tell Mia dinner is ready.', { addressed: true }).message_to === mia.id && take(MIA_PHONE, Date.now()).length === 1, 'a message was held back');
+  // She can still call him, and then he is on with her.
+  ok(pm.startTalk(mia, 1).ok && pm.startTalk(null, mia.id).joined === true, 'her own call to him');
+  pm.resetTalks(); take(MIA_PHONE, Date.now()); take(OWNER_PHONE, Date.now());
+  // Blocking while he is ringing her: he is told, his side closes.
+  pm.setCallsBlocked(mia.id, 1, false);
+  pm.startTalk(null, mia.id); take(MIA_PHONE, Date.now());
+  pm.setCallsBlocked(mia.id, 1, true);
+  ok(bodies(take(OWNER_PHONE, Date.now())) === "Mia can't talk right now." && pm.talkState(1).with === null, 'blocking a call that is ringing');
+  ok(pm.setCallsBlocked(mia.id, 1, false).blocked === false && pm.startTalk(null, mia.id).ok, 'taking calls again');
+  ok(pm.setCallsBlocked(mia.id, mia.id, true).reason === 'nobody' && pm.setCallsBlocked(mia.id, 9999, true).reason === 'nobody', 'herself, and nobody');
   pm.resetTalks();
 });
 

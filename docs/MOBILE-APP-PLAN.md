@@ -133,6 +133,9 @@ from the 0.4 builds.
 - **0.5.7** (code 136): how long each reply took, under the line; tap for where the time went and
   what ΠAN thought was going on; the address is off Home's top line.
 - **0.5.8** (code 137): an "Interpreting" badge on Home; lines the phone translates itself get their time.
+- **0.5.28** (code 157, published on the hub Nov 18; rollback pair v156): a conversation in People has the same box as Home (the words, the send arrow at their end, the microphone to the right), and Home's box has no X beside the send arrow any more (it could wipe what was typed; Back leaves typing when nothing is typed).
+- **0.5.27** (code 156, Nov 18): every device of a person notices when a call opens or closes on another of their devices, so the call strip shows there too.
+- **0.5.26** (code 155, published on the hub Nov 18; rollback pair v154): a call shows on every tab and rings as a notification with Answer and Not now; the conversation has the big microphone in the corner, a "Call" button and a line saying where your voice goes; "Don't take calls from <name>".
 - **0.5.25** (code 154, published on the hub Nov 18; rollback pair v153): People opens on one drop down (your organization, its groups, everyone else), the list is plain, everything about a person is in the "..." inside their conversation, a person can be in several groups, and a call can be answered with "Not now". Details: docs/FEATURES.md "Groups inside the organization".
 - **0.5.24** (code 153, published on the hub Nov 18; rollback pair v152): the mute button is on the People list too.
 - **0.5.23** (code 152, published on the hub Nov 18; rollback pair v151): the mute button is inside a conversation in People too. The hub side of the same day: a person's device takes only its own person's voice (docs/FEATURES.md "Whose voice on a person's device").

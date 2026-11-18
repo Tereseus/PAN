@@ -33,6 +33,9 @@
 //     them for anyone, a person for themselves.
 //   - "Hang up" inside a longer line ends a call too ("Right. Hang up. PAN, end the call."), and in
 //     a call it needs no name: a sentence that is only that is never words for the other person.
+//   - Not taking calls from someone (the owner, 2026-11-18): each person can say they take no
+//     calls from one other person (people_call_block). That person's call is not opened and
+//     they are told so; nothing reaches the one who blocked. Messages still do.
 //   - A person needs the `messages` limit (people.js). The owner always may.
 //   - One sender, six messages a minute.
 //
@@ -425,13 +428,16 @@ export function startTalk(person, otherId, now = Date.now()) {
   const mine = here.find((p) => p.id === me);
   const other = here.find((p) => p.id === Number(otherId) && p.id !== me);
   if (!mine || !other) return { ok: false, reason: 'nobody' };
+  // They take no calls from this person, and are not calling them either.
+  if (callsBlocked(other.id, me) && talkOf(other.id, now)?.with !== me) return { ok: false, reason: 'not_taking', name: other.first };
   const already = talkOf(me, now);
   if (already && already.with !== other.id) endTalk(person, now);
   talks.set(me, { with: other.id, since: now, last: now, heard: [] });
   const joined = talkOf(other.id, now)?.with === me;
   if (joined) talks.get(other.id).last = now;
   if (!already || already.with !== other.id) {
-    addNote({ type: 'speak', title: mine.first, data: { kind: 'talk', from_user: me },
+    // call: what the note is, for the device (ring: someone is calling; on: they answered).
+    addNote({ type: 'speak', title: mine.first, data: { kind: 'talk', from_user: me, call: joined ? 'on' : 'ring' },
       body: joined ? `${mine.first} is on.` : `${mine.first} wants to talk. Say: PAN, talk to ${mine.first}.` }, { toUser: other.id, keepMs: 60_000, now });
   }
   console.log(`[call] person ${me} opened a call with person ${other.id}${joined ? ' (both on)' : ''}`);
@@ -449,10 +455,40 @@ export function endTalk(person, now = Date.now()) {
   if (talks.get(t.with)?.with === me) {
     talks.delete(t.with);
     const mine = here.find((p) => p.id === me);
-    addNote({ type: 'speak', title: mine?.first || 'ΠAN', body: `${mine?.first || 'They'} ended the call.`, data: { kind: 'talk', from_user: me } }, { toUser: t.with, keepMs: 60_000, now });
+    addNote({ type: 'speak', title: mine?.first || 'ΠAN', body: `${mine?.first || 'They'} ended the call.`, data: { kind: 'talk', from_user: me, call: 'ended' } }, { toUser: t.with, keepMs: 60_000, now });
+  }
+  // They had not answered: their device stops ringing (nothing is said).
+  else {
+    const mine = here.find((p) => p.id === me);
+    addNote({ type: 'message', title: mine?.first || 'ΠAN', body: `Missed call from ${mine?.first || 'someone'}.`, data: { kind: 'talk', from_user: me, call: 'gone' } }, { toUser: t.with, keepMs: 30_000, now });
   }
   console.log(`[call] person ${me} ended the call with person ${t.with}`);
   return other?.first || null;
+}
+
+// ── Not taking calls from someone ──────────────────────────────────────────────────────────
+// The setting people_call_block: { "<user id>": [user ids they take no calls from] }.
+function callBlocks() {
+  try { return JSON.parse(get(`SELECT value FROM settings WHERE key = 'people_call_block'`)?.value || '{}') || {}; } catch { return {}; }
+}
+/** Does [userId] take no calls from [fromId]? */
+export function callsBlocked(userId, fromId) {
+  const list = callBlocks()[String(Number(userId))];
+  return Array.isArray(list) && list.map(Number).includes(Number(fromId));
+}
+/** [userId] takes calls from [fromId] or not. Their own choice. -> { ok, blocked } | { ok: false, reason } */
+export function setCallsBlocked(userId, fromId, blocked) {
+  const me = Number(userId), from = Number(fromId);
+  const here = peopleHere();
+  if (me === from || !here.some((p) => p.id === me) || !here.some((p) => p.id === from)) return { ok: false, reason: 'nobody' };
+  const all_ = callBlocks();
+  const list = new Set((Array.isArray(all_[String(me)]) ? all_[String(me)] : []).map(Number));
+  if (blocked) list.add(from); else list.delete(from);
+  if (list.size) all_[String(me)] = [...list]; else delete all_[String(me)];
+  run(`INSERT INTO settings (key, value) VALUES ('people_call_block', :v) ON CONFLICT(key) DO UPDATE SET value = :v`, { ':v': JSON.stringify(all_) });
+  // Someone who was ringing them is told now.
+  if (blocked) declineTalk(me === OWNER_ID ? null : { id: me }, from);
+  return { ok: true, blocked: !!blocked };
 }
 
 /**
@@ -467,7 +503,7 @@ export function declineTalk(person, callerId, now = Date.now()) {
   talks.delete(caller);
   const here = peopleHere();
   const mine = here.find((p) => p.id === me);
-  addNote({ type: 'speak', title: mine?.first || 'ΠAN', body: `${mine?.first || 'They'} can't talk right now.`, data: { kind: 'talk', from_user: me } }, { toUser: caller, keepMs: 60_000, now });
+  addNote({ type: 'speak', title: mine?.first || 'ΠAN', body: `${mine?.first || 'They'} can't talk right now.`, data: { kind: 'talk', from_user: me, call: 'declined' } }, { toUser: caller, keepMs: 60_000, now });
   console.log(`[call] person ${me} declined a call from person ${caller}`);
   return here.find((p) => p.id === caller)?.first || null;
 }
@@ -537,7 +573,7 @@ export function peopleFor(meId) {
   // The owner also sees how each person's messages reach them, to set it for them.
   const how = me === OWNER_ID ? (id) => ({ messages: messageMode(id) }) : () => ({});
   return peopleHere().filter((p) => p.id !== me)
-    .map((p) => ({ id: p.id, name: p.name, aka: p.aka, role: p.role, last: last.get(p.id) || null, unread: unread.get(p.id) || 0, ...how(p.id) }))
+    .map((p) => ({ id: p.id, name: p.name, aka: p.aka, role: p.role, last: last.get(p.id) || null, unread: unread.get(p.id) || 0, calls_off: callsBlocked(me, p.id), ...how(p.id) }))
     .sort((a, b) => (b.last?.at || 0) - (a.last?.at || 0) || a.name.localeCompare(b.name));
 }
 
@@ -596,7 +632,7 @@ export function messageTurn(text, { person = null, addressed = false, test = fal
     }
     if (test) return { ...call, response: `[benchmark: call with ${to.first} parsed, nothing started]`, talk_parse: { to: to.id } };
     const started = startTalk(person, to.id);
-    if (!started.ok) return { ...call, response: `I couldn't start that.` };
+    if (!started.ok) return { ...call, response: started.reason === 'not_taking' ? `${to.first} isn't taking calls right now.` : `I couldn't start that.` };
     return { ...call, talk_with: to.id,
       response: started.joined ? `You're on with ${to.first}.`
         : started.reachable ? `Calling ${to.first}. Go ahead, I'll pass on what you say.`

@@ -32,6 +32,8 @@ data class PersonLine(
     val aka: List<String> = emptyList(),
     /** The groups they are in inside the organization. */
     val groups: List<Int> = emptyList(),
+    /** This person (the one holding the device) takes no calls from them. */
+    val callsOff: Boolean = false,
 )
 
 /** A group inside the organization on this ΠAN ("Kids", "Night shift"). */
@@ -153,6 +155,7 @@ class PeopleViewModel @Inject constructor(
                 mode = if (p.optJSONObject("messages")?.optString("mode") == "show") "show" else "speak",
                 locked = p.optJSONObject("messages")?.optBoolean("locked") == true,
                 aka = p.optJSONArray("aka")?.let { a -> (0 until a.length()).map { a.optString(it) }.filter { it.isNotBlank() } } ?: emptyList(),
+                callsOff = p.optBoolean("calls_off"),
                 groups = p.optJSONArray("groups")?.let { a -> (0 until a.length()).map { a.optInt(it) } }
                     ?: if (p.isNull("group") || !p.has("group")) emptyList() else listOf(p.optInt("group")),
             ))
@@ -248,6 +251,17 @@ class PeopleViewModel @Inject constructor(
         }
     }
 
+    /** Take calls from this person, or not. This device's person's own choice. */
+    fun setCalls(personId: Int, take: Boolean) {
+        _people.value = _people.value?.map { if (it.id == personId) it.copy(callsOff = !take) else it }
+        _open.value?.let { if (it.id == personId) _open.value = it.copy(callsOff = !take) }
+        viewModelScope.launch {
+            val r = hub("PUT", "/api/v1/people/calls", JSONObject().put("from", personId).put("take", take))
+            if (r == null || r.first != 200) _message.value = "ΠAN could not change that right now."
+            load(withDevices = false)
+        }
+    }
+
     /** Say no to someone who is calling. */
     fun declineTalk(callerId: Int) {
         viewModelScope.launch {
@@ -278,7 +292,11 @@ class PeopleViewModel @Inject constructor(
     fun startTalk(id: Int, name: String) {
         viewModelScope.launch {
             val r = hub("POST", "/api/v1/people/talk", JSONObject().put("with", id))
-            if (r == null || r.first != 200) _message.value = if (r?.first == 403) "Whoever set up this ΠAN has not opened that for you." else "ΠAN could not start that right now."
+            if (r == null || r.first != 200) _message.value = when (r?.first) {
+                403 -> "Whoever set up this ΠAN has not opened that for you."
+                409 -> "$name isn't taking calls right now."
+                else -> "ΠAN could not start that right now."
+            }
             else {
                 readTalk(r.second.optJSONObject("talk"))
                 _message.value = if (r.second.optBoolean("joined")) "You're on with $name. Just talk." else "Calling $name. Just talk: what you say is passed on."

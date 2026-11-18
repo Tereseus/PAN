@@ -17,7 +17,7 @@ import { plainLook, spokenLook } from '../camera-ask.js';
 import { noteSaid, dropOwnTail } from '../own-tail.js';
 import { scopeFor, may, refusal } from '../people.js';
 import { addNote, takeNotesFor, noteSender, maySpeakNow, noteOwnerSpokeOn, notesDevices, SPEAK_PER_MINUTE } from '../phone-notes.js';
-import { takeMessagesFor, peopleFor, conversation, sendMessage, peopleHere, ownerMayRead, talkLine, talkFast, talkState, startTalk, endTalk, declineTalk, messageMode, setMessageMode, setNicknames } from '../person-messages.js';
+import { takeMessagesFor, peopleFor, conversation, sendMessage, peopleHere, ownerMayRead, talkLine, talkFast, talkState, startTalk, endTalk, declineTalk, setCallsBlocked, messageMode, setMessageMode, setNicknames } from '../person-messages.js';
 import { recordMet, metFor, forgetMet } from '../met-people.js';
 import { groupsHere, addGroup, renameGroup, removeGroup, setInGroup } from '../people-groups.js';
 import { shareAnswerInCall } from '../call-share.js';
@@ -1084,12 +1084,18 @@ router.post('/people/talk', (req, res) => {
   const person = req.user?.person ? req.user : null;
   if (person && !may(person, 'messages')) return res.status(403).json({ ok: false, error: refusal('messages') });
   const started = startTalk(person, Number(req.body?.with));
-  if (!started.ok) return res.status(404).json({ ok: false, error: started.reason });
+  if (!started.ok) return res.status(started.reason === 'not_taking' ? 409 : 404).json({ ok: false, error: started.reason, name: started.name });
   res.json({ ok: true, joined: started.joined, talk: talkState(callerId(req)) });
 });
 router.delete('/people/talk', (req, res) => {
   endTalk(req.user?.person ? req.user : null);
   res.json({ ok: true, talk: talkState(callerId(req)) });
+});
+// Take calls from one person or not: { from, take }. Each person's own choice.
+router.put('/people/calls', (req, res) => {
+  const set = setCallsBlocked(callerId(req), Number(req.body?.from), req.body?.take === false);
+  if (!set.ok) return res.status(404).json({ ok: false, error: set.reason });
+  res.json({ ok: true, from: Number(req.body?.from), take: !set.blocked });
 });
 // The person being called says no: { from }. The caller is told and their side closes.
 router.post('/people/talk/decline', (req, res) => {

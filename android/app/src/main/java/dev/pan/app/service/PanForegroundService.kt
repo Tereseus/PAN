@@ -108,6 +108,9 @@ class PanForegroundService : Service() {
         // Distinct channel + notif-id namespace so they never collide with Slack.
         const val ALERT_CHANNEL_ID = "pan_alerts"
         const val ALERT_NOTIF_BASE = 3000                // notification-id namespace for alerts
+        const val CALL_CHANNEL_ID = "pan_calls"          // someone on this ΠAN is calling, ΠAN muted: rings
+        const val CALL_QUIET_CHANNEL_ID = "pan_calls_quiet"   // the same, ΠAN listening: it says who, the phone vibrates
+        const val CALL_NOTIF_ID = 2900
     }
 
     @Inject lateinit var serverClient: PanServerClient
@@ -1141,7 +1144,11 @@ class PanForegroundService : Service() {
                 delay(if (fast) 1000L else SLACK_POLL_INTERVAL_MS)
                 try {
                     val resp = serverClient.api.getSlackPending(getPanDeviceId())
-                    fast = resp.body()?.fast == true
+                    val nowFast = resp.body()?.fast == true
+                    // A call opened or closed for this person, maybe from another of their devices:
+                    // the app's call strip and People tab look again.
+                    if (nowFast != fast) dev.pan.app.ui.people.PeopleSignal.bump()
+                    fast = nowFast
                     val notes = resp.body()?.notifications ?: continue
                     for (note in notes) {
                         if (note.id <= lastSlackId) continue
@@ -1157,12 +1164,15 @@ class PanForegroundService : Service() {
                             // screen in case it was missed or muted.
                             val say = note.body?.trim().orEmpty()
                             if (say.isNotEmpty()) mainHandler.post { panSpeak(say) }
-                            showAlertNotification(note)
+                            // Someone on this ΠAN is calling: it rings, and can be answered right there.
+                            if (callNote(note) == "ring") showCallNotification(note) else showAlertNotification(note)
                         } else {
                             // Everything else is shown and not read out: a meeting, or a message
                             // from someone here when this person chose "show only".
                             showAlertNotification(note)
                         }
+                        // The call was answered, ended, declined or given up: stop ringing.
+                        callNote(note)?.let { if (it != "ring") notificationManager?.cancel(CALL_NOTIF_ID) }
                         // A message or a call from someone on this ΠAN: the People tab shows it at once.
                         val kind = note.data?.get("kind")
                         if (kind == "message" || kind == "talk") dev.pan.app.ui.people.PeopleSignal.bump()
@@ -1266,6 +1276,53 @@ class PanForegroundService : Service() {
 
     // Distinct id namespace from Slack so the two never collide.
     private fun alertNotifId(id: Long): Int = ALERT_NOTIF_BASE + (id % 100000).toInt()
+
+    /** What a note about a call is (the hub's data.call): ring, on, ended, declined, gone. null: not a call note. */
+    private fun callNote(note: dev.pan.app.network.dto.SlackNotify): String? =
+        if (note.data?.get("kind") == "talk") note.data["call"] as? String else null
+
+    /**
+     * Someone on this ΠAN is calling (the owner, 2026-11-18: answer without finding the People tab,
+     * and ring or vibrate the way the phone is set). Two channels: when ΠAN is muted it cannot say
+     * who is calling, so the phone rings; when ΠAN is listening it says it, and the phone only
+     * vibrates. Either way the phone's own ringer setting (sound, vibrate, silent) decides the rest.
+     */
+    private fun showCallNotification(note: dev.pan.app.network.dto.SlackNotify) {
+        val from = (note.data?.get("from_user") as? Number)?.toInt() ?: 0
+        val name = note.title?.takeIf { it.isNotBlank() } ?: "Someone"
+        val ringing = isMuted
+        val channelId = if (ringing) CALL_CHANNEL_ID else CALL_QUIET_CHANNEL_ID
+        val channel = NotificationChannel(channelId, if (ringing) "Calls" else "Calls (ΠAN says who)", NotificationManager.IMPORTANCE_HIGH).apply {
+            description = "Someone on your ΠAN wants to talk"
+            enableVibration(true)
+            vibrationPattern = longArrayOf(0, 600, 400, 600, 400, 600)
+            if (ringing) setSound(android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_RINGTONE),
+                android.media.AudioAttributes.Builder().setUsage(android.media.AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION).build())
+            else setSound(null, null)
+        }
+        notificationManager?.createNotificationChannel(channel)
+        fun act(action: String, code: Int) = PendingIntent.getService(this, code,
+            Intent(this, PanForegroundService::class.java).setAction(action).putExtra("from", from),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val open = PendingIntent.getActivity(this, CALL_NOTIF_ID,
+            Intent(this, MainActivity::class.java).apply { flags = Intent.FLAG_ACTIVITY_SINGLE_TOP },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val notification = NotificationCompat.Builder(this, channelId)
+            .setContentTitle("$name wants to talk")
+            .setContentText("Answer, then just talk. Or say \"ΠAN, answer\".")
+            .setSmallIcon(android.R.drawable.sym_call_incoming)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setAutoCancel(true)
+            .setTimeoutAfter(60_000)
+            .setContentIntent(open)
+            .addAction(0, "Not now", act("CALL_DECLINE", CALL_NOTIF_ID + 1))
+            .addAction(0, "Answer", act("CALL_ANSWER", CALL_NOTIF_ID + 2))
+            .build()
+        notificationManager?.notify(CALL_NOTIF_ID, notification)
+        panLog("Call from user $from ('$name') -> notification, ${if (ringing) "ringing" else "vibrating, PAN says it"}")
+    }
 
     private fun showAlertNotification(note: dev.pan.app.network.dto.SlackNotify) {
         ensureAlertChannel()
@@ -2851,6 +2908,18 @@ class PanForegroundService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // The call notification's buttons.
+        if (intent?.action == "CALL_ANSWER" || intent?.action == "CALL_DECLINE") {
+            val from = intent.getIntExtra("from", 0)
+            val answer = intent.action == "CALL_ANSWER"
+            notificationManager?.cancel(CALL_NOTIF_ID)
+            if (from != 0) serviceScope.launch {
+                val r = if (answer) serverClient.hubJson("POST", "/api/v1/people/talk", org.json.JSONObject().put("with", from))
+                    else serverClient.hubJson("POST", "/api/v1/people/talk/decline", org.json.JSONObject().put("from", from))
+                panLog("Call ${if (answer) "answered" else "declined"} from the notification -> ${r?.first}")
+                dev.pan.app.ui.people.PeopleSignal.bump()
+            }
+        }
         if (intent?.action == "STOP_TTS") {
             tts.stop()
             panLog("TTS stopped from notification")

@@ -488,9 +488,9 @@ private fun LineBox(live: String, micOn: Boolean, onSend: (String) -> Unit, onMi
                         inner()
                     }
                 )
-                IconButton(onClick = { typed = ""; typing = false; focusManager.clearFocus() }, modifier = Modifier.size(32.dp)) {
-                    Icon(Icons.Default.Close, contentDescription = "Cancel", tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
+                // No X here (the owner, 2026-11-18): beside the send arrow it could wipe what was
+                // typed by accident. Back leaves typing when nothing is typed.
+                androidx.activity.compose.BackHandler(enabled = typed.isBlank()) { typing = false; focusManager.clearFocus() }
                 IconButton(onClick = { send() }, enabled = typed.isNotBlank(), modifier = Modifier.size(36.dp)) {
                     Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send",
                         tint = if (typed.isNotBlank()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
