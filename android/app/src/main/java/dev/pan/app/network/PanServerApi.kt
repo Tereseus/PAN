@@ -31,14 +31,8 @@ interface PanServerApi {
     @POST("/api/v1/sync")
     suspend fun syncBatch(@Body batch: SyncBatch): Response<Unit>
 
-    @GET("/api/v1/devices/commands/history")
-    suspend fun commandHistory(): Response<List<dev.pan.app.ui.commands.CommandItem>>
-
     @GET("/api/v1/devices/list")
-    suspend fun deviceList(): Response<List<dev.pan.app.ui.commands.DeviceItem>>
-
-    @GET("/api/v1/devices/commands/{id}/logs")
-    suspend fun commandLogs(@retrofit2.http.Path("id") commandId: Long): Response<List<dev.pan.app.ui.commands.LogItem>>
+    suspend fun deviceList(): Response<List<DeviceItem>>
 
     @POST("/api/v1/vision")
     suspend fun vision(@Body request: VisionRequest): Response<VisionResponse>

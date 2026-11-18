@@ -23,7 +23,7 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import dev.pan.app.network.dto.DeviceSensorConfig
 import dev.pan.app.network.dto.IntuitionSnapshot
-import dev.pan.app.ui.commands.DeviceItem
+import dev.pan.app.network.DeviceItem
 import dev.pan.app.vpn.RemoteAccessManager
 
 // The old single main screen lived here until 0.5.1. Home (ui/home/HomeScreen.kt) replaced it;

@@ -31,7 +31,6 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
-import dev.pan.app.ui.commands.CommandsScreen
 import dev.pan.app.ui.dashboard.DashboardScreen
 import dev.pan.app.ui.home.HomeScreen
 import dev.pan.app.ui.main.MainViewModel
@@ -47,7 +46,6 @@ sealed class Screen(val route: String) {
     data object Memory : Screen("memory")
     data object Settings : Screen("settings")
     // Tools for building PAN. Reached from Settings, with the developer switch on.
-    data object Commands : Screen("commands")
     data object Dashboard : Screen("dashboard")
 }
 
@@ -63,8 +61,9 @@ private val TABS = listOf(
 /**
  * The app's frame (docs/MOBILE-APP-PLAN.md): four tabs. Home is the talk and the mic, People is
  * everyone else on this ΠAN and the messages with each (since 0.5.17), Memory is what PAN kept,
- * Settings is everything you set once. The web dashboard and the command log are still here,
- * behind the developer switch in Settings, shown without the tab bar.
+ * Settings is everything you set once. The hub's web page is still here, behind the developer
+ * switch in Settings, shown without the tab bar. (The command log went in 0.5.29: a debug list of
+ * typed questions that Home already shows.)
  */
 @Composable
 fun PanNavGraph() {
@@ -129,12 +128,8 @@ fun PanNavGraph() {
             composable(Screen.Settings.route) {
                 SettingsScreen(
                     mainViewModel = mainViewModel,
-                    onOpenDashboard = { navController.navigate(Screen.Dashboard.route) },
-                    onOpenCommands = { navController.navigate(Screen.Commands.route) }
+                    onOpenDashboard = { navController.navigate(Screen.Dashboard.route) }
                 )
-            }
-            composable(Screen.Commands.route) {
-                CommandsScreen(onBack = { navController.popBackStack() })
             }
             composable(Screen.Dashboard.route) {
                 DashboardScreen(onBack = { navController.popBackStack() })

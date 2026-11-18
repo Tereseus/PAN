@@ -14,7 +14,7 @@ import dev.pan.app.sensor.SensorContext
 import dev.pan.app.service.PanForegroundService
 import dev.pan.app.stt.GoogleStreamingStt
 import dev.pan.app.di.DeviceNameHolder
-import dev.pan.app.ui.commands.DeviceItem
+import dev.pan.app.network.DeviceItem
 import dev.pan.app.vpn.RemoteAccessManager
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*

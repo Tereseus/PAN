@@ -48,7 +48,6 @@ fun SettingsScreen(
     onBack: (() -> Unit)? = null,            // null = shown as a tab (0.5.1), so no back arrow
     mainViewModel: dev.pan.app.ui.main.MainViewModel? = null,
     onOpenDashboard: () -> Unit = {},
-    onOpenCommands: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
     val deviceName by viewModel.deviceName.collectAsState()
@@ -518,10 +517,9 @@ fun SettingsScreen(
                 onToggle = { developerMode = it; uiPrefs.edit().putBoolean("developer", it).apply() }
             )
             if (developerMode) {
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = onOpenDashboard, modifier = Modifier.weight(1f)) { Text("Dashboard") }
-                    OutlinedButton(onClick = onOpenCommands, modifier = Modifier.weight(1f)) { Text("Command log") }
-                }
+                OutlinedButton(onClick = onOpenDashboard, modifier = Modifier.fillMaxWidth()) { Text("Hub dashboard") }
+                Text("What is on your hub right now: devices, services and models, your dashboards, what each device captures, the documents, and the data it holds.",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
 
             HorizontalDivider()

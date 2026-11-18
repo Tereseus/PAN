@@ -12,7 +12,7 @@ import dev.pan.app.ai.MediaPipeLlm
 import dev.pan.app.data.DataRepository
 import dev.pan.app.network.PanServerApi
 import dev.pan.app.network.PanServerClient
-import dev.pan.app.ui.commands.DeviceItem
+import dev.pan.app.network.DeviceItem
 import dev.pan.app.update.UpdateChecker
 import dev.pan.app.util.Constants
 import dev.pan.app.vpn.RemoteAccessManager

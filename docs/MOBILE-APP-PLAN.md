@@ -133,6 +133,7 @@ from the 0.4 builds.
 - **0.5.7** (code 136): how long each reply took, under the line; tap for where the time went and
   what ΠAN thought was going on; the address is off Home's top line.
 - **0.5.8** (code 137): an "Interpreting" badge on Home; lines the phone translates itself get their time.
+- **0.5.29** (code 158, published on the hub Nov 18; rollback pair v157): the Command log is gone (a debug list of typed questions sent the old way, which Home already shows; its list could not scroll because the device cards above it took the whole screen). The other developer button is now "Hub dashboard" with a line saying what it is. Inside the app the hub's page drops its old typed chat with the project and session rows, and the empty Tasks and Projects tabs; Devices comes first.
 - **0.5.28** (code 157, published on the hub Nov 18; rollback pair v156): a conversation in People has the same box as Home (the words, the send arrow at their end, the microphone to the right), and Home's box has no X beside the send arrow any more (it could wipe what was typed; Back leaves typing when nothing is typed).
 - **0.5.27** (code 156, Nov 18): every device of a person notices when a call opens or closes on another of their devices, so the call strip shows there too.
 - **0.5.26** (code 155, published on the hub Nov 18; rollback pair v154): a call shows on every tab and rings as a notification with Answer and Not now; the conversation has the big microphone in the corner, a "Call" button and a line saying where your voice goes; "Don't take calls from <name>".

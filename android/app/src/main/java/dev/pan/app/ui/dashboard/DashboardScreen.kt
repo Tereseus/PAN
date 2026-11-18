@@ -39,6 +39,25 @@ import dev.pan.app.ui.settings.SettingsViewModel
 import java.io.ByteArrayOutputStream
 import java.io.File
 
+/** Run in the hub's page once it has loaded: hides the tabs the app has no use for. */
+private const val IN_APP_TRIM = """
+(function () {
+  if (document.getElementById('pan-in-app')) return;
+  var gone = ['chat', 'tasks', 'projects'];
+  var st = document.createElement('style');
+  st.id = 'pan-in-app';
+  var order = ['devices', 'services', 'dashboards', 'alerts', 'sensors', 'library', 'data', 'status', 'intuition', 'settings'];
+  st.textContent = gone.map(function (t) { return '.tab[data-tab="' + t + '"]'; }).join(',') + ',#topbar,#session-row{display:none !important}#tab-bar{top:0 !important}.content-spacer{height:40px !important}'
+    + order.map(function (t, i) { return '.tab[data-tab="' + t + '"]{order:' + (i + 1) + '}'; }).join('');
+  document.head.appendChild(st);
+  var on = document.querySelector('.tab.active');
+  if (!on || gone.indexOf(on.dataset.tab) >= 0) {
+    var first = document.querySelector('.tab[data-tab="devices"]');
+    if (first) first.click();
+  }
+})();
+"""
+
 @OptIn(ExperimentalMaterial3Api::class)
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
@@ -134,7 +153,7 @@ fun DashboardScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Π Dashboard") },
+                title = { Text("Hub dashboard") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
@@ -148,7 +167,7 @@ fun DashboardScreen(
                 modifier = Modifier.fillMaxSize().padding(padding),
                 contentAlignment = androidx.compose.ui.Alignment.Center
             ) {
-                Text("Waiting for Tailscale...", color = MaterialTheme.colorScheme.onSurface)
+                Text("Waiting for the hub...", color = MaterialTheme.colorScheme.onSurface)
             }
         } else {
             AndroidView(
@@ -168,7 +187,14 @@ fun DashboardScreen(
                         clearCache(true); clearHistory(); clearFormData()
 
                         webViewClient = object : WebViewClient() {
-                            override fun onPageFinished(view: WebView?, url: String?) { Log.w("PAN-DASH", "Loaded: $url") }
+                            override fun onPageFinished(view: WebView?, url: String?) {
+                                Log.w("PAN-DASH", "Loaded: $url")
+                                // Inside the app the page drops what the app does itself or what is empty:
+                                // its old typed chat with the project and session rows above it (Home is
+                                // the talk), Tasks and Projects (nothing in them). Devices comes first:
+                                // what is on the hub.
+                                view?.evaluateJavascript(IN_APP_TRIM, null)
+                            }
                             override fun onReceivedError(view: WebView?, req: WebResourceRequest?, err: WebResourceError?) { Log.e("PAN-DASH", "Error: ${err?.description} ${req?.url}") }
                         }
 
