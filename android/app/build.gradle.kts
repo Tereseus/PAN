@@ -14,8 +14,8 @@ android {
         applicationId = "dev.pan.app"
         minSdk = 31
         targetSdk = 34
-        versionCode = 143
-        versionName = "0.5.14"
+        versionCode = 144
+        versionName = "0.5.15"
         ndk {
             // Phones are arm64 â€” ship only that ABI. Drops the x86/x86_64/armeabi-v7a
             // copies of sherpa-onnx (Piper), onnxruntime, and gojni (Tailscale): ~100 MB.
@@ -113,8 +113,11 @@ dependencies {
     // API for running other models, so a general ONNX runner has to come from here.
     // No .so name clash: sherpa ships no separate libonnxruntime.so for arm64.
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.30.0")
-    // YAMNet music detection (stt/MusicDetector.kt). Apache 2.0, about 1 MB per ABI.
-    implementation("org.tensorflow:tensorflow-lite:2.16.1")
+    // YAMNet music detection (stt/MusicDetector.kt). Apache 2.0. LiteRT is TensorFlow Lite
+    // under its new name: same org.tensorflow.lite.Interpreter, same libtensorflowlite_jni.so.
+    // org.tensorflow:tensorflow-lite stops at 2.16.1, whose library is 4 KB aligned and fails
+    // Android's 16 KB page size check; LiteRT 1.4 is built 16 KB aligned.
+    implementation("com.google.ai.edge.litert:litert:1.4.2")
 
     // JVM unit tests: Kotlin Whisper features vs the Python reference, and the real
     // model through the desktop build of onnxruntime (same ai.onnxruntime API).
@@ -138,7 +141,15 @@ configurations.matching { it.name.endsWith("UnitTestRuntimeClasspath") }.configu
     exclude(group = "com.microsoft.onnxruntime", module = "onnxruntime-android")
 }
 
-// NDK for llama.cpp native code
+// Native libraries and 16 KB pages (Android 15 and later; Google Play requires it for apps
+// that target API 35 and up). Two things must hold:
+//  1. every .so has 16 KB aligned LOAD segments. Prebuilt ones must be versions built that
+//     way; our own are linked with -z max-page-size=16384 (pan-vpn/build-aar.sh,
+//     panmt/CMakeLists.txt) because NDK r27 still defaults to 4 KB.
+//  2. a .so stored uncompressed in the APK sits at a 16 KB offset. AGP 8.5.1 and later does
+//     that by itself.
+// useLegacyPackaging = true compresses the libraries, so 2 does not apply, and the APK the
+// hub hands out stays near 73 MB instead of about 125 MB. Either value passes the check.
 android.packaging {
     jniLibs {
         useLegacyPackaging = true

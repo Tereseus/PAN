@@ -92,7 +92,7 @@ No PAN account, no API keys, no Tailscale login. Everything runs on the person's
 - A plain WireGuard mode in `panvpn.aar`, with the same local proxy the app already uses, so the rest of the app barely changes. This mode needs no Android VPN, so no VPN consent dialog. Play Store rules restrict apps that use Android's VPN service, so check whether the current fake VPN (`PanVpnService.kt:71-79`) can go entirely. Done 2026-11-08 (0.4.98): it carried nothing (a dummy interface; tsnet keeps its own network stack), so the app's Tailscale now runs as a plain foreground service. That also gave the phone its IPv6 back, which the dummy had blocked for every app.
 - Remove the owner constants (`HubLocator.kt:52-61`, `PanVpnService.kt:204-205`, `Constants.kt:34`, `PanVpn.kt:26,174`, `ResistanceClient.kt:27`).
 - Mobile page (`service/public/mobile/index.html`): cut 13 tabs down to Talk, Memory, Devices and Settings, with the developer tabs behind a switch. Fix "+ Add Device": it asks for 24 hours, but the server reads `ttl_minutes`, so the code lasts 30 minutes.
-- A release signed build on the Play Store internal test track first.
+- A release signed build on the Play Store internal test track first. Play wants 16 KB page support for apps that target API 35 and up: the native libraries pass since app 0.5.15 (2026-11-18, see `android/app/build.gradle.kts`, the note above `android.packaging`). Still to do for Play: `targetSdk` is 34 and since 2026-08-31 Play takes new apps only at API 36 or higher.
 
 ### 5. Medallion setup mode
 

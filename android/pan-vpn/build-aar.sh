@@ -27,4 +27,8 @@ python -c "import json, sys; json.dump({'Replace': {sys.argv[1]: sys.argv[2]}}, 
 export GOFLAGS="-overlay=$(cygpath -w "$OVERLAY")"
 cd "$HERE"
 # -trimpath keeps this machine's folders out of the source file names in the library.
-gomobile bind -v -trimpath -target=android/arm64 -androidapi 26 -ldflags="-checklinkname=0" -o "${OUT:-../app/libs/panvpn.aar}" .
+# The -extldflags make libgojni.so's LOAD segments 16 KB aligned. Android 15 and later can run
+# with 16 KB pages and Google Play requires it; NDK r27's linker still defaults to 4 KB.
+gomobile bind -v -trimpath -target=android/arm64 -androidapi 26 \
+  -ldflags='-checklinkname=0 "-extldflags=-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384"' \
+  -o "${OUT:-../app/libs/panvpn.aar}" .
