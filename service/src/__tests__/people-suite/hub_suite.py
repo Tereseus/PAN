@@ -668,6 +668,30 @@ def main():
         tries = {"a call with nobody": call("POST", "/api/v1/people/talk", {"with": 99999}, device=zora["device"])[0], "a call with herself": call("POST", "/api/v1/people/talk", {"with": zora["id"]}, device=zora["device"])[0]}
         check("calls", "the app can open and close a call, and not with nobody", s == 200 and j.get("talk", {}).get("with") == 1 and j2.get("talk", {}).get("with") is None and all(v == 404 for v in tries.values()), (s, j, j2, tries))
         pending(OWNER, PHONE)
+        # What the owner's first real call showed (2026-11-18): "hang up" was heard inside one
+        # long line and did nothing, and a name came back from the speech model respelled.
+        turn("PAN, talk to Zora.", OWNER, headers=PHONE)
+        pending(zora["device"])
+        s, done, said = turn("Okay, I will go now. Hang up. Stop calling.", OWNER, headers=PHONE)
+        left = call("GET", "/api/v1/people", device=OWNER, headers=PHONE)[1].get("talk", {}).get("with")
+        check("calls", "\"hang up\" inside a longer line, without PAN's name, ends the call and is not passed on", (done or {}).get("intent") == "talk" and (done or {}).get("ended") is True
+              and "ended" in str((done or {}).get("response")) and pending(zora["device"])[1] == [] and left is None, (done, left))
+        s, done, said = turn("PAN, talk to Zora and tell her the oven is on.", OWNER, headers=PHONE)
+        got = pending(zora["device"])[1]
+        left = call("GET", "/api/v1/people", device=OWNER, headers=PHONE)[1].get("talk", {}).get("with")
+        check("calls", "\"talk to her and tell her\" sends the words and opens no call", (done or {}).get("intent") == "message" and got == ["%s says: the oven is on." % boss] and left is None, (done, got, left))
+        s, done, said = turn("PAN, send a message to Zorah and say the bus is late.", quill["device"])
+        got = pending(zora["device"])[1]
+        check("calls", "a name the speech model respelled still reaches the one person it sounds like", (done or {}).get("intent") == "message" and got == ["Quill says: the bus is late."], (done, got))
+        s, j = call("PUT", "/api/v1/people/names", {"names": ["Zee"]}, device=zora["device"])
+        tries = {"someone else's": call("PUT", "/api/v1/people/names", {"user": quill["id"], "names": ["Quilly"]}, device=zora["device"])[0],
+                 "a name another person goes by": call("PUT", "/api/v1/people/names", {"names": ["Quill"]}, device=zora["device"])[0]}
+        s2, done, said = turn("PAN, tell Zee I am home.", quill["device"])
+        got = pending(zora["device"])[1]
+        aka = [p.get("aka") for p in call("GET", "/api/v1/people", device=OWNER, headers=PHONE)[1].get("people", []) if p.get("id") == zora["id"]]
+        check("calls", "a person gives herself another name to go by, and a message by that name reaches her", s == 200 and j.get("names") == ["Zee"] and tries == {"someone else's": 403, "a name another person goes by": 409}
+              and got == ["Quill says: I am home."] and aka == [["Zee"]], (s, j, tries, got, aka))
+        call("PUT", "/api/v1/people/names", {"user": zora["id"], "names": []}, device=OWNER, headers=PHONE)
         # Read out, or shown only.
         s, j = call("PUT", "/api/v1/people/mode", {"mode": "show"}, device=zora["device"])
         call("POST", "/api/v1/people/messages", {"to": zora["id"], "body": "Back by nine."}, device=OWNER, headers=PHONE)
@@ -681,6 +705,31 @@ def main():
         check("calls", "the owner sets it for a child and locks it; nobody else can undo that", s == 200 and j.get("locked") is True and tries["the child, unlocking her own"] == 403 and mine == {"mode": "show", "locked": True}, (s, j, tries, mine))
         call("PUT", "/api/v1/people/mode", {"user": quill["id"], "mode": "speak", "locked": False}, device=OWNER, headers=PHONE)
         call("PUT", "/api/v1/people/mode", {"user": zora["id"], "mode": "speak", "locked": False}, device=OWNER, headers=PHONE)
+
+        # ── groups inside the organization ───────────────────────────────────────
+        s, j = call("POST", "/api/v1/people/groups", {"name": "Night shift"}, device=OWNER, headers=PHONE)
+        gid = (j.get("group") or {}).get("id")
+        s2, j2 = call("PUT", "/api/v1/people/groups/member", {"user": zora["id"], "group": gid}, device=OWNER, headers=PHONE)
+        seen = call("GET", "/api/v1/people", device=quill["device"])[1]
+        hers = [p.get("group") for p in seen.get("people", []) if p.get("id") == zora["id"]]
+        check("groups", "the owner makes a group and puts someone in it; everyone on the hub sees it", s == 200 and s2 == 200 and seen.get("groups") == [{"id": gid, "name": "Night shift"}]
+              and hers == [gid] and seen.get("me", {}).get("group") is None, (s, j, s2, j2, seen.get("groups"), hers))
+        tries = {"a person making one": call("POST", "/api/v1/people/groups", {"name": "Mine"}, device=zora["device"])[0],
+                 "a person moving someone": call("PUT", "/api/v1/people/groups/member", {"user": quill["id"], "group": gid}, device=zora["device"])[0],
+                 "a person renaming it": call("PUT", "/api/v1/people/groups/%s" % gid, {"name": "Mine"}, device=zora["device"])[0],
+                 "a person deleting it": call("DELETE", "/api/v1/people/groups/%s" % gid, device=zora["device"])[0]}
+        still = call("GET", "/api/v1/people", device=OWNER, headers=PHONE)[1].get("groups")
+        check("groups", "only the owner changes them", all(v in (403, 404) for v in tries.values()) and still == [{"id": gid, "name": "Night shift"}], (tries, still))
+        codes = {"the same name again": call("POST", "/api/v1/people/groups", {"name": "night SHIFT"}, device=OWNER, headers=PHONE)[0],
+                 "no name": call("POST", "/api/v1/people/groups", {"name": " "}, device=OWNER, headers=PHONE)[0],
+                 "nobody": call("PUT", "/api/v1/people/groups/member", {"user": 99999, "group": gid}, device=OWNER, headers=PHONE)[0],
+                 "no such group": call("PUT", "/api/v1/people/groups/member", {"user": zora["id"], "group": 99999}, device=OWNER, headers=PHONE)[0]}
+        s, j = call("PUT", "/api/v1/people/groups/%s" % gid, {"name": "Nights"}, device=OWNER, headers=PHONE)
+        s2, j2 = call("DELETE", "/api/v1/people/groups/%s" % gid, device=OWNER, headers=PHONE)
+        seen = call("GET", "/api/v1/people", device=OWNER, headers=PHONE)[1]
+        hers = [p.get("group") for p in seen.get("people", []) if p.get("id") == zora["id"]]
+        check("groups", "renamed, then deleted: the person stays on the hub, in no group", codes == {"the same name again": 409, "no name": 400, "nobody": 404, "no such group": 404}
+              and s == 200 and (j.get("group") or {}).get("name") == "Nights" and s2 == 200 and seen.get("groups") == [] and hers == [None], (codes, s, j, s2, seen.get("groups"), hers))
 
         # ── people met: someone with their own ΠAN whose code was scanned ────────
         key_a, key_b = "A" * 120, "B" * 120

@@ -17,8 +17,9 @@ import { plainLook, spokenLook } from '../camera-ask.js';
 import { noteSaid, dropOwnTail } from '../own-tail.js';
 import { scopeFor, may, refusal } from '../people.js';
 import { addNote, takeNotesFor, noteSender, maySpeakNow, noteOwnerSpokeOn, notesDevices, SPEAK_PER_MINUTE } from '../phone-notes.js';
-import { takeMessagesFor, peopleFor, conversation, sendMessage, peopleHere, ownerMayRead, talkLine, talkFast, talkState, startTalk, endTalk, messageMode, setMessageMode } from '../person-messages.js';
+import { takeMessagesFor, peopleFor, conversation, sendMessage, peopleHere, ownerMayRead, talkLine, talkFast, talkState, startTalk, endTalk, messageMode, setMessageMode, setNicknames } from '../person-messages.js';
 import { recordMet, metFor, forgetMet } from '../met-people.js';
+import { groupsHere, addGroup, renameGroup, removeGroup, moveToGroup } from '../people-groups.js';
 import { linkDevice } from '../pan-link-auth.js';
 import { getDataDir as notesDataDir } from '../platform.js';
 
@@ -978,13 +979,16 @@ router.get('/people', (req, res) => {
   }
   const self = peopleHere().find((p) => p.id === me);
   const canSend = !person || may(person, 'messages');
-  const people = canSend ? peopleFor(me) : [];
+  // The groups inside the organization (people-groups.js), and which one each person is in.
+  const groups = groupsHere();
+  const groupOfUser = new Map(groups.flatMap((g) => g.members.map((u) => [u, g.id])));
+  const people = (canSend ? peopleFor(me) : []).map((p) => ({ ...p, group: groupOfUser.get(p.id) ?? null }));
   const owner = peopleHere().find((p) => p.id === 1);
   // group: what the owner calls the people on this hub ("Family", a company's name); '' until named.
   let group = '';
   try { group = String(get("SELECT value FROM settings WHERE key = 'people_group_name'")?.value || '').replace(/^"|"$/g, '').trim().slice(0, 30); } catch {}
-  res.json({ ok: true, group, can_meet: !person || may(person, 'meet'), talk: talkState(me),
-    me: { id: me, name: self?.name || '', role: self?.role || (person ? person.role : 'owner'), owner: !person, messages: messageMode(me),
+  res.json({ ok: true, group, groups: groups.map((g) => ({ id: g.id, name: g.name })), can_meet: !person || may(person, 'meet'), talk: talkState(me),
+    me: { id: me, name: self?.name || '', role: self?.role || (person ? person.role : 'owner'), owner: !person, messages: messageMode(me), group: groupOfUser.get(me) ?? null,
       read_by: person && ownerMayRead(me) ? (owner?.first || 'the owner') : null },
     can_send: canSend, people, unread: people.reduce((n, p) => n + p.unread, 0) });
 });
@@ -1026,6 +1030,47 @@ router.put('/people/mode', (req, res) => {
   const set = setMessageMode(user, { mode: req.body?.mode, locked: person ? undefined : req.body?.locked }, person);
   if (!set.ok) return res.status(set.reason === 'locked' || set.reason === 'not_yours' ? 403 : set.reason === 'nobody' ? 404 : 400).json({ ok: false, error: set.reason });
   res.json({ ok: true, user, mode: set.mode, locked: set.locked });
+});
+// Groups inside the organization: the owner makes, names, deletes and fills them. Everyone
+// sees them in GET /people. A person's device cannot reach these (they are not in PERSON_ALLOW).
+const groupRefused = (reason) => (reason === 'group' || reason === 'nobody' ? 404 : reason === 'taken' ? 409 : 400);
+const ownerOnly = (req, res) => {
+  if (!req.user?.person) return true;
+  res.status(403).json({ ok: false, error: 'Only whoever set up this ΠAN changes its groups.' });
+  return false;
+};
+router.post('/people/groups', (req, res) => {
+  if (!ownerOnly(req, res)) return;
+  const made = addGroup(req.body?.name);
+  if (!made.ok) return res.status(groupRefused(made.reason)).json({ ok: false, error: made.reason });
+  res.json({ ok: true, group: made.group });
+});
+router.put('/people/groups/member', (req, res) => {
+  if (!ownerOnly(req, res)) return;
+  const moved = moveToGroup(Number(req.body?.user), req.body?.group ?? null);
+  if (!moved.ok) return res.status(groupRefused(moved.reason)).json({ ok: false, error: moved.reason });
+  res.json({ ok: true, user: Number(req.body?.user), group: moved.group });
+});
+router.put('/people/groups/:id', (req, res) => {
+  if (!ownerOnly(req, res)) return;
+  const named = renameGroup(Number(req.params.id), req.body?.name);
+  if (!named.ok) return res.status(groupRefused(named.reason)).json({ ok: false, error: named.reason });
+  res.json({ ok: true, group: named.group });
+});
+router.delete('/people/groups/:id', (req, res) => {
+  if (!ownerOnly(req, res)) return;
+  const gone = removeGroup(Number(req.params.id));
+  if (!gone.ok) return res.status(groupRefused(gone.reason)).json({ ok: false, error: gone.reason });
+  res.json({ ok: true });
+});
+// Other names a person goes by, for a name the speech model cannot spell: { user?, names: [] }.
+// A person sets their own; the owner sets anyone's.
+router.put('/people/names', (req, res) => {
+  const person = req.user?.person ? req.user : null;
+  const user = person ? Number(req.body?.user) || Number(person.id) : Number(req.body?.user) || 1;
+  const set = setNicknames(user, req.body?.names, person);
+  if (!set.ok) return res.status(set.reason === 'not_yours' ? 403 : set.reason === 'nobody' ? 404 : set.reason === 'taken' ? 409 : 400).json({ ok: false, error: set.reason });
+  res.json({ ok: true, user, names: set.names });
 });
 // A call, opened or closed from the app (the same thing as "PAN, talk to Maria" and "PAN, hang up").
 router.post('/people/talk', (req, res) => {
@@ -1989,6 +2034,26 @@ router.post('/query/stream', async (req, res) => {
       if (who.likeness !== null) console.log(`[voice-id] likeness ${who.likeness.toFixed(2)} -> ${who.verdict === undefined ? 'unsure' : who.verdict ? 'his voice' : 'someone else'} (gate ${voice.gateMode()})`);
     } catch (e) { console.warn('[voice-id] skipped:', e.message); voice = null; }
   }
+  // Two ΠANs listening in one room (the owner, 2026-11-18: his own phone and another person's,
+  // both unmuted, and the other one took his lines as that person's). A line on a person's
+  // device that is clearly the owner's voice is the owner's: said to his own ΠAN or to the
+  // room, never this person's words. It is dropped before transcription. Only "clearly": an
+  // unsure score is kept, so a person is not ignored by their own ΠAN.
+  if (audio && !bench && person) {
+    try {
+      const v = await import('../voice-id.js');
+      const who = v.whoseVoice(v.voicePrint(audio));
+      if (who.likeness !== null) console.log(`[voice-id] on person ${person.id}'s device: likeness to the owner ${who.likeness.toFixed(2)} -> ${who.verdict === true ? 'the owner talking, not theirs: dropped' : 'kept'}`);
+      if (who.verdict === true) {
+        recordTiming({ turn: turnId, stage: 'owner_voice_on_person_device', ms: Date.now() - turnStart });
+        send({ type: 'done', result: { intent: 'ambient', response: '', reason: 'owner_voice' } });
+        clearInterval(keepaliveInterval);
+        if (streamControllers.get(streamKey)?.controller === controller) clearStream(streamKey);
+        if (!res.writableEnded) res.end();
+        return;
+      }
+    } catch (e) { console.warn('[voice-id] person device check skipped:', e.message); }
+  }
   // PAN's own voice coming back through the mic (voice-id.js, Nov 15): drop the turn before
   // transcription, unless it is clearly his voice too (he talked over PAN).
   if (voice && voicePrintNow) {
@@ -2055,7 +2120,10 @@ router.post('/query/stream', async (req, res) => {
     catch (e) { console.warn('[/query/stream] call line:', e.message); }
     if (passed) {
       recordTiming({ turn: turnId, stage: 'call_line', ms: Date.now() - turnStart });
-      send({ type: 'done', result: { intent: 'talk', response: '', talk_with: passed.to, sent: passed.sent, reason: passed.reason } });
+      // "Hang up" inside the call: it is over, and that is said back.
+      const over = passed.ended ? `Call with ${passed.name || 'them'} ended.` : '';
+      if (over) send({ type: 'chunk', text: over });
+      send({ type: 'done', result: { intent: 'talk', response: over, talk_with: passed.to, sent: passed.sent, reason: passed.reason, ended: !!passed.ended, addressed: passed.ended ? 1 : undefined } });
       clearInterval(keepaliveInterval);
       if (streamControllers.get(streamKey)?.controller === controller) clearStream(streamKey);
       if (!res.writableEnded) res.end();

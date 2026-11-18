@@ -23,6 +23,7 @@ change to `people.js`, `routes/link.js`, the person branch of `server.js`, `rout
 | unit | `../notes-sender.test.js` | A note's sender is the PAN Link device, not what the note says; six spoken notes a minute per device; a note goes to the device of the person it is for (pinned device, the device he last talked on, the asker of a thread, what happens when that device is away, expiry). |
 | unit | `../person-messages.test.js` | What counts as a message to someone on the hub and what does not; whose device says it; a person to the owner and to another person; who may send; a device that is off; six a minute. Kept in the database: a restart loses nothing; one device says it, once; the conversation both people see and nobody else; what is too old to read out; pages. Two people with one first name: ΠAN asks which, and the whole name or the rest of it answers. The owner may read a child's and nobody else's, and looking opens nothing. |
 | unit | `../met-people.test.js` | A meeting is kept and the same key is the same person; each person's own list; a stranger's name as plain text; a bad code; forgetting only one's own; 500 at most. |
+| unit | `../people-groups.test.js` | A group is a name; a person is in one group or none; renaming; deleting leaves the people; thirty at most. |
 | unit | `../thread-people.test.js` | Whose a relay host is; which threads the owner and each person can reach; the owner's own thread first; what one person heard or asked never reaches another; a job is taken only by the computer that holds its host; handing over, taking back, removing. |
 | link | `pan-link/allow_test.go` | PAN Link's own wall (runs when Go is installed). |
 | hub | `hub_suite.py` | A dev hub with its own port and database and a stand-in for PAN Link's admin. Five people (child, guest, adult, manager, admin), each with a paired device, plus the owner's two devices, a device whose person was removed and a device nobody knows. |
@@ -71,6 +72,12 @@ The hub part, by group:
   goes to her and ΠAN says nothing; nothing she says is passed on until she answers; then her
   words reach him alone, without her name; hanging up ends it for both; the app's own open and
   close; a person chooses shown only; the owner sets and locks it for a child.
+- **calls, after the owner's first real call**: "hang up" inside a longer line and without
+  ΠAN's name ends the call and is not passed on; "talk to her and tell her" sends the words and
+  opens no call; a name the speech model respelled reaches the one person it sounds like; a
+  person gives herself another name and a message by it reaches her.
+- **groups**: the owner makes a group and puts someone in it and everyone sees it; only the
+  owner changes them; renamed, then deleted, the person stays on the hub in no group.
 - **met**: an adult adds someone she met and only her list has it; a child cannot unless the
   owner opens it; the owner's record of the same person is his own; a code with no name or a
   bad key is refused; nobody forgets another person's record.

@@ -25,6 +25,7 @@ function clear() {
   pm.resetAsked();
   pm.resetTalks();
   run(`DELETE FROM settings WHERE key = 'people_message_mode'`);
+  run(`DELETE FROM settings WHERE key = 'people_nicknames'`);
   pm.ensureMessagesSchema();
   run(`DELETE FROM person_messages`);
 }
@@ -296,7 +297,7 @@ test('in a call: what is PAN\'s, someone else\'s voice, and his own loudspeaker 
   pm.startTalk(null, mia.id);
   pm.startTalk(mia, 1);
   take(MIA_PHONE, Date.now()); take(OWNER_PHONE, Date.now());
-  ok(pm.talkLine('PAN, what time is it?', {}) === null && pm.talkLine('Hey Pan hang up', {}) === null, 'a line for PAN went to her');
+  ok(pm.talkLine('PAN, what time is it?', {}) === null && pm.talkLine('PAN, how long is this call?', {}) === null, 'a line for PAN went to her');
   ok(pm.talkLine('And now the weather for tonight', { wearer: false }) === null, 'another voice in his room went out as his');
   ok(pm.talkLine('  ...  ', {}) === null, 'a line of nothing');
   pm.talkLine('Bring the blue folder from my desk', { person: mia });
@@ -347,6 +348,101 @@ test('read out or shown only: a person chooses, the owner can set it for anyone 
   ok(pm.setMessageMode(kit.id, { mode: 'speak', locked: false }).ok && pm.setMessageMode(kit.id, { mode: 'show' }, kit).ok, 'unlocked, it is the child\'s again');
   ok(pm.setMessageMode(1, { mode: 'show', locked: true }).locked === false && pm.setMessageMode(9999, { mode: 'show' }).reason === 'nobody', 'the owner\'s own is never locked');
   ok(pm.peopleFor(1).find((p) => p.id === kit.id).messages.mode === 'show' && pm.peopleFor(mia.id)[0].messages === undefined, 'only the owner sees how it is set for others');
+});
+
+test('more ways to say it: a voice message, "and say", "talk to her and tell her", "say ... to"', () => {
+  const cases = [
+    ['PAN, send Mia a voice message that says the keys are on the table.', 'says', 'the keys are on the table.'],
+    ['Send Mia a message or voice message that says the keys are on the table', 'says', 'the keys are on the table'],
+    ['Hey PAN, send a message to Mia and say the keys are on the table.', 'says', 'the keys are on the table.'],
+    ['Send a text message to Mia saying I am outside', 'says', 'I am outside'],
+    ['PAN, talk to Mia and tell her the oven is on.', 'says', 'the oven is on.'],
+    ['Call Mia and say the oven is on', 'says', 'the oven is on'],
+    ['PAN, call Mia and ask her when she is home', 'asks', 'when she is home'],
+    ['PAN, say good night to Mia.', 'says', 'good night'],
+    // ΠAN's name as the speech model sometimes writes it.
+    ['Uh parent tell Mia the oven is on.', 'says', 'the oven is on.'],
+    ['Oh, pand, tell Mia the oven is on', 'says', 'the oven is on'],
+  ];
+  for (const [said, kind, body] of cases) {
+    const m = p(said);
+    ok(m && m.to?.id === mia.id && m.kind === kind && m.body === body, `${said} -> ${J(m)}`);
+  }
+  ok(p('A pan called Mia.')?.talk === 'start' && p('A pan called Mia.').to.id === mia.id, 'a call, heard in the past tense');
+  // "Talk to Mia and tell her" sends the words; it opens no call.
+  ok(pm.messageTurn('PAN, talk to Mia and tell her the oven is on.', { addressed: true }).intent === 'message' && pm.talkState(1).with === null, 'a message opened a call');
+  for (const said of ['Say hello to everyone.', 'Tell them the truth.', 'Say something to cheer me up.', 'Call home.', 'Say it to the dog.', 'Send a message to the team saying we are late.']) {
+    ok(p(said) === null, `${said} -> ${J(p(said))}`);
+  }
+});
+
+test('a name the speech model spelled its own way: the one person it sounds like, never a guess between two', () => {
+  const theron = addUser('Theron Test', 'user', 25);
+  try {
+    for (const said of ['Tell Tharon the bus is late.', 'PAN, tell Therin the bus is late', 'Send a message to Tharun and say the bus is late', 'Tell Theron the bus is late']) {
+      const m = p(said);
+      ok(m && m.to?.id === theron && /the bus is late/.test(m.body), `${said} -> ${J(m)}`);
+    }
+    ok(p('PAN, call Tharon.')?.to?.id === theron, 'a call by a near name');
+    const told = pm.messageTurn('PAN, tell Tharon the bus is late.', { addressed: true });
+    ok(/Theron/.test(told.response) && told.message_to === theron, `the reply does not say who got it: ${told.response}`);
+    // From Theron to the owner, whose name came back respelled.
+    const theronP = { id: theron, role: 'user', power: 25, person: true };
+    ok(p('Send a message to Alix and say hello.', theronP)?.to?.id === 1, 'the owner by a near name');
+    // Not near enough, a word that is nobody, and her own name.
+    for (const said of ['Tell Thomas the bus is late.', 'Tell Theresa the bus is late.', 'Tell Claude the bus is late.', "Tell Tharon's mother the bus is late."]) {
+      ok(p(said) === null, `${said} -> ${J(p(said))}`);
+    }
+    // Two people it could be: nobody.
+    const theran = addUser('Tharen Test', 'user', 25);
+    ok(p('Tell Tharon the bus is late.') === null, 'a guess between two people');
+    ok(p('Tell Tharen the bus is late.')?.to?.id === theran, 'the exact name still works');
+    run(`UPDATE users SET is_active = 0 WHERE id = :i`, { ':i': theran });
+  } finally { run(`UPDATE users SET is_active = 0 WHERE id = :i`, { ':i': theron }); }
+});
+
+test('other names a person goes by: the owner sets anyone\'s, a person their own', () => {
+  ok(p('Tell Mimi the bus is late.') === null, 'before');
+  const set = pm.setNicknames(mia.id, ['Mimi', ' mimi ', 'Em Tee']);
+  ok(set.ok && set.names.length === 2 && set.names[0] === 'Mimi' && set.names[1] === 'Em Tee', J(set));
+  ok(p('Tell Mimi the bus is late.')?.to?.id === mia.id && p('PAN, call Em Tee.')?.to?.id === mia.id && p('Ask em-tee if she is home')?.to?.id === mia.id, 'the other names');
+  ok(p('Tell Mia the bus is late.')?.to?.id === mia.id, 'her own name still works');
+  ok(pm.peopleFor(1).find((x) => x.id === mia.id).aka.join() === 'Mimi,Em Tee', 'the app is not told');
+  ok(pm.setNicknames(mia.id, ['Mi'], mia).ok && pm.setNicknames(mia.id, ['Mi'], kit).reason === 'not_yours', 'her own, and not someone else\'s');
+  ok(pm.setNicknames(mia.id, ['Kit']).reason === 'taken' && pm.setNicknames(kit.id, ['mi']).reason === 'taken' && pm.setNicknames(mia.id, ['Alex']).reason === 'taken', 'a name someone else goes by');
+  ok(pm.setNicknames(mia.id, ['a', 'b', 'c', 'd', 'e']).reason === 'names' && pm.setNicknames(mia.id, ['x']).reason === 'names' && pm.setNicknames(mia.id, ['everyone']).reason === 'names'
+    && pm.setNicknames(mia.id, 'Mimi').reason === 'names' && pm.setNicknames(9999, ['Mimi']).reason === 'nobody', 'what is not a name');
+  ok(pm.setNicknames(mia.id, []).ok && p('Tell Mi the bus is late.') === null && pm.peopleFor(1).find((x) => x.id === mia.id).aka.length === 0, 'removed');
+});
+
+test('hang up inside a longer line, without the name, and a line that grew', () => {
+  const open = () => { pm.resetTalks(); pm.startTalk(null, mia.id); pm.startTalk(mia, 1); take(MIA_PHONE, Date.now()); take(OWNER_PHONE, Date.now()); };
+  open();
+  // The device heard him go on and sent the line again with more at the end: only the end goes on.
+  const t = Date.now();
+  ok(pm.talkLine('Is the door locked?', {}, t).sent === true, 'the first line');
+  ok(pm.talkLine('Is the door locked? And the windows too.', {}, t + 2000).sent === true, 'the grown line');
+  const again = pm.talkLine('Is the door locked? And the windows too.', {}, t + 3000);
+  ok(again.sent === false && again.reason === 'again', J(again));
+  ok(bodies(take(MIA_PHONE, t + 4000)) === 'Is the door locked? | And the windows too.', 'the start went twice');
+  ok(pm.talkLine('Do not hang up yet, I am still looking', {}, t + 30_000).sent === true, 'talk about hanging up ended the call');
+  take(MIA_PHONE, t + 31_000);
+  // One sentence that is only "hang up", with or without the name, ends it and is not passed on.
+  const end = pm.talkLine('Right, that is all for now. Hang up. Han, hang up. PAN, end the call.', {}, t + 40_000);
+  ok(end && end.ended === true && end.sent === false && end.name === 'Mia', J(end));
+  ok(bodies(take(MIA_PHONE, t + 41_000)) === 'Alex ended the call.' && pm.talkState(1).with === null && pm.talkState(mia.id).with === null, 'the call is still open, or the words went on');
+  for (const said of ['Hang up.', 'okay hang up', 'Stop calling.', 'End the call please', 'Hang up, PAN.']) {
+    open();
+    ok(pm.talkLine(said, { person: mia })?.ended === true && pm.talkState(1).with === null, `${said} did not end it`);
+  }
+  // Someone else's voice in the room does not end his call.
+  open();
+  ok(pm.talkLine('Hang up.', { wearer: false }) === null && pm.talkState(1).with === mia.id, 'another voice ended his call');
+  // Through the router's way in, in a call: the name anywhere, one sentence is enough.
+  ok(pm.messageTurn('Right, that is all. PAN, hang up. End the call.', { addressed: true }).response === 'Call with Mia ended.', 'the long line said to PAN');
+  // Not in a call, a line that only holds the words is nothing.
+  ok(p('I told him to hang up. Then he left.') === null && p('PAN, hang up.')?.talk === 'end', 'out of a call');
+  ok(pm.saysHangUp('Hang, hang up') === false && pm.saysHangUp('We should hang up the coats') === false, 'not the command');
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

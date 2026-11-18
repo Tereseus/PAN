@@ -28,7 +28,14 @@ data class PersonLine(
     val unread: Int, val devices: List<String>,
     /** The owner's view: how this person's messages reach them, and whether he locked that. */
     val mode: String = "speak", val locked: Boolean = false,
+    /** Other names they go by, for a name ΠAN mishears. */
+    val aka: List<String> = emptyList(),
+    /** The group they are in inside the organization; 0: none. */
+    val group: Int = 0,
 )
+
+/** A group inside the organization on this ΠAN ("Kids", "Night shift"). */
+data class GroupLine(val id: Int, val name: String)
 
 /** Someone with their own ΠAN whose code this person scanned. */
 data class MetLine(val id: Long, val name: String, val firstAt: Long, val lastAt: Long, val times: Int)
@@ -64,6 +71,9 @@ class PeopleViewModel @Inject constructor(
     /** What the owner calls the people on this hub ("Family", a company's name). Empty until named. */
     private val _group = MutableStateFlow("")
     val group: StateFlow<String> = _group
+    /** The groups inside it, as the owner made them. */
+    private val _groups = MutableStateFlow<List<GroupLine>>(emptyList())
+    val groups: StateFlow<List<GroupLine>> = _groups
     private val _myName = MutableStateFlow("")
     val myName: StateFlow<String> = _myName
     /** May this person add people they meet (the hub's `meet` limit). */
@@ -142,6 +152,8 @@ class PeopleViewModel @Inject constructor(
                 unread = p.optInt("unread"), devices = if (withDevices) devices[p.optInt("id")] ?: emptyList() else emptyList(),
                 mode = if (p.optJSONObject("messages")?.optString("mode") == "show") "show" else "speak",
                 locked = p.optJSONObject("messages")?.optBoolean("locked") == true,
+                aka = p.optJSONArray("aka")?.let { a -> (0 until a.length()).map { a.optString(it) }.filter { it.isNotBlank() } } ?: emptyList(),
+                group = if (p.isNull("group")) 0 else p.optInt("group"),
             ))
         }
         return out
@@ -185,6 +197,59 @@ class PeopleViewModel @Inject constructor(
         viewModelScope.launch {
             val r = hub("PUT", "/api/v1/settings", JSONObject().put("people_group_name", name.trim().take(30)))
             if (r == null || r.first != 200) _message.value = "ΠAN could not change that right now."
+            load(withDevices = false)
+        }
+    }
+
+    private fun why(r: Pair<Int, JSONObject>?, otherwise: String) = when (r?.second?.optString("error")) {
+        "taken" -> "That name is already used."
+        "name", "names" -> "That name will not work. Use letters, and keep it short."
+        "too_many" -> "That is as many groups as ΠAN keeps."
+        else -> otherwise
+    }
+
+    /** The owner makes a group, and can put someone in it at once. */
+    fun addGroup(name: String, thenMove: Int? = null) {
+        viewModelScope.launch {
+            val r = hub("POST", "/api/v1/people/groups", JSONObject().put("name", name.trim().take(30)))
+            val id = r?.takeIf { it.first == 200 }?.second?.optJSONObject("group")?.optInt("id") ?: 0
+            if (id == 0) _message.value = why(r, "ΠAN could not make that group right now.")
+            else if (thenMove != null) hub("PUT", "/api/v1/people/groups/member", JSONObject().put("user", thenMove).put("group", id))
+            load(withDevices = false)
+        }
+    }
+
+    fun renameGroup(id: Int, name: String) {
+        viewModelScope.launch {
+            val r = hub("PUT", "/api/v1/people/groups/$id", JSONObject().put("name", name.trim().take(30)))
+            if (r == null || r.first != 200) _message.value = why(r, "ΠAN could not rename that group right now.")
+            load(withDevices = false)
+        }
+    }
+
+    /** The group goes; its people stay, in no group. */
+    fun removeGroup(id: Int) {
+        viewModelScope.launch {
+            val r = hub("DELETE", "/api/v1/people/groups/$id")
+            _message.value = if (r == null || r.first != 200) "ΠAN could not delete that group right now." else "Group deleted. Its people are still here."
+            load(withDevices = false)
+        }
+    }
+
+    /** Put a person in a group, or in none (group 0). */
+    fun moveTo(personId: Int, group: Int) {
+        viewModelScope.launch {
+            val r = hub("PUT", "/api/v1/people/groups/member", JSONObject().put("user", personId).put("group", if (group == 0) JSONObject.NULL else group))
+            if (r == null || r.first != 200) _message.value = "ΠAN could not move them right now."
+            load(withDevices = false)
+        }
+    }
+
+    /** Other names a person goes by, for a name ΠAN mishears. */
+    fun setNames(personId: Int, names: List<String>) {
+        viewModelScope.launch {
+            val r = hub("PUT", "/api/v1/people/names", JSONObject().put("user", personId).put("names", org.json.JSONArray(names)))
+            if (r == null || r.first != 200) _message.value = why(r, "ΠAN could not save those names right now.")
             load(withDevices = false)
         }
     }
@@ -262,6 +327,9 @@ class PeopleViewModel @Inject constructor(
         _canSend.value = r.second.optBoolean("can_send", true)
         _readBy.value = r.second.optJSONObject("me")?.optString("read_by")?.takeIf { it.isNotBlank() && it != "null" }
         _group.value = r.second.optString("group")
+        _groups.value = r.second.optJSONArray("groups")?.let { a ->
+            (0 until a.length()).mapNotNull { a.optJSONObject(it) }.map { GroupLine(it.optInt("id"), it.optString("name")) }
+        } ?: emptyList()
         _myName.value = r.second.optJSONObject("me")?.optString("name").orEmpty()
         _canMeet.value = r.second.optBoolean("can_meet", false)
         readTalk(r.second.optJSONObject("talk"))

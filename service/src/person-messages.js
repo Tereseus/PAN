@@ -26,6 +26,13 @@
 //     and lock it; a locked choice is not the person's to change.
 //   - The owner can read a child's conversations (the owner's call, 2026-11-18): only a person
 //     whose role is child, only the owner, and the child's own People tab says so.
+//   - Names as they are heard (the owner's own test, 2026-11-18: a name came back from the
+//     speech model spelled another way and nothing was sent). A name that is not anyone's but
+//     sounds like exactly one person here is taken as that person, and the reply says who got
+//     it. A person can also be given other names to go by (people_nicknames): the owner sets
+//     them for anyone, a person for themselves.
+//   - "Hang up" inside a longer line ends a call too ("Right. Hang up. PAN, end the call."), and in
+//     a call it needs no name: a sentence that is only that is never words for the other person.
 //   - A person needs the `messages` limit (people.js). The owner always may.
 //   - One sender, six messages a minute.
 //
@@ -74,12 +81,91 @@ export function peopleHere() {
   try { rows = all(`SELECT id, display_name, role FROM users WHERE is_active = 1 ORDER BY id`); } catch {}
   let ownerName = '';
   try { ownerName = String(get(`SELECT value FROM settings WHERE key = 'display_name'`)?.value || '').replace(/^"|"$/g, '').trim(); } catch {}
+  const nick = nicknames();
   return rows.map((r) => {
     const name = Number(r.id) === OWNER_ID && ownerName ? ownerName : String(r.display_name || '');
     const first = firstWord(name);
     const whole = name.trim().replace(/\s+/g, ' ');
-    return { id: Number(r.id), name: whole, first, key: key(first), full: key(whole), rest: key(whole.slice(first.length)), role: r.role };
+    const aka = Array.isArray(nick[String(Number(r.id))]) ? nick[String(Number(r.id))].map(String) : [];
+    return { id: Number(r.id), name: whole, first, key: key(first), full: key(whole), rest: key(whole.slice(first.length)), role: r.role, aka, also: aka.map(key) };
   }).filter((p) => p.key.length >= 2);
+}
+
+// ── Other names a person goes by ───────────────────────────────────────────────────────────
+// The setting people_nicknames: { "<user id>": ["Mimi", ...] }. For a name the speech model
+// cannot spell, or one nobody says in full.
+const MAX_NICKNAMES = 4;
+function nicknames() {
+  try { return JSON.parse(get(`SELECT value FROM settings WHERE key = 'people_nicknames'`)?.value || '{}') || {}; } catch { return {}; }
+}
+
+/**
+ * Set the other names [userId] goes by (an empty list removes them). by: who is asking (null:
+ * the owner). A person sets their own; the owner sets anyone's. A name someone else here
+ * already goes by is refused. -> { ok, names } | { ok: false, reason }
+ */
+export function setNicknames(userId, names, by = null) {
+  const uid = Number(userId);
+  const here = peopleHere();
+  if (!here.some((p) => p.id === uid)) return { ok: false, reason: 'nobody' };
+  if (by && Number(by.id) !== uid) return { ok: false, reason: 'not_yours' };
+  if (!Array.isArray(names) || names.length > MAX_NICKNAMES) return { ok: false, reason: 'names' };
+  const clean = [];
+  for (const n of names) {
+    const name = String(n ?? '').replace(/[^\p{L}\p{N}\s'’-]/gu, '').trim().replace(/\s+/g, ' ');
+    const k = key(name);
+    if (k.length < 2 || name.length > 24 || name.split(' ').length > 2) return { ok: false, reason: 'names' };
+    if (NOT_A_NAME.has(k)) return { ok: false, reason: 'names' };
+    if (here.some((p) => p.id !== uid && (p.key === k || p.full === k || p.also.includes(k)))) return { ok: false, reason: 'taken' };
+    if (!clean.some((c) => key(c) === k)) clean.push(name);
+  }
+  const all_ = nicknames();
+  if (clean.length) all_[String(uid)] = clean; else delete all_[String(uid)];
+  const value = JSON.stringify(all_);
+  run(`INSERT INTO settings (key, value) VALUES ('people_nicknames', :v) ON CONFLICT(key) DO UPDATE SET value = :v`, { ':v': value });
+  return { ok: true, names: clean };
+}
+
+// Words that stand where a name would and are nobody's name.
+const NOT_A_NAME = new Set(['me', 'him', 'her', 'them', 'us', 'you', 'everyone', 'everybody', 'someone', 'somebody', 'anyone',
+  'anybody', 'nobody', 'that', 'this', 'the', 'what', 'who', 'all', 'pan', 'pam', 'claude', 'siri', 'alexa', 'google']);
+
+function distance(a, b) {
+  let row = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const next = [i];
+    for (let j = 1; j <= b.length; j++) next[j] = Math.min(row[j] + 1, next[j - 1] + 1, row[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    row = next;
+  }
+  return row[b.length];
+}
+// The consonants of a name, in order: what is left when a speech model respells it.
+const skeleton = (k) => k.replace(/[aeiouy]/g, '').replace(/(.)\1+/g, '$1');
+/** Two spellings of what is probably one name: a letter off, or the same consonants. */
+function soundsLike(a, b) {
+  if (a === b) return true;
+  const short = Math.min(a.length, b.length);
+  const d = distance(a, b);
+  if ((short >= 4 && d <= 1) || (short >= 7 && d <= 2)) return true;
+  const sa = skeleton(a);
+  return a[0] === b[0] && sa.length >= 3 && sa === skeleton(b) && Math.abs(a.length - b.length) <= 2;
+}
+
+/**
+ * Who a spoken name is, among [others]: the whole name, the first name, or a name they also
+ * go by. loose: when it is nobody's, the one person whose name it sounds like (never a guess
+ * between two).
+ */
+function who(word, others, { loose = false } = {}) {
+  const k = key(word);
+  if (!k) return [];
+  const whole = others.filter((p) => p.full === k);
+  if (whole.length) return whole;
+  const named = others.filter((p) => p.key === k || p.also.includes(k));
+  if (named.length || !loose) return named;
+  if (k.length < 3 || NOT_A_NAME.has(k)) return [];
+  const near = others.filter((p) => [p.key, ...p.also].some((n) => soundsLike(k, n)));
+  return near.length === 1 ? near : [];
 }
 
 // "Which Maria?" asked of a sender, waiting for the answer: sender id -> { kind, body, among, at }.
@@ -95,7 +181,14 @@ function answerToWhich(said, senderId, now) {
   return q.body.replace(/[^\p{L}\p{N}]/gu, '') ? { to: hit[0], kind: q.kind, body: q.body } : { to: hit[0], empty: true };
 }
 
-const LEAD = String.raw`^(?:(?:hey|hi|ok|okay|yo)[,\s]+)?(?:(?:pan|pam)[,.!\s]+)?(?:(?:can|could|would|will)\s+you\s+)?(?:please\s+)?`;
+// ΠAN's name as the speech model writes it, and the small words a line starts with.
+const WAKE = String.raw`(?:pan|pam|pann|pand|pahn|han|parent)`;
+const LEAD = String.raw`^(?:(?:hey|hi|ok|okay|yo|oh|uh|um|a)[,\s]+)*(?:${WAKE}[,.!\s]+)?(?:(?:can|could|would|will)\s+you\s+)?(?:please\s+)?`;
+const HANG_UP = new RegExp(String.raw`${LEAD}(?:hang\s+up|(?:end|stop|close)\s+(?:the\s+|this\s+|my\s+)?(?:call|talk)|stop\s+calling)(?:\s+(?:now|please|the\s+(?:call|phone)))?(?:[,\s]+${WAKE})?$`, 'iu');
+/** One sentence of the line is "hang up" and nothing else ("Right. Hang up. PAN, end the call."). */
+export function saysHangUp(text) {
+  return String(text || '').split(/[.!?;]+/).map((s) => s.trim().replace(/[,\s]+$/, '')).some((s) => s && HANG_UP.test(s));
+}
 const NOT_A_PERSON = /^(?:thread|session|chat|computer|pc|laptop|desktop|machine)\b/i;
 
 /**
@@ -120,44 +213,57 @@ export function parseMessage(text, { from = null, addressed = false, now = Date.
   const spellings = new Set();
   for (const p of others) {
     spellings.add(esc(p.first));
-    const words = p.name.split(/[\s-]+/).filter(Boolean);
-    if (words.length > 1) spellings.add(words.map(esc).join('[\\s-]+'));
+    for (const n of [p.name, ...p.aka]) {
+      const words = n.split(/[\s-]+/).filter(Boolean);
+      spellings.add(words.map(esc).join('[\\s-]+'));
+    }
   }
-  const name = `(${[...spellings].sort((a, b) => b.length - a.length).join('|')})`;
+  // Two passes: the names as they are written here, then any word where a name goes, for a
+  // name the speech model spelled its own way (who() decides whose it is, or nobody's).
+  const NAMES = [`(${[...spellings].sort((a, b) => b.length - a.length).join('|')})`, String.raw`([\p{L}]{3,})`];
   const after = String.raw`(?!['’]s|s['’])(?![\p{L}\p{N}])`;
   // A call: opened, answered or ended. The whole line is the command ("talk to Maria about
-  // dinner" is not one).
+  // dinner" is not one), but in a call one sentence of it is enough to end it.
   const tail = String.raw`(?:\s+(?:now|please))?[\s.!?]*$`;
-  if (new RegExp(`${LEAD}(?:hang\\s+up|(?:end|stop|close)\\s+(?:the\\s+|this\\s+|my\\s+)?(?:call|talk)|stop\\s+talking\\s+(?:to|with)\\s+${name}${after})${tail}`, 'iu').test(said)) return { talk: 'end' };
+  if (HANG_UP.test(said.replace(/[\s.!?]+$/, '')) || (talkOf(me, now) && saysHangUp(said))) return { talk: 'end' };
+  if (new RegExp(`${LEAD}stop\\s+talking\\s+(?:to|with)\\s+${NAMES[0]}${after}${tail}`, 'iu').test(said)) return { talk: 'end' };
   if (new RegExp(`${LEAD}(?:answer|pick\\s+up|answer\\s+(?:it|the\\s+call))${tail}`, 'iu').test(said)) return { talk: 'answer' };
-  const call = new RegExp(`${LEAD}(?:(?:talk|speak)\\s+(?:to|with)|call|answer|(?:start|open)\\s+a\\s+(?:call|talk)\\s+with)\\s+${name}${after}${tail}`, 'iu').exec(said);
-  if (call) {
-    const k = key(call[1]);
-    const whole = others.filter((p) => p.full === k);
-    const named = whole.length ? whole : others.filter((p) => p.key === k);
+  for (const loose of [false, true]) {
+    const call = new RegExp(`${LEAD}(?:(?:talk|speak)\\s+(?:to|with)|call(?:ed)?|answer|(?:start|open)\\s+a\\s+(?:call|talk)\\s+with)\\s+${NAMES[loose ? 1 : 0]}${after}${tail}`, 'iu').exec(said);
+    if (!call) continue;
+    const named = who(call[1], others, { loose });
     if (named.length === 1) return { talk: 'start', to: named[0] };
     if (named.length > 1) return { talk: 'which', among: named };
   }
-  const forms = [
-    [new RegExp(`${LEAD}(?:tell|text|message|ping)\\s+${name}${after}[\\s,:]*(?:that\\s+)?(.*)$`, 'iu'), 'says'],
-    [new RegExp(`${LEAD}let\\s+${name}${after}\\s+know[\\s,:]*(?:that\\s+)?(.*)$`, 'iu'), 'says'],
-    [new RegExp(`${LEAD}send\\s+(?:a\\s+)?message\\s+to\\s+${name}${after}[\\s,:]*(?:saying\\s+|that\\s+)?(.*)$`, 'iu'), 'says'],
-    [new RegExp(`${LEAD}send\\s+${name}${after}\\s+a\\s+message[\\s,:]*(?:saying\\s+|that\\s+)?(.*)$`, 'iu'), 'says'],
-    [new RegExp(`${LEAD}ask\\s+${name}${after}[\\s,:]*(.*)$`, 'iu'), 'asks'],
+  // The words between the name and the message: "send Maria a message that says ...".
+  const saying = String.raw`[\s,:]*(?:(?:and\s+say|saying|that\s+says|to\s+say)[\s,:]+)?(?:that\s+)?`;
+  const kindOf = String.raw`(?:voice\s+|text\s+|quick\s+)?`;
+  const reach = String.raw`(?:(?:talk|speak)\s+(?:to|with)|call)`;
+  // [the form, what it is, the name comes second]
+  const forms = (name) => [
+    [`(?:tell|text|message|ping)\\s+${name}${after}[\\s,:]*(?:that\\s+)?(.*)$`, 'says'],
+    [`let\\s+${name}${after}\\s+know[\\s,:]*(?:that\\s+)?(.*)$`, 'says'],
+    [`send\\s+(?:a\\s+)?${kindOf}message\\s+to\\s+${name}${after}${saying}(.*)$`, 'says'],
+    [`send\\s+${name}${after}\\s+a\\s+${kindOf}message(?:\\s+or\\s+(?:a\\s+)?${kindOf}message)?${saying}(.*)$`, 'says'],
+    // "Talk to Maria and tell her ..." is a message, not a call: a call is opened on its own.
+    [`${reach}\\s+${name}${after}[\\s,]+and\\s+(?:(?:tell|say\\s+to)\\s+(?:him|her|them)|say)[\\s,:]*(?:that\\s+)?(.*)$`, 'says'],
+    [`${reach}\\s+${name}${after}[\\s,]+and\\s+ask\\s+(?:him|her|them)[\\s,:]*(.*)$`, 'asks'],
+    [`ask\\s+${name}${after}[\\s,:]*(.*)$`, 'asks'],
+    [`say\\s+(.+?)\\s+to\\s+${name}${after}[\\s.!?]*$`, 'says', true],
   ];
-  for (const [re, kind] of forms) {
-    const m = re.exec(said);
-    if (!m) continue;
-    const k = key(m[1]);
-    const whole = others.filter((p) => p.full === k);
-    const named = whole.length ? whole : others.filter((p) => p.key === k);
-    if (!named.length) return null;
-    const to = named[0];
-    const body = String(m[2] || '').trim().replace(/\s+/g, ' ').slice(0, MAX_BODY);
-    if (NOT_A_PERSON.test(body)) return null;     // "tell Maria's computer ..." is the thread relay's
-    if (named.length > 1) return { which: named, kind, body };
-    if (!body.replace(/[^\p{L}\p{N}]/gu, '')) return { to, empty: true };
-    return { to, kind, body };
+  for (const loose of [false, true]) {
+    for (const [form, kind, nameSecond] of forms(NAMES[loose ? 1 : 0])) {
+      const m = new RegExp(LEAD + form, 'iu').exec(said);
+      if (!m) continue;
+      const named = who(nameSecond ? m[2] : m[1], others, { loose });
+      if (!named.length) continue;
+      const to = named[0];
+      const body = String((nameSecond ? m[1] : m[2]) || '').trim().replace(/\s+/g, ' ').slice(0, MAX_BODY);
+      if (NOT_A_PERSON.test(body)) return null;     // "tell Maria's computer ..." is the thread relay's
+      if (named.length > 1) return { which: named, kind, body };
+      if (!body.replace(/[^\p{L}\p{N}]/gu, '')) return { to, empty: true };
+      return { to, kind, body };
+    }
   }
   return null;
 }
@@ -360,13 +466,28 @@ export function talkLine(text, { person = null, wearer } = {}, now = Date.now())
   const t = talkOf(me, now);
   if (!t) return null;
   const said = String(text || '').trim();
-  if (!letters(said) || PAN_NAMED.test(said) || wearer === false) return null;
+  if (!letters(said) || wearer === false) return null;
+  // "Hang up", with or without ΠAN's name, anywhere in the line: never words for the other one.
+  if (saysHangUp(said)) return { to: t.with, sent: false, ended: true, name: endTalk(person, now) };
+  if (PAN_NAMED.test(said)) return null;
   if (person && !may(person, 'messages')) return null;
   // Their own loudspeaker: the other one's words, heard again by this microphone.
   const k = letters(said);
   if (t.heard.some((h) => now - h.at < 20_000 && (h.k === k || (k.length > 12 && (h.k.includes(k) || k.includes(h.k)))))) return { to: t.with, sent: false, reason: 'echo' };
-  const sent = sendMessage({ from: person, to: { id: t.with }, kind: 'says', body: said, how: 'talk' }, now);
-  if (sent.ok) t.last = now;
+  // A line that grew: the device heard them go on and sent the whole line again with more at
+  // the end. Only the new end goes on, not the start a second time.
+  const tokens = said.split(/\s+/);
+  const words = tokens.map(key);
+  let body = said;
+  if (t.sent && now - t.sent.at < 15_000 && words.length >= t.sent.words.length) {
+    const n = t.sent.words.length;
+    const same = t.sent.words.filter((w, i) => w === words[i]).length;
+    if (same >= Math.ceil(n * 0.7)) body = tokens.slice(n).join(' ');
+  }
+  t.sent = { words, at: now };
+  if (!letters(body)) return { to: t.with, sent: false, reason: 'again' };
+  const sent = sendMessage({ from: person, to: { id: t.with }, kind: 'says', body, how: 'talk' }, now);
+  if (sent.ok) { t.last = now; console.log(`[call] person ${me} to person ${t.with}: a line passed on`); }
   return { to: t.with, sent: !!sent.ok, reason: sent.ok ? undefined : sent.reason };
 }
 
@@ -399,7 +520,7 @@ export function peopleFor(meId) {
   // The owner also sees how each person's messages reach them, to set it for them.
   const how = me === OWNER_ID ? (id) => ({ messages: messageMode(id) }) : () => ({});
   return peopleHere().filter((p) => p.id !== me)
-    .map((p) => ({ id: p.id, name: p.name, role: p.role, last: last.get(p.id) || null, unread: unread.get(p.id) || 0, ...how(p.id) }))
+    .map((p) => ({ id: p.id, name: p.name, aka: p.aka, role: p.role, last: last.get(p.id) || null, unread: unread.get(p.id) || 0, ...how(p.id) }))
     .sort((a, b) => (b.last?.at || 0) - (a.last?.at || 0) || a.name.localeCompare(b.name));
 }
 

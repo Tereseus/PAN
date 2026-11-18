@@ -133,6 +133,7 @@ from the 0.4 builds.
 - **0.5.7** (code 136): how long each reply took, under the line; tap for where the time went and
   what ΠAN thought was going on; the address is off Home's top line.
 - **0.5.8** (code 137): an "Interpreting" badge on Home; lines the phone translates itself get their time.
+- **0.5.22** (code 151, published on the hub Nov 18; rollback pair v150): People has two parts, your organization and Others. Groups inside the organization (make, name, move people, delete), and other names for a person whose name ΠAN mishears. Details: docs/FEATURES.md "Groups inside the organization".
 - **0.5.21** (code 150, published on the hub Nov 18; rollback pair v148, 0.5.20 was never published on its own): a call with someone on your ΠAN (say "ΠAN, talk to <name>" or tap the call button, then just talk), and a switch for whether messages are read out or only shown. Details: docs/FEATURES.md "Messages between people".
 - **0.5.20** (code 149, Nov 18, on the test devices only; it went out as part of 0.5.21): People > Met. Show your code, scan theirs, and your ΠAN keeps that you met; forget anyone. The owner names the group. Details: docs/FEATURES.md "People met".
 - **0.5.19** (code 148, published on the hub Nov 18; rollback pair v147): the data dividend row is off Settings until it does something.
