@@ -2057,6 +2057,18 @@ class PanForegroundService : Service() {
                     "hold_ms" to (response?.hold_ms ?: 0L), "camera" to (response?.camera == true),
                     "text" to response?.response_text)
 
+                // The hub heard "mute yourself" where this device's own ear did not (the car, Nov 18:
+                // asked five times, the voice model said "Got it" each time and nothing was muted).
+                // The note goes in first: muting cancels this very turn.
+                if (response?.mute == true) {
+                    panLog("PAN muted, the hub heard the command: $text")
+                    VoiceEvents.emit("drop", "reason" to "mute_command_hub", "text" to text)
+                    runCatching { dataRepository.addPanResponse("[PAN muted]") }
+                    feedbackSounds.onCommandSent()
+                    withContext(Dispatchers.Main) { muteNow() }
+                    return@launch
+                }
+
                 // #462: ambient verdict — no TTS, no fallback.
                 if (response?.intent == "ambient") {
                     panLog("Ambient (${elapsed}ms): no-op")

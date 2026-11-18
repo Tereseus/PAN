@@ -83,6 +83,9 @@ data class QueryResponse(
     val hold_ms: Long = 0L,
     // The hub decided answering needs a look: take a photo and answer from it.
     val camera: Boolean = false,
+    // The hub heard him tell PAN to mute (hub of 2026-11-18 on). The device checks its own words
+    // for that first, and in a car its ear gets them wrong; the hub's transcript had them right.
+    val mute: Boolean = false,
     // When PAN stayed out of it (intent ambient): the hub's one word for why.
     val reason: String? = null,
     // Where the hub's time went on this turn (hub of 2026-11-17 on), as the hub's own JSON.

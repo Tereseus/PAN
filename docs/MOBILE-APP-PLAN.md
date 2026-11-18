@@ -133,6 +133,7 @@ from the 0.4 builds.
 - **0.5.7** (code 136): how long each reply took, under the line; tap for where the time went and
   what ΠAN thought was going on; the address is off Home's top line.
 - **0.5.8** (code 137): an "Interpreting" badge on Home; lines the phone translates itself get their time.
+- **0.5.12** (code 141, published on the hub Nov 18): the hub can tell the device to mute, for when the device's own ear missed the words (the car). Not yet seen on a device.
 - **0.5.11** (code 140, published on the hub Nov 18): a Japanese line asks for its reading three times, not once. Memory still opens only with a fingerprint; a device without one cannot open it (a PIN was written and switched off, owner's call).
 - **0.5.10** (code 139, published on the hub Nov 18): tap the Interpreting badge to stop; a short word only one ear heard is left out; Settings, About has the credits list.
 - **0.5.9** (code 138): a Japanese line shows its Latin letters under it, and a tap opens it word by word with meanings (the hub works the reading out).

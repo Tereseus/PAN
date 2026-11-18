@@ -14,6 +14,7 @@ import { recordTiming, turnTimings } from '../voice-timing.js';
 import { setPhoneTimeZone } from '../intuition/time.js';
 import { followUpOf, historyLines } from '../intuition/conversation.js';
 import { plainLook, spokenLook } from '../camera-ask.js';
+import { noteSaid, dropOwnTail } from '../own-tail.js';
 
 const execFilePromise = promisify(execFile);
 warmHubAsr();
@@ -1879,6 +1880,21 @@ router.post('/query/stream', async (req, res) => {
     recordTiming({ turn: turnId, stage: 'asr', ms: Date.now() - t0, bench: !!bench || undefined });
   }
 
+  // The end of PAN's own last reply at the head of his line (own-tail.js). When his line began is
+  // worked out from how long ago PAN stopped and how long the turn's audio is (16 kHz, 16 bit).
+  const tailKey = bench ? `${streamKey}-bench` : streamKey;
+  {
+    const sincePan = Number(req.body.since_pan_ms);
+    const audioMs = audio ? Math.round(Buffer.byteLength(String(audio), 'base64') / 32) : null;
+    const began = Number.isFinite(sincePan) && audioMs !== null ? sincePan - audioMs : undefined;
+    const own = dropOwnTail(tailKey, text, { began_ms: began });
+    if (own !== text) {
+      console.log(`[own-tail] took PAN's own words off the head (began ${began ?? '?'} ms after it stopped): ${JSON.stringify(String(text).slice(0, 60))} -> ${JSON.stringify(own.slice(0, 60))}`);
+      text = own;
+      send({ type: 'heard', text });
+    }
+  }
+
   let parsedSensors = sensors;
   if (typeof sensors === 'string') { try { parsedSensors = JSON.parse(sensors); } catch { parsedSensors = null; } }
   if (parsedSensors?.tz && !bench) setPhoneTimeZone(parsedSensors.tz);
@@ -1948,6 +1964,10 @@ router.post('/query/stream', async (req, res) => {
         }
         send(event);
         if (event.type === 'done') {
+          {
+            const spoken = String(event.result?.response || '').trim();
+            if (spoken && !spoken.startsWith('[') && !['ambient', 'cancelled'].includes(event.result?.intent)) noteSaid(tailKey, spoken);
+          }
           if (!bench) recordVoiceTurn(req, { text, result: event.result, deviceId, turnId, sensors: parsedSensors });
           // The situational state program's turn book: what it saw, what PAN did; the next
           // turn labels this one (intuition/turn-book.js).

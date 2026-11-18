@@ -38,6 +38,7 @@ import { translateLocal, translatorUp, pairInstalled } from './translate-local.j
 import { studentChain } from './llm.js';
 import { warmReader } from './voice-reader.js';
 import { asksForCamera } from './camera-ask.js';
+import { asksToMute } from './mute-ask.js';
 
 // Recall-intent sniff — only when text matches this do we run a DB lookup on
 // the first pass. Pure conversation never touches FTS5/vector. See task #744
@@ -334,6 +335,8 @@ setTimeout(async () => {
 // A model asked for plain spoken words: wrap its stream as the reply JSON the rest of the turn reads
 // ("to" first, so the gate opens on the first word). "[AMBIENT]" becomes the ambient reply. A model
 // further down the chain that answers in JSON anyway (the voice model does) is passed through as is.
+const OPENERS = ['fair point. ', 'fair. ', 'fair enough. ', 'fair, ', 'fair point, ', 'fair enough, '];
+
 async function* plainAsReply(stream, maxSentences = 0) {
   const esc = (s) => JSON.stringify(String(s).replace(/[\u0000-\u0009\u000b-\u001f]/g, ' ')).slice(1, -1);
   let head = '', mode = '', said = '';
@@ -377,6 +380,12 @@ async function* plainAsReply(stream, maxSentences = 0) {
     if (t.length < 6 && ['PAN: ', 'You: ', 'User: '].some((l) => l.startsWith(t))) continue;   // also "You: I believe you can"
     t = t.replace(/^(?:PAN|You|User):\s*/, '');
     if (!t) continue;
+    // The round 18 hub model opens with "Fair point." or "Fair." whenever he pushes back: four
+    // replies in a row in one talk (2026-11-18; 2.4% of its training answers open that way). Until
+    // a round caps it, the opener is not said when an answer follows it. Alone, it stands.
+    if (t.length < 14 && OPENERS.some((o) => o.startsWith(t.toLowerCase()))) continue;
+    t = t.replace(/^Fair(?: point| enough)?[.,!]\s+(?=\S)/i, '');
+    if (t) t = t[0].toUpperCase() + t.slice(1);
     mode = 'plain';
     const c = clip(t);
     yield '{"to":"pan","response":"' + esc(tidy(c !== null ? c : t));
@@ -2807,6 +2816,14 @@ export async function* routeStream(text, context = {}) {
   const _turnStart = Date.now();   // for the [routeStream] timing line
   warmVectors();
   const talking = Number.isFinite(context.since_pan_ms) ? context.since_pan_ms < TALK_MS : panSpokeWithin(TALK_MS, context.org_id);
+
+  // Told to mute (mute-ask.js): the device does it, and nothing is said. A device too old to know
+  // the flag stays silent for the turn, which is still better than "Got it" with nothing muted.
+  if (asksToMute(text)) {
+    console.log(`[routeStream] told to mute: ${JSON.stringify(String(text).slice(0, 60))}`);
+    yield { type: 'done', result: withProsody({ intent: 'system', mute: true, response: '', addressed: 0.95, importance: 0.3 }) };
+    return;
+  }
 
   // Fast local intents — no LLM, return immediately
   const serverIntent = serverClassify(text);

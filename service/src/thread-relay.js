@@ -545,6 +545,34 @@ function cleanBody(s) {
   return String(s || '').replace(/^(?:that|to|saying)\s+/i, '').trim();
 }
 
+// Said any other way round. The forms above want the asking at the very start of the line. In
+// the car (2026-11-18) the asking came in the middle of a longer line, then with the thread named
+// first and the asking after it, then as a complaint that it had not been sent: three asks, none
+// matched, and the voice model took a photo and then said it had sent it. So: a word that asks for
+// something to be passed on, anywhere in the line, and "<name> thread" where the name is a real
+// thread's. The whole line goes to the thread, which can read a line said loosely.
+const PASS_ON = /(?<!\b(?:i|we|he|she|they|i'll|we'll|i'd|who|don't|didn't|not|never|already)\s+)\b(?:tell|ask|send|push|ping|forward|notify|(?<!\b(?:a|an|the|new|any|another|that|this|my|your|voice)\s+)(?:message|update|pass|relay)(?=\s+(?:the|my|this|that|it|on|along)\b))\b/i;
+const NAMED = /((?:[\p{L}\p{N}'-]+\s+){0,3}[\p{L}\p{N}'-]+)\s+(?:thread|session)\b(?:\s+(?:on|in|at)\s+(?:the\s+|my\s+)?([\p{L}\p{N}]+(?:\s?\d+)?))?/giu;
+
+function namedAnywhere(text, threads) {
+  if (!PASS_ON.test(text) || !threads.length) return null;
+  const machines = spokenMachines();
+  let ambiguous = null;
+  for (const m of text.matchAll(NAMED)) {
+    const before = m[1].split(/\s+/);
+    const machine = m[2] && machines[m[2].toLowerCase().replace(/\s+/g, '')] ? m[2] + ' ' : '';
+    // The name is the last words before "thread"; how many is not known, so the longest that is a thread's.
+    for (let n = before.length; n >= 1; n--) {
+      const name = before.slice(-n).join(' ');
+      if (!tokens(name).some(w => !FILLER.has(w))) continue;
+      const r = matchThread(machine + name, threads);
+      if (r.ok && r.score >= 0.8) return { ok: true, thread: r.thread };
+      if (n <= 2 && r.reason === 'ambiguous' && r.candidates[0]?.score >= 0.8) ambiguous = ambiguous || r.candidates;
+    }
+  }
+  return ambiguous ? { ok: false, candidates: ambiguous } : null;
+}
+
 // One thread per machine does that machine's jobs: "on the mint open firefox", "play this video
 // on the g16", "tell the mint to check my messages". It is the thread on that host with "PC" or
 // "Computer" in its title. A machine name can be an everyday word ("mint"), so the line has to read
@@ -580,7 +608,7 @@ function computerCommand(text, threads) {
 // "tell the PAN thread about what we just talked about": the words point at the voice
 // conversation, so the thread gets those turns too. Sent bare, the PAN thread got only
 // "about what you just talked about" and had nothing to go on (2026-11-03).
-const REFERS_BACK = /\b(?:what (?:you|we|i|you and i) (?:just |were )?(?:talk(?:ed|ing) about|said|discuss(?:ed|ing)|went over)|(?:our|this|the|that) (?:conversation|chat|discussion|talk)(?![-\w])|everything (?:we|you|i) (?:just )?(?:said|discussed|talked about)|^about (?:that|this|it)\s*[.!?]*$)/i;
+const REFERS_BACK = /\b(?:what (?:you|we|i|you and i) (?:just |were )?(?:talk(?:ed|ing) about|said|discuss(?:ed|ing)|went over)|(?:our|this|the|that) (?:conversation|chat|discussion|talk)s?(?![-\w])|everything (?:that )?(?:we|you|i) (?:just )?(?:said|discussed|talked about)|^about (?:that|this|it)\s*[.!?]*$)/i;
 
 // The last voice turns before this one, relabelled for the thread. History lines come in as
 // "You:"/"User:" for him and "PAN:" for PAN; the line that asked for the relay is dropped,
@@ -709,6 +737,13 @@ export function parseThreadCommand(utterance) {
 
   const computer = computerCommand(text, threads);
   if (computer) return computer;
+
+  const named = namedAnywhere(text, threads);
+  if (named?.ok) return { kind: 'send', thread: named.thread, text: text.replace(new RegExp(LEAD, 'i'), '').trim() };
+  if (named) {
+    _pendingChoice = { threads: offered(named.candidates, threads), text, utterance: text, at: Date.now() };
+    return { kind: 'ambiguous', candidates: named.candidates };
+  }
 
   // No "thread" anchor: "ask map creation what it's doing". Only take it when
   // the words right after the verb are a confident, unambiguous title match,

@@ -40,11 +40,15 @@ export function normalizeHeard(text) {
   return String(text || '').toLowerCase().trim().replace(/’/g, "'").replace(DROPPED_G, '$1ing');
 }
 
+// "The X thread, look at it ... send an update over there": the "it" is a Claude thread, not a
+// thing in front of him. That line took a photo of the dashboard in the car (2026-11-18).
+const A_THREAD = /\b(?:thread|threads|session|conversation|conversations)\b/;
+
 export function asksForCamera(text) {
   const t = normalizeHeard(text);
   if (PHRASES.some((p) => t.includes(p))) return true;
   if (WITH_CAMERA.test(t)) return true;
-  if (SHOWING.test(t)) return true;
+  if (SHOWING.test(t) && !A_THREAD.test(t)) return true;
   const m = t.match(DEICTIC);
   return !!m && TAIL.test(m[3]);
 }

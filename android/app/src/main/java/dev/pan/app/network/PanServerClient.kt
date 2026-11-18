@@ -452,6 +452,7 @@ class PanServerClient @Inject constructor(
                                     addressed = if (result.has("addressed") && !result.isNull("addressed")) result.optDouble("addressed") else null,
                                     hold_ms = result.optLong("hold_ms", 0L),
                                     camera = result.optBoolean("camera", false),
+                                    mute = result.optBoolean("mute", false),
                                     reason = result.optString("reason", "").ifBlank {
                                         if (result.optBoolean("to_claude", false)) "dictating" else null
                                     },
