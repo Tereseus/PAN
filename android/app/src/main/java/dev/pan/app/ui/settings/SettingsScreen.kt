@@ -323,6 +323,10 @@ fun SettingsScreen(
 
             HorizontalDivider()
 
+            PeopleSection(viewModel, snackbarHostState)
+
+            HorizontalDivider()
+
             // Privacy
             Text("Privacy", style = MaterialTheme.typography.titleMedium)
             Row(
@@ -693,7 +697,7 @@ private fun TailscaleSignIn(snackbarHostState: SnackbarHostState) {
     }
 }
 
-private fun qrBitmap(text: String, size: Int): android.graphics.Bitmap? = try {
+internal fun qrBitmap(text: String, size: Int): android.graphics.Bitmap? = try {
     val m = com.google.zxing.qrcode.QRCodeWriter()
         .encode(text, com.google.zxing.BarcodeFormat.QR_CODE, size, size)
     val px = IntArray(size * size) { i ->

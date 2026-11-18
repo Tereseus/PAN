@@ -15,7 +15,7 @@ import { setPhoneTimeZone } from '../intuition/time.js';
 import { followUpOf, historyLines } from '../intuition/conversation.js';
 import { plainLook, spokenLook } from '../camera-ask.js';
 import { noteSaid, dropOwnTail } from '../own-tail.js';
-import { scopeFor } from '../people.js';
+import { scopeFor, may, refusal } from '../people.js';
 
 const execFilePromise = promisify(execFile);
 warmHubAsr();
@@ -711,7 +711,12 @@ async function lookAndAnswer(image, asked, remember = true) {
 router.post('/vision', async (req, res) => {
   // bench: a test photo (hub bench, 2026-11-03). Same looks and answer; the question is used
   // as sent, and nothing is saved: no photo file, no VisionAnalysis memory, no follow-up context.
-  const { image_base64, question, bench } = req.body;
+  const { image_base64, question } = req.body;
+  // A person other than the owner: the same looks and answer, and like a bench photo nothing is
+  // kept (no file, no memory, no follow-up context) and the owner's talk is not read for the question.
+  const person = req.user?.person ? req.user : null;
+  if (person && !may(person, 'camera')) return res.status(403).json({ error: 'not open to this person', description: refusal('camera') });
+  const bench = !!req.body.bench || !!person;
 
   if (!image_base64) {
     return res.status(400).json({ error: 'missing image_base64' });
@@ -725,7 +730,7 @@ router.post('/vision', async (req, res) => {
     const t0 = Date.now();
     const description = spokenVision(await lookAndAnswer(image_base64, asked, !bench));
     console.log(`[PAN Vision] Result (${Date.now() - t0}ms): ${description.slice(0, 100)}`);
-    if (bench) return res.json({ description, bench: true });
+    if (bench) return res.json({ description, ...(person ? {} : { bench: true }) });
 
     // Save the image to disk
     const photoId = `vision-${Date.now()}`;
@@ -1681,6 +1686,8 @@ function voiceHistory(context) {
 // Nobody waits on it. The phone sends the history it will send with the turn.
 router.post('/voice/warm', async (req, res) => {
   res.json({ ok: true });
+  // The read ahead is the owner's talk and situation: a person's device warms nothing.
+  if (req.user?.person) return;
   try {
     const { warmStudent } = await import('../router.js');
     // org and sensors: the turn's situation line is built from them, and the read has to match it.
@@ -1736,6 +1743,13 @@ router.post('/query/stream', async (req, res) => {
   }
   const { text: phoneText, context, intent_hint, sensors, can_camera, audio, bench } = req.body;
   if (!phoneText) return res.status(400).json({ error: 'missing text' });
+  // Someone other than the owner (people.js). Their device is named by its PAN Link key, never by
+  // a header it sends: a header could name the owner's phone, and with it cancel his turns or
+  // pick up his standing instruction. Nothing of the owner's is read for the turn and nothing of
+  // it is stored (router.js personTurn).
+  const person = req.user?.person ? req.user : null;
+  const deviceName = person ? `person${person.id}-${String(req.panLinkDevice?.id || 'device')}`
+    : (req.headers['x-device-id'] || req.headers['x-device-name'] || null);
   let text = phoneText;
   // One id per turn so this handler's timings and the router's line up in voice-timing.jsonl.
   const turnId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
@@ -1775,7 +1789,7 @@ router.post('/query/stream', async (req, res) => {
   // cancel a turn is the same phone saying something new. Reuses the existing
   // streamControllers registry so /cancel and the TTL sweeper keep working
   // instead of needing a second parallel mechanism.
-  const streamKey = `phone:${req.headers['x-device-id'] || req.headers['x-device-name'] || 'unknown'}`;
+  const streamKey = `phone:${deviceName || 'unknown'}`;
   // Turns are ordered by when the phone SENT them, not by when they got here. On a slow link the upload
   // of an older sentence can land after a newer one. The phone had already dropped that older turn, yet
   // here it cancelled the newer one: the real question got "Sorry, I ran into a problem" and the answer
@@ -1819,7 +1833,7 @@ router.post('/query/stream', async (req, res) => {
   let heardLang = null;   // the language the interpreting model heard, when it says
   // The device's standing-instruction key: the deviceId routeStream gets, below.
   const { interpretingFor, learnInterpretingLanguage } = await import('../router.js');
-  const realId = req.headers['x-device-id'] || req.headers['x-device-name'] || null;
+  const realId = deviceName;
   const key = bench ? `${realId || 'phone'}-bench` : realId;
   // Background model jobs (the nightly benchmark) wait while he is talking: on Nov 14 it fired a
   // prompt every 10 to 30 s during his talk, the voice reader timed out and turns took 8 to 11 s.
@@ -1835,7 +1849,7 @@ router.post('/query/stream', async (req, res) => {
   let voiceWearer;
   let voiceWho = null;
   let voicePrintNow = null;
-  if (audio && !bench) {
+  if (audio && !bench && !person) {
     try {
       voice = await import('../voice-id.js');
       const print = voice.voicePrint(audio);
@@ -1901,23 +1915,23 @@ router.post('/query/stream', async (req, res) => {
 
   let parsedSensors = sensors;
   if (typeof sensors === 'string') { try { parsedSensors = JSON.parse(sensors); } catch { parsedSensors = null; } }
-  if (parsedSensors?.tz && !bench) setPhoneTimeZone(parsedSensors.tz);
+  if (parsedSensors?.tz && !bench && !person) setPhoneTimeZone(parsedSensors.tz);
 
   try {
     const { routeStream } = await import('../router.js');
     // A benchmark turn gets its own device key, so a test's standing instruction or
     // dialog state can never leak into his real conversation (bench-context.js).
-    const realDeviceId = req.headers['x-device-id'] || req.headers['x-device-name'] || null;
+    const realDeviceId = deviceName;
     const deviceId = bench ? `${realDeviceId || 'phone'}-bench` : realDeviceId;
 
     // Not for a benchmark turn: its scenario starts with an empty history on purpose,
     // and pulling his real thread in would make the run depend on his day.
-    let convoHistory = bench ? context : voiceHistory(context);
+    let convoHistory = bench || person ? context : voiceHistory(context);
     // A follow-up about the photo just taken ("yeah, what kind of pony?"): the phone's history
     // has only the one or two sentences PAN said, so the student also gets what the photo showed.
     // Only while the photo is still what the talk is on: added under "how far is the sun from the
     // earth", it made "how long would it take to get there?" about the photo (2026-11-08).
-    if (!bench && _lastLook && Date.now() - _lastLook.at < 180_000 && POINTS_AT.test(String(text || '')) && photoInFocus(convoHistory, text)) {
+    if (!bench && !person && _lastLook && Date.now() - _lastLook.at < 180_000 && POINTS_AT.test(String(text || '')) && photoInFocus(convoHistory, text)) {
       convoHistory = `${convoHistory ? `${String(convoHistory).trim()}\n` : ''}PAN (what the photo showed): ${_lastLook.look.slice(0, 600)}`;
     }
 
@@ -1926,6 +1940,7 @@ router.post('/query/stream', async (req, res) => {
       for await (const event of routeStream(text, {
         source: deviceId ? `phone-${deviceId}` : 'phone',
         device_id: deviceId,
+        person,
         // The turn came in through PAN Link (server.js, pan-link-auth.js): asked, PAN can say so.
         via_link: !!req.panLinkDevice,
         intent_hint,
@@ -1945,7 +1960,7 @@ router.post('/query/stream', async (req, res) => {
         // this is the only thing that tells a talk from a stray line there.
         since_pan_ms: Number.isFinite(req.body.since_pan_ms) ? req.body.since_pan_ms : undefined,
         // Voice ID (2026-11-12): true = his voice, false = someone else's; left out when unknown.
-        wearer: typeof req.body.wearer === 'boolean' ? req.body.wearer : voiceWearer,
+        wearer: person ? undefined : typeof req.body.wearer === 'boolean' ? req.body.wearer : voiceWearer,
         turn_id: turnId,
         heard_lang: heardLang,
       })) {
@@ -1972,10 +1987,10 @@ router.post('/query/stream', async (req, res) => {
             const spoken = String(event.result?.response || '').trim();
             if (spoken && !spoken.startsWith('[') && !['ambient', 'cancelled'].includes(event.result?.intent)) noteSaid(tailKey, spoken);
           }
-          if (!bench) recordVoiceTurn(req, { text, result: event.result, deviceId, turnId, sensors: parsedSensors });
+          if (!bench && !person) recordVoiceTurn(req, { text, result: event.result, deviceId, turnId, sensors: parsedSensors });
           // The situational state program's turn book: what it saw, what PAN did; the next
           // turn labels this one (intuition/turn-book.js).
-          if (!bench) {
+          if (!bench && !person) {
             const r = event.result || {};
             const said = String(r.response || '').trim();
             import('../intuition/turn-book.js').then(({ noteTurn }) => noteTurn({

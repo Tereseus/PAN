@@ -39,6 +39,7 @@ import { studentChain } from './llm.js';
 import { warmReader } from './voice-reader.js';
 import { asksForCamera } from './camera-ask.js';
 import { asksToMute } from './mute-ask.js';
+import { may, refusal } from './people.js';
 
 // Recall-intent sniff — only when text matches this do we run a DB lookup on
 // the first pass. Pure conversation never touches FTS5/vector. See task #744
@@ -396,9 +397,9 @@ async function* plainAsReply(stream, maxSentences = 0) {
   if (mode === 'plain') yield '","intent":"query","addressed":0.9}';
 }
 
-function nowLine() {
+function nowLine(zone) {
   const d = new Date();
-  const tz = hisTimeZone();
+  const tz = zone || hisTimeZone();
   let when;
   try { when = d.toLocaleString('en-GB', { timeZone: tz, weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }); }
   catch { when = d.toLocaleString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }); }
@@ -2802,6 +2803,173 @@ async function _raiseVoiceAlert(reason, source) {
   }
 }
 
+// A PERSON WHO IS NOT THE OWNER (people.js, docs/PEOPLE-PLAN.md).
+//
+// Their turn is built from what their own device sent with it and nothing else: no situation
+// line, no memory, no notes, none of the owner's talk, name, place or voice profile, and nothing
+// is stored on the hub. It is its own short path, not the owner's path with pieces switched off:
+// a block added to routeStream later cannot reach a person by being forgotten here. Before
+// anything that acts, may() is asked, and a no is said out loud (a model left to answer "tell the
+// PAN thread ..." says "Got it" and does nothing). Not here yet: interpreting, and a memory of
+// the person's own.
+const PERSON_AMBIENT_JSON = 'reply {"intent":"ambient","addressed":0.1,"response":"[AMBIENT]"}';
+const PERSON_IDENTITY = /\b(?:who are you|what are you(?=\W*$)|your name|(?:what(?:'s|s| is)|know|remember|say|tell me) my name|what my name is|who am i(?=\W*$)|who (?:made|built) you)\b/i;
+
+function personSelfLine(person) {
+  const name = String(person?.display_name || '').replace(/[^\p{L}\p{N} .'-]/gu, '').trim().slice(0, 40);
+  return 'About you (live, this is fact): your name is PAN, short for Personal AI Network. '
+    + (name ? `The person talking to you is ${name}: asked their own name, the answer is ${name}. ` : '')
+    + 'They talk to you through the PAN app on their own device, and you run on the hub at home. You cannot see their screen or what they are doing, you keep no memory of what they say yet, and you cannot act on the house, a computer or anyone\'s messages for them. Answer questions about yourself and about them only from this line.';
+}
+
+// The clock where the person's own device is, when it says (the owner's phone may be elsewhere).
+function personNowLine(sensors) {
+  const tz = String(sensors?.tz || '');
+  try { if (tz) { new Intl.DateTimeFormat('en-GB', { timeZone: tz }); return nowLine(tz); } } catch {}
+  return nowLine();
+}
+
+// Which rule of the hub prompt fits the line (HUB_RULES). Every kind chosen for a line that does
+// not name PAN lets the model stay quiet, since no voice model has said who the line is for.
+function personKind(text, context, talking, liveData) {
+  const named = saysPanName(text);
+  const hasTalk = !!String(context.conversation_history || '').trim();
+  if (liveData) return 'DATA';
+  if (PERSON_IDENTITY.test(text)) return 'SELF';
+  if (talking && hasTalk && lostBy(text)) return 'LOST';
+  if (hasTalk && ABOUT_THIS_TALK.test(text)) return 'ABOUT_TALK';
+  if (asksTheWorld(text)) return named ? 'WORLD' : 'WORLD_MAYBE';
+  if (asksForSomething(text)) return named ? 'ASKED' : 'ASKED_MAYBE';
+  if (named) return 'NAMED';
+  if (tellsPan(text)) return 'TOLD';
+  return 'WORDS_ALONE';
+}
+
+/** The whole prompt for a person's line and the models asked, as plain data (tested without a model). */
+export function personPrompt(text, context, { liveBlock = '', hubModel = '' } = {}) {
+  const person = context.person;
+  const talking = Number.isFinite(context.since_pan_ms) && context.since_pan_ms < TALK_MS;
+  const kind = personKind(String(text || ''), context, talking, !!liveBlock);
+  const middle = [voiceHistoryBlock(context.conversation_history).trim(), personNowLine(context.sensors), String(liveBlock || '').trim(),
+    `Mic heard: "${clipToTokens(anonymizeForAI(text), HEARD_TOKENS)}"`].filter(Boolean);
+  const self = personSelfLine(person);
+  if (hubModel) return { kind, plain: true, prompt: hubPrompt(kind, middle, self) };
+  // No model of the hub's own: the same rule, asked for as JSON, for whatever the voice chain has.
+  const rule = HUB_RULES[kind].replace(HUB_AMBIENT, PERSON_AMBIENT_JSON)
+    .replace(/^The (WORLD|ASKED) rule, but/, (_, k) => `${HUB_RULES[k]} But`);
+  return { kind, plain: false, prompt: [
+    'You are PAN, a voice assistant and a friend in the room. Reply ONLY as JSON: {"intent":"query","addressed":0.9,"response":"..."}',
+    self, ...middle, rule].join('\n\n') };
+}
+
+async function* personTurn(text, context, withProsody) {
+  const person = context.person;
+  const t0 = Date.now();
+  const say = function* (response, extra = {}) {
+    if (response) yield { type: 'chunk', text: response };
+    yield { type: 'done', result: withProsody({ intent: 'query', speech_act: 'answer', response, addressed: 0.9, importance: 0.4, ...extra }) };
+  };
+  const quiet = function* (reason) {
+    yield { type: 'chunk', text: '' };
+    yield { type: 'done', result: withProsody({ intent: 'ambient', response: '', addressed: 0.1, importance: 0.1, reason }) };
+  };
+  const notePath = (p) => { try { recordTiming({ turn: context.turn_id, device: context.device_id, stage: 'path', path: p }); } catch {} };
+
+  if (asksToMute(text)) {
+    yield { type: 'done', result: withProsody({ intent: 'system', mute: true, response: '', addressed: 0.95, importance: 0.3 }) };
+    return;
+  }
+  if (!may(person, 'talk')) { yield* say(refusal('talk')); return; }
+
+  // A Claude thread or a computer: the owner's, unless the owner opened it to this person.
+  let cmd = null;
+  try { cmd = (await import('./thread-relay.js')).parseThreadCommand(text); } catch (e) { console.warn('[person] thread parse failed:', e.message); }
+  if (cmd) {
+    const action = /computer/.test(String(cmd.kind)) || cmd.computer ? 'computer' : 'thread';
+    if (!may(person, action) || !may(person, 'thread')) {
+      console.log(`[person] ${person.id} asked for a ${action} - refused`);
+      notePath('person_refused');
+      yield* say(refusal(action), { refused: action });
+      return;
+    }
+    let handled = false;
+    for await (const ev of _threadRelayFastPath(text, context)) {
+      handled = true;
+      yield ev.type === 'done' ? { type: 'done', result: withProsody(ev.result) } : ev;
+    }
+    if (handled) return;
+  }
+
+  // A look through the camera: the device takes the photo and asks /vision, which keeps nothing
+  // for a person (routes/api.js).
+  if (context.canCamera && asksForCamera(text)) {
+    if (!may(person, 'camera')) { notePath('person_refused'); yield* say(refusal('camera'), { refused: 'camera' }); return; }
+    yield { type: 'done', result: withProsody({ intent: 'query', addressed: 0.95, camera: true, response: '', importance: 0.5 }) };
+    return;
+  }
+
+  // Not said to PAN: someone else by name, a greeting to a person, or music on the device's speakers.
+  const part = participationOf({ text, history: context.conversation_history, mode: null,
+    sincePanMs: Number.isFinite(context.since_pan_ms) ? context.since_pan_ms : null });
+  if (part.named_other && !saysPanName(text)) { yield* quiet('named_other'); return; }
+  if (context.media_playing && !context.addressed_now && !saysPanName(text)) { yield* quiet('music_playing'); return; }
+  if (!context.addressed_now && quickAmbientCheck(text)) { yield* quiet('not_addressed'); return; }
+
+  // Live data for the question, from this turn's own sensors only (tools.js reads no stored place).
+  let liveBlock = '';
+  try {
+    const b = await buildToolBlocks(text, context.sensors || null, { detail: true, liveOnly: true });
+    if (b.live) liveBlock = b.text;
+  } catch {}
+
+  const hubModel = worldModel(context.device_id) || worldModel(context.device_id, 'voice_hub_paths_model');
+  const notLocalReader = (m) => !/^reader:/.test(m);
+  const cloud = readChain('voice').filter((m) => !/^(?:ollama|reader):/.test(m));
+  const { kind, plain, prompt } = personPrompt(text, context, { liveBlock, hubModel });
+  const opts = { callerClass: 'voice', caller: 'router-person', maxTokens: 300, _skipAnonymize: true, source: context.source,
+    device_id: context.device_id, signal: context.signal || null };
+  const stream = plain
+    ? plainAsReply(askAIStreamWithFallback(prompt, { ...opts, chain: [hubModel, ...cloud].slice(0, 3), firstTokenMs: WORLD_LOCAL_MS, temperature: HUB_TEMPERATURE }), HUB_SENTENCES)
+    : askAIStreamWithFallback(prompt, { ...opts, chain: [...cloud, ...readChain('voice').filter((m) => /^ollama:/.test(m))].filter(notLocalReader) });
+  console.log(`[person] ${person.id} (${person.role}) ${kind} via ${plain ? hubModel : 'the voice chain'}, prompt ${prompt.length} chars`);
+  notePath('person');
+
+  let buf = '', held = '', out = 0, gate = null, first = true;
+  try {
+    for await (const c of stream) {
+      if (first) { first = false; recordTiming({ turn: context.turn_id, device: context.device_id, stage: 'first_chunk', ms: Date.now() - t0 }); }
+      buf += c;
+      if (gate === null) { const d = readAddressGate(buf); if (d) gate = d.gate; }
+      const { text: got, done } = extractResponseField(buf);
+      if (got.length > held.length) held = got;
+      if (gate === 'open' && !held.startsWith('[')) {
+        const end = releasableEnd(held);
+        if (end > out) {
+          const delta = speakable(held.slice(out, end));
+          out = end;
+          if (delta) yield { type: 'chunk', text: delta };
+        }
+      }
+      if (done && topLevelJsonEnd(buf) > 0) break;
+    }
+  } catch (e) {
+    if (context.signal?.aborted) throw e;
+    console.error('[person] model error:', e.message);
+    if (out === 0) { yield* say('Sorry, I ran into a problem thinking that through. Try again.'); return; }
+  }
+  const reply = speakable(held).trim();
+  if (!reply || reply.startsWith('[') || gate === 'mute') { yield* quiet('not_addressed'); return; }
+  if (gate === 'hold' && out === 0) {
+    yield { type: 'done', result: withProsody({ intent: 'query', response: reply, addressed: 0.3, hold_ms: ADDRESSED_HOLD_MS, importance: 0.3 }) };
+    return;
+  }
+  if (held.length > out) {
+    const delta = speakable(held.slice(out));
+    if (delta.trim()) yield { type: 'chunk', text: delta };
+  }
+  yield { type: 'done', result: withProsody({ intent: 'query', speech_act: 'answer', response: reply, addressed: 0.9, importance: 0.5 }) };
+}
+
 export async function* routeStream(text, context = {}) {
   // Batch 4 (#986): every `done` emit gets a prosody plan derived from
   // `result.importance`. Wrap once, use everywhere — keeps the diff small
@@ -2814,6 +2982,8 @@ export async function* routeStream(text, context = {}) {
     ...(readerProbe.pPan !== undefined ? { p_pan: readerProbe.pPan, to_top: readerProbe.top } : {}),
     ...(turnPlace ? { participation: turnPlace } : {}) });
   const _turnStart = Date.now();   // for the [routeStream] timing line
+  // Someone other than the owner: their own short path, and none of what follows.
+  if (context.person) { yield* personTurn(text, context, withProsody); return; }
   warmVectors();
   const talking = Number.isFinite(context.since_pan_ms) ? context.since_pan_ms < TALK_MS : panSpokeWithin(TALK_MS, context.org_id);
 

@@ -178,7 +178,7 @@ await test('a code made for a person binds the device that pairs with it', async
   ok(r.status === 200, `status ${r.status}`);
   const sent = JSON.parse(calls.at(-1).body);
   ok(Array.isArray(sent.allow) && sent.allow.join() === people.PERSON_ALLOW.join(), `the code was not limited to the people's paths: ${calls.at(-1).body}`);
-  ok(!sent.allow.some((x) => x.includes('query') || x.includes('/dashboard') || x.includes('*')), 'the list opens more than it should');
+  ok(!sent.allow.some((x) => x.endsWith('/query') || x.includes('/dashboard') || x.includes('/settings') || x.includes('/recall') || x.includes('*')), 'the list opens more than it should');
   ok(people.pairingsWaiting(), 'nothing is waiting for the device');
   ok(people.claimPairings([{ id: 'd1', tunnel_ip: '10.77.0.9' }]) === 1, 'the device was not bound');
   const p = people.personOfDevice('d1');

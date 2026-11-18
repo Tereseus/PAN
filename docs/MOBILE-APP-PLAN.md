@@ -133,8 +133,9 @@ from the 0.4 builds.
 - **0.5.7** (code 136): how long each reply took, under the line; tap for where the time went and
   what ΠAN thought was going on; the address is off Home's top line.
 - **0.5.8** (code 137): an "Interpreting" badge on Home; lines the phone translates itself get their time.
-- **0.5.13** (code 142, published on the hub Nov 18): an interpreted line is spoken in its own language when that language is written in Latin letters (Vietnamese, Spanish, French...); before, the voice was told it was English. Not yet heard on a device.
-- **0.5.12** (code 141, published on the hub Nov 18): the hub can tell the device to mute, for when the device's own ear missed the words (the car). Not yet seen on a device.
+- **0.5.14** (code 143, published on the hub Nov 18): People in Settings. The owner adds a person (adult, child or guest), gets a one-time code for their device, and removes them. A device paired with the code talks to ΠAN as that person and reaches nothing of the owner's. Seen on the test tablet.
+- **0.5.13** (code 142, published on the hub Nov 18): an interpreted line is spoken in its own language when that language is written in Latin letters (Vietnamese, Spanish, French...); before, the voice was told it was English. Heard on the test tablet: a Vietnamese line in ΠAN's own voice.
+- **0.5.12** (code 141, published on the hub Nov 18): the hub can tell the device to mute, for when the device's own ear missed the words (the car). Seen on the test tablet: muted 27 ms after the line.
 - **0.5.11** (code 140, published on the hub Nov 18): a Japanese line asks for its reading three times, not once. Memory still opens only with a fingerprint; a device without one cannot open it (a PIN was written and switched off, owner's call).
 - **0.5.10** (code 139, published on the hub Nov 18): tap the Interpreting badge to stop; a short word only one ear heard is left out; Settings, About has the credits list.
 - **0.5.9** (code 138): a Japanese line shows its Latin letters under it, and a tap opens it word by word with meanings (the hub works the reading out).

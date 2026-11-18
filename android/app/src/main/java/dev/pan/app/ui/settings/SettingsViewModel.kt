@@ -34,6 +34,9 @@ class SettingsViewModel @Inject constructor(
     private val feedbackSounds: dev.pan.app.audio.FeedbackSounds,
 ) : ViewModel() {
 
+    /** A plain call to the hub for a settings section that only shows what the hub decides (People). */
+    suspend fun hub(method: String, path: String, body: org.json.JSONObject? = null) = serverClient.hubJson(method, path, body)
+
     private val _serverUrl = MutableStateFlow(Constants.DEFAULT_SERVER_URL)
     val serverUrl: StateFlow<String> = _serverUrl
 

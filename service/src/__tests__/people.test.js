@@ -67,21 +67,23 @@ test('what a child, an adult and the owner may do', () => {
   for (const a of ['home', 'messages', 'computer', 'thread', 'lend_device', 'others_memory', 'pair_device', 'set_limits']) eq(people.may(mia, a), false, `child ${a}`);
   people.setDevicePerson('d00000000000d', adult);
   const sam = people.personOfDevice('d00000000000d');
-  for (const a of ['talk', 'home', 'messages', 'computer', 'thread']) eq(people.may(sam, a), true, `adult ${a}`);
-  for (const a of ['lend_device', 'approve_device', 'others_memory', 'pair_device']) eq(people.may(sam, a), false, `adult ${a}`);
+  for (const a of ['talk', 'home', 'messages']) eq(people.may(sam, a), true, `adult ${a}`);
+  // The computers and the Claude threads on them are the owner's until he opens them.
+  for (const a of ['computer', 'thread', 'lend_device', 'approve_device', 'others_memory', 'pair_device']) eq(people.may(sam, a), false, `adult ${a}`);
   eq(people.may(mia, 'fly_the_house'), false, 'an action nobody named');
   eq(people.may(null, 'fly_the_house'), false, 'not even for the owner');
 });
 
 test('the owner changes a limit, and nonsense in the setting changes nothing', () => {
   run(`INSERT INTO settings (key, value) VALUES ('people_limits', :v) ON CONFLICT(key) DO UPDATE SET value = :v`,
-    { ':v': JSON.stringify({ home: 5, computer: 'yes', made_up: 0, thread: 101 }) });
+    { ':v': JSON.stringify({ home: 5, computer: 'yes', made_up: 0, messages: 101, thread: 25 }) });
   people.resetPeopleCache();
   const mia = people.personOfDevice('d00000000000b');
   eq(people.may(mia, 'home'), true, 'home opened to a child');
   eq(people.may(mia, 'computer'), false, 'a word is not a power');
   eq(people.may(mia, 'made_up'), false, 'an action that does not exist');
-  eq(people.limits().thread, 25, 'a power over 100 is ignored');
+  eq(people.limits().messages, 15, 'a power over 100 is ignored');
+  eq(people.may({ power: 25 }, 'thread'), true, 'the owner opened threads to an adult');
   run(`DELETE FROM settings WHERE key = 'people_limits'`);
 });
 
@@ -109,7 +111,9 @@ test('what a person\'s device may send: the listed paths and nothing shaped like
   eq(people.personMaySend('POST', '/api/v1/logs'), true, 'logs');
   eq(people.personMaySend('GET', '/api/v1/logs'), false, 'the other method');
   eq(people.personMaySend('GET', '/api/v1/auth/me?x=1'), true, 'a query string');
-  for (const p of ['/api/v1/query/stream', '/dashboard/api/mem', '/api/v1/link/pair', '/api/v1/settings', '/api/v1/auth/users',
+  eq(people.personMaySend('POST', '/api/v1/query/stream'), true, 'talking');
+  eq(people.personMaySend('GET', '/api/v1/query/stream'), false, 'talking, the other method');
+  for (const p of ['/api/v1/query', '/api/v1/query/stream/x', '/api/v1/capture', '/api/v1/recall', '/dashboard/api/mem', '/api/v1/link/pair', '/api/v1/settings', '/api/v1/auth/users',
     '/health/../api/v1/settings', '/health//x', '/health%2f..', 'health', '']) {
     eq(people.personMaySend('POST', p), false, p);
     eq(people.personMaySend('GET', p), false, 'GET ' + p);

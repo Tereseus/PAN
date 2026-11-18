@@ -518,7 +518,7 @@ class PiperTtsEngine(private val context: Context) {
             .replace(Regex("(?<=\\s)-+(?=\\s)"), ",")
             .trim()
         val spoken = if (cleaned.length > 500) cleaned.take(500) + ". See the app." else cleaned
-        Log.d(TAG, "Generating: ${spoken.take(50)}...")
+        Log.d(TAG, "Generating (${lang ?: "en"}): ${spoken.take(50)}...")
         // Screen off, synthesis ran 2-2.5x slower on unboosted cores (see CpuBoost).
         CpuBoost.burst(context)
         val genStart = SystemClock.elapsedRealtime()

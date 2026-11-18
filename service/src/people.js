@@ -23,8 +23,10 @@ export const LIMITS = Object.freeze({
   own_memory: 5,       // recall what they themselves said
   home: 15,            // lights, heating, the TV
   messages: 15,        // send a message to a person
-  computer: 25,        // run a job on a computer, the terminal
-  thread: 25,          // talk to a Claude thread
+  // The computers and the Claude threads on them are the owner's until a computer can belong to
+  // a person: a thread runs anything, as the owner, on the owner's machine.
+  computer: 100,       // run a job on a computer, the terminal
+  thread: 100,         // talk to a Claude thread
   lend_device: 50,     // lend a shared device to someone
   approve_device: 75,  // let a new computer in
   others_memory: 100,  // read what someone else said
@@ -36,14 +38,18 @@ export const LIMITS = Object.freeze({
 // (pan-link/allow.go). pan-link refuses everything else before PAN sees it, WebSockets and
 // pages included; PAN checks the same list again for /api. A path nobody listed is closed.
 // Short on purpose: a path joins this list when what it answers is that person's own, not the
-// owner's. Talking (/api/v1/query/stream) is not on it yet: the voice path still builds its
-// prompt from the owner's situation, memory and name (docs/PEOPLE-PLAN.md, Progress).
+// owner's. Talking is on it since a person's turn has its own path (router.js personTurn): the
+// handlers behind these paths each check req.user.person and keep nothing of the owner's in reach.
 export const PERSON_ALLOW = Object.freeze([
   'GET /health',
   'GET /api/v1/auth/me',
   'GET /api/v1/apk/version',
   'GET /apk/latest',
   'POST /api/v1/logs',
+  'POST /api/v1/query/stream',
+  'POST /api/v1/voice/warm',
+  'POST /api/v1/reading',
+  'POST /api/v1/vision',
 ]);
 
 /** The allow rules for a device of this person's: none for the owner (no limit). */

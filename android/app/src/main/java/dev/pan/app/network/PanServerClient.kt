@@ -179,6 +179,25 @@ class PanServerClient @Inject constructor(
     }
 
     /**
+     * A plain JSON call to the hub: the status and the body, or null when the hub cannot be reached.
+     * For the few screens that only show what the hub decides (People, in Settings).
+     */
+    suspend fun hubJson(method: String, path: String, body: JSONObject? = null): Pair<Int, JSONObject>? = withContext(Dispatchers.IO) {
+        try {
+            val json = (body ?: JSONObject()).toString().toRequestBody("application/json".toMediaType())
+            val request = Request.Builder().url("${Constants.PLACEHOLDER_BASE_URL}$path")
+                .apply { if (method == "GET") get() else method(method, json) }.build()
+            okHttpClient.newCall(request).execute().use { response ->
+                val text = response.body?.string() ?: ""
+                response.code to (runCatching { JSONObject(text) }.getOrNull() ?: JSONObject())
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "$method $path failed: ${e.message}")
+            null
+        }
+    }
+
+    /**
      * How a line in another script is said: Latin letters for the whole line and, word by word, the
      * reading and a short meaning. The hub works it out (reading.js); null when it has no reader
      * for the language or cannot be reached.
