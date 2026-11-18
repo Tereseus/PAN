@@ -66,6 +66,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
+import dev.pan.app.service.PanForegroundService
+import dev.pan.app.ui.home.MicButton
 import dev.pan.app.ui.settings.qrBitmap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -754,6 +756,10 @@ private fun Conversation(viewModel: PeopleViewModel, person: PersonLine, reading
     var draft by remember(person.id) { mutableStateOf("") }
     val list = rememberLazyListState()
     val first = firstName(person.name)
+    // Mute, here too (the owner, 2026-11-18): a muted ΠAN reads nothing out and hears nothing,
+    // and from inside a conversation there was no way to see or change that.
+    val micOn by PanForegroundService.micEnabled.collectAsState()
+    val context = LocalContext.current
 
     BackHandler { viewModel.closeTalk() }
     // Keep the newest line in view when one arrives or is sent.
@@ -771,7 +777,13 @@ private fun Conversation(viewModel: PeopleViewModel, person: PersonLine, reading
             if (canSend && !onCall) IconButton(onClick = { viewModel.startTalk(person.id, first) }) {
                 Icon(Icons.Default.Call, contentDescription = "Talk to $first")
             }
+            if (readingFor == null) MicButton(on = micOn, diameter = 40.dp, onClick = {
+                context.startService(android.content.Intent(context, PanForegroundService::class.java).apply { action = "TOGGLE_MIC" })
+            })
         }
+        if (readingFor == null && !micOn) Text("Muted: ΠAN cannot hear you, and what $first sends is shown here, not read out. Tap the microphone to unmute.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp))
         if (onCall) CallBar(if (talkJoined) "On with $first. Just talk." else "Calling $first. What you say is passed on.", "End") { viewModel.endTalk() }
         HorizontalDivider()
         if (talk.isEmpty()) {

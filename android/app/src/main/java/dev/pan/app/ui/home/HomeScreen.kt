@@ -513,19 +513,20 @@ private fun LineBox(live: String, micOn: Boolean, onSend: (String) -> Unit, onMi
     }
 }
 
+/** The mute button: the same one on Home and inside a conversation in People. */
 @Composable
-private fun MicButton(on: Boolean, onClick: () -> Unit) {
+internal fun MicButton(on: Boolean, onClick: () -> Unit, diameter: androidx.compose.ui.unit.Dp = 56.dp) {
     val fill = if (on) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant
     val ink = if (on) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
     Box(
         modifier = Modifier
-            .size(56.dp)
+            .size(diameter)
             .clip(CircleShape)
             .background(fill)
             .clickable(onClickLabel = if (on) "Mute" else "Unmute", onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
-        Canvas(modifier = Modifier.size(26.dp)) {
+        Canvas(modifier = Modifier.size(diameter * 0.46f)) {
             val w = size.width
             val h = size.height
             val stroke = w * 0.09f

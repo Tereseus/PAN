@@ -20,6 +20,7 @@ import { addNote, takeNotesFor, noteSender, maySpeakNow, noteOwnerSpokeOn, notes
 import { takeMessagesFor, peopleFor, conversation, sendMessage, peopleHere, ownerMayRead, talkLine, talkFast, talkState, startTalk, endTalk, messageMode, setMessageMode, setNicknames } from '../person-messages.js';
 import { recordMet, metFor, forgetMet } from '../met-people.js';
 import { groupsHere, addGroup, renameGroup, removeGroup, moveToGroup } from '../people-groups.js';
+import { whoseLine, speechLevel } from '../same-line.js';
 import { linkDevice } from '../pan-link-auth.js';
 import { getDataDir as notesDataDir } from '../platform.js';
 
@@ -2034,19 +2035,24 @@ router.post('/query/stream', async (req, res) => {
       if (who.likeness !== null) console.log(`[voice-id] likeness ${who.likeness.toFixed(2)} -> ${who.verdict === undefined ? 'unsure' : who.verdict ? 'his voice' : 'someone else'} (gate ${voice.gateMode()})`);
     } catch (e) { console.warn('[voice-id] skipped:', e.message); voice = null; }
   }
-  // Two ΠANs listening in one room (the owner, 2026-11-18: his own phone and another person's,
-  // both unmuted, and the other one took his lines as that person's). A line on a person's
-  // device that is clearly the owner's voice is the owner's: said to his own ΠAN or to the
-  // room, never this person's words. It is dropped before transcription. Only "clearly": an
-  // unsure score is kept, so a person is not ignored by their own ΠAN.
+  // A person's device takes its own person's voice and nobody else's (person-voices.js; the
+  // owner, 2026-11-18, with his phone and another person's side by side: that person's ΠAN must
+  // not pick up what he says). Clearly the owner's voice, or another known person's, or clearly
+  // not this device's person once it knows them: dropped before transcription. Unsure goes on
+  // to the room check below (same-line.js).
+  let personVoice = null;      // { print, who, owner, pan } on a person's device
   if (audio && !bench && person) {
     try {
       const v = await import('../voice-id.js');
-      const who = v.whoseVoice(v.voicePrint(audio));
-      if (who.likeness !== null) console.log(`[voice-id] on person ${person.id}'s device: likeness to the owner ${who.likeness.toFixed(2)} -> ${who.verdict === true ? 'the owner talking, not theirs: dropped' : 'kept'}`);
-      if (who.verdict === true) {
-        recordTiming({ turn: turnId, stage: 'owner_voice_on_person_device', ms: Date.now() - turnStart });
-        send({ type: 'done', result: { intent: 'ambient', response: '', reason: 'owner_voice' } });
+      const pv = await import('../person-voices.js');
+      const print = v.voicePrint(audio);
+      const owner = print ? v.whoseVoice(print).likeness : null;
+      const who = pv.whoseOnDevice(person.id, print, { owner });
+      personVoice = { print, who, owner, pan: !!print && (v.panVoiceLikeness(print)?.likeness ?? 0) >= v.PAN_SELF };
+      if (print) console.log(`[voice-id] on person ${person.id}'s device: theirs ${who.mine?.toFixed(2) ?? '-'} owner ${owner?.toFixed(2) ?? '-'} -> ${who.verdict}${who.verdict === 'other' ? `, dropped${who.by ? ` (person ${who.by}'s voice)` : ''}` : who.leans ? `, leans to person ${who.leans}` : ''}`);
+      if (who.verdict === 'other') {
+        recordTiming({ turn: turnId, stage: 'other_voice_on_person_device', ms: Date.now() - turnStart });
+        send({ type: 'done', result: { intent: 'ambient', response: '', reason: 'other_voice' } });
         clearInterval(keepaliveInterval);
         if (streamControllers.get(streamKey)?.controller === controller) clearStream(streamKey);
         if (!res.writableEnded) res.end();
@@ -2090,6 +2096,31 @@ router.post('/query/stream', async (req, res) => {
       send({ type: 'heard', text });
     }
     recordTiming({ turn: turnId, stage: 'asr', ms: Date.now() - t0, bench: !!bench || undefined });
+  }
+
+  // One line heard by two ΠANs in one room (same-line.js): the same words at the same moment on
+  // two people's devices are one person's, by voice when a print says so, else the device that
+  // heard it louder. The other device's turn ends here as room talk.
+  if (audio && !bench && !interp) {
+    try {
+      const sure = person ? personVoice?.who?.verdict === 'theirs' : voiceWho?.verdict === true;
+      const leans = person ? (sure ? Number(person.id) : personVoice?.who?.leans ?? null) : (sure ? 1 : null);
+      const line = await whoseLine({ user: person ? Number(person.id) : 1, device: deviceName, text, level: speechLevel(audio), leans, sure });
+      if (line.waited) recordTiming({ turn: turnId, stage: 'same_line_wait', ms: line.waited });
+      if (!line.mine) {
+        recordTiming({ turn: turnId, stage: 'heard_on_another_device', ms: Date.now() - turnStart });
+        send({ type: 'done', result: { intent: 'ambient', response: '', reason: 'heard_elsewhere' } });
+        clearInterval(keepaliveInterval);
+        if (streamControllers.get(streamKey)?.controller === controller) clearStream(streamKey);
+        if (!res.writableEnded) res.end();
+        return;
+      }
+      // The line is this person's: their device learns their voice from it.
+      if (person && personVoice?.print) {
+        const pv = await import('../person-voices.js');
+        pv.learnPersonVoice(person.id, personVoice.print, { owner: personVoice.owner, pan: personVoice.pan });
+      }
+    } catch (e) { console.warn('[same-line] skipped:', e.message); }
   }
 
   // The end of PAN's own last reply at the head of his line (own-tail.js). When his line began is
