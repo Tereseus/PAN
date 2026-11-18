@@ -1,6 +1,10 @@
 package dev.pan.app.ui.people
 
+import android.app.Activity
+import android.content.Intent
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -47,6 +51,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -60,7 +65,9 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import dev.pan.app.ui.settings.qrBitmap
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 
@@ -131,7 +138,14 @@ private fun PeopleList(viewModel: PeopleViewModel, snackbar: SnackbarHostState) 
     val owner by viewModel.owner.collectAsState()
     val canSend by viewModel.canSend.collectAsState()
     val readBy by viewModel.readBy.collectAsState()
+    val group by viewModel.group.collectAsState()
+    val canMeet by viewModel.canMeet.collectAsState()
+    val met by viewModel.met.collectAsState()
     val scope = rememberCoroutineScope()
+    // Which part is showing: the people on this hub, or the people met who have their own ΠAN.
+    var part by rememberSaveable { mutableStateOf("group") }
+    var naming by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { viewModel.loadMet() }
 
     var adding by remember { mutableStateOf(false) }
     var code by remember { mutableStateOf<Pair<String, String>?>(null) }     // whose, the pairing link
@@ -158,6 +172,16 @@ private fun PeopleList(viewModel: PeopleViewModel, snackbar: SnackbarHostState) 
                 style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 20.dp))
             return@Column
+        }
+        // The parts of People. The first carries the name the owner gave the people on this hub
+        // (a family, a workplace). Met is there once this person may add people or has any.
+        val showMet = canMeet || met.isNotEmpty()
+        if (showMet) {
+            Row(modifier = Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(selected = part == "group", onClick = { part = "group" }, label = { Text(group.ifBlank { "Family" }) })
+                FilterChip(selected = part == "met", onClick = { part = "met" }, label = { Text("Met") })
+            }
+            if (part == "met") { MetPart(viewModel); return@Column }
         }
         LazyColumn(modifier = Modifier.fillMaxSize()) {
             if (!canSend) item {
@@ -189,8 +213,11 @@ private fun PeopleList(viewModel: PeopleViewModel, snackbar: SnackbarHostState) 
                 HorizontalDivider(modifier = Modifier.padding(start = 20.dp))
             }
             if (owner) item {
-                OutlinedButton(onClick = { adding = true }, enabled = !busy,
-                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)) { Text("Add a person") }
+                Row(modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedButton(onClick = { adding = true }, enabled = !busy) { Text("Add a person") }
+                    TextButton(onClick = { naming = true }) { Text("Name this group") }
+                }
             }
             if (rows.isNotEmpty() && canSend) item {
                 Text("Say \"ΠAN, tell ${firstName(rows.first().name)} ...\" and their device says it. Or open a name and type.",
@@ -198,6 +225,24 @@ private fun PeopleList(viewModel: PeopleViewModel, snackbar: SnackbarHostState) 
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
             }
         }
+    }
+
+    if (naming) {
+        var name by remember { mutableStateOf(group) }
+        AlertDialog(
+            onDismissRequest = { naming = false },
+            title = { Text("Name this group") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("What the people on your ΠAN are: Family, or the name of the place you work. Everyone on it sees this name.",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    OutlinedTextField(value = name, onValueChange = { name = it.take(30) }, label = { Text("Name") },
+                        singleLine = true, modifier = Modifier.fillMaxWidth())
+                }
+            },
+            confirmButton = { TextButton(enabled = name.isNotBlank(), onClick = { naming = false; viewModel.nameGroup(name) }) { Text("Save") } },
+            dismissButton = { TextButton(onClick = { naming = false }) { Text("Cancel") } },
+        )
     }
 
     if (adding) {
@@ -358,6 +403,112 @@ private fun PersonRow(
                 DropdownMenuItem(text = { Text("Remove") }, onClick = { menu = false; onRemove() })
             }
         }
+    }
+}
+
+/**
+ * Met: people with a ΠAN of their own whose code this person scanned. Each of the two scans the
+ * other's code; each ΠAN keeps its own record on its own hub and can forget it (MeetCard has the
+ * why). Nothing here talks to the other person's ΠAN.
+ */
+@Composable
+private fun MetPart(viewModel: PeopleViewModel) {
+    val met by viewModel.met.collectAsState()
+    val canMeet by viewModel.canMeet.collectAsState()
+    val myName by viewModel.myName.collectAsState()
+    val context = LocalContext.current
+    var showing by remember { mutableStateOf(false) }
+    var scanned by remember { mutableStateOf<MeetCard.Card?>(null) }
+    var forgetting by remember { mutableStateOf<MetLine?>(null) }
+    val scan = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val text = result.data?.getStringExtra("code")
+        if (result.resultCode == Activity.RESULT_OK && text != null) {
+            val card = MeetCard.read(text)
+            if (card == null) viewModel.say("That code is too old, or it is not a ΠAN code. Ask them to show it again.") else scanned = card
+        }
+    }
+    LaunchedEffect(Unit) { viewModel.loadMet() }
+
+    LazyColumn(modifier = Modifier.fillMaxSize()) {
+        item {
+            Text("People with their own ΠAN that you have met. You scan their code and they scan yours. Your ΠAN keeps its own record, and you can forget anyone.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
+        }
+        if (canMeet) item {
+            Row(modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { showing = true }) { Text("Show my code") }
+                OutlinedButton(onClick = {
+                    scan.launch(Intent(context, dev.pan.app.vpn.ScanPairActivity::class.java).putExtra("meet", true))
+                }) { Text("Scan a code") }
+            }
+        }
+        if (met.isEmpty()) item {
+            Text("Nobody yet.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp))
+        }
+        items(met, key = { it.id }) { person ->
+            var menu by remember { mutableStateOf(false) }
+            Row(modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 4.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(person.name, style = MaterialTheme.typography.bodyLarge)
+                    Text(if (person.times > 1) "Met ${person.times} times, last ${whenText(person.lastAt)}" else "Met ${whenText(person.lastAt)}",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Box {
+                    IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, contentDescription = "More for ${person.name}") }
+                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                        DropdownMenuItem(text = { Text("Forget") }, onClick = { menu = false; forgetting = person })
+                    }
+                }
+            }
+            HorizontalDivider(modifier = Modifier.padding(start = 20.dp))
+        }
+    }
+
+    if (showing) {
+        var uri by remember { mutableStateOf<String?>(null) }
+        // A code is good for three minutes, so a fresh one is drawn every minute while this is open.
+        LaunchedEffect(myName) {
+            while (true) {
+                uri = withContext(Dispatchers.Default) { MeetCard.mine(myName.ifBlank { "Someone" }) }
+                delay(60_000)
+            }
+        }
+        val qr = remember(uri) { uri?.let { qrBitmap(it, 720) } }
+        AlertDialog(
+            onDismissRequest = { showing = false },
+            title = { Text("Your code") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("Have them scan this with their ΠAN. It gives them the name ${myName.ifBlank { "Someone" }} and nothing else.")
+                    if (qr != null) Image(bitmap = qr.asImageBitmap(), contentDescription = "Your ΠAN code", modifier = Modifier.size(260.dp))
+                    Text("Then scan theirs, so you both have each other.",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            },
+            confirmButton = { TextButton(onClick = { showing = false }) { Text("Done") } },
+        )
+    }
+
+    scanned?.let { card ->
+        AlertDialog(
+            onDismissRequest = { scanned = null },
+            title = { Text("Add ${card.name}?") },
+            text = { Text("Their ΠAN gave the name ${card.name}. Your ΠAN keeps that you met, on your own computer. They are not told, and nothing of yours goes to them.") },
+            confirmButton = { TextButton(onClick = { scanned = null; viewModel.addMet(card) }) { Text("Add") } },
+            dismissButton = { TextButton(onClick = { scanned = null }) { Text("Cancel") } },
+        )
+    }
+
+    forgetting?.let { person ->
+        AlertDialog(
+            onDismissRequest = { forgetting = null },
+            title = { Text("Forget ${person.name}?") },
+            text = { Text("Your ΠAN drops its record of meeting ${person.name}. If they scanned your code, their ΠAN still has theirs.") },
+            confirmButton = { TextButton(onClick = { forgetting = null; viewModel.forgetMet(person) }) { Text("Forget") } },
+            dismissButton = { TextButton(onClick = { forgetting = null }) { Text("Cancel") } },
+        )
     }
 }
 

@@ -25,6 +25,7 @@ export const LIMITS = Object.freeze({
   // Anyone on the hub may message anyone else on it (the owner, 2026-11-18: someone in your own
   // organization can always send you a message). The owner can still close it for a role.
   messages: 5,         // send a message to a person on this hub
+  meet: 25,            // add someone with their own ΠAN by scanning their code (met-people.js)
   // The computers and the Claude threads on them are the owner's until a computer can belong to
   // a person: a thread runs anything, as the owner, on the owner's machine.
   computer: 100,       // run a job on a computer, the terminal
@@ -59,6 +60,10 @@ export const PERSON_ALLOW = Object.freeze([
   'GET /api/v1/people',
   'GET /api/v1/people/messages',
   'POST /api/v1/people/messages',
+  // The people with their own ΠAN that this person has met (met-people.js): their own list only.
+  'GET /api/v1/people/met',
+  'POST /api/v1/people/met',
+  'DELETE /api/v1/people/met',
   // A person's computer is that person's client: its thread relay reports that computer's
   // threads and takes the jobs for them. routes/threads.js holds each call to the hosts the
   // calling device itself holds, so it never sees a thread or a job of anyone else's.
@@ -270,7 +275,7 @@ export function may(person, action) {
 /** The plain sentence PAN says when it will not do something for this person. */
 export function refusal(action) {
   const what = { computer: 'run things on a computer', thread: 'talk to a Claude thread', home: 'control the house',
-    messages: 'send messages', camera: 'use the camera', own_memory: 'look things up in memory',
+    messages: 'send messages', meet: 'add people you meet', camera: 'use the camera', own_memory: 'look things up in memory',
     others_memory: "look at someone else's memory", lend_device: 'lend a device', approve_device: 'let a new device in',
     pair_device: 'pair a device', set_limits: 'change what people may do' }[action] || 'do that';
   return `I can't ${what} for you. Whoever set me up decides that.`;

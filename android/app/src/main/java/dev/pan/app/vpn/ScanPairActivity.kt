@@ -41,8 +41,13 @@ import java.util.concurrent.Executors
  * Reads the pairing QR that PAN shows on the computer (its pairing page, /pair/) with the
  * back camera, and hands the code to PairActivity, which asks before it pairs. Decoding
  * runs on the phone (ZXing); no picture is kept or sent anywhere.
+ *
+ * Started with the extra "meet" it reads another person's ΠAN code instead (ui/people/MeetCard)
+ * and hands the text back to whoever opened it as the result "code". It decides nothing itself.
  */
 class ScanPairActivity : ComponentActivity() {
+
+    private val meet by lazy { intent?.getBooleanExtra("meet", false) == true }
 
     private val analysis = Executors.newSingleThreadExecutor()
     private val reader = PairCodeReader()
@@ -64,7 +69,7 @@ class ScanPairActivity : ComponentActivity() {
                 Box(Modifier.fillMaxSize()) {
                     AndroidView(factory = { previewView }, modifier = Modifier.fillMaxSize())
                     Text(
-                        "Point the camera at the pairing code ΠAN shows on your computer",
+                        if (meet) "Point the camera at the code on their ΠAN" else "Point the camera at the pairing code ΠAN shows on your computer",
                         modifier = Modifier.align(Alignment.TopCenter).padding(32.dp),
                         color = Color.White,
                         textAlign = TextAlign.Center,
@@ -113,6 +118,15 @@ class ScanPairActivity : ComponentActivity() {
     }
 
     private fun found(text: String) {
+        if (meet) {
+            if (done || !text.startsWith(dev.pan.app.ui.people.MeetCard.PREFIX)) return // another QR: keep looking
+            done = true
+            runOnUiThread {
+                setResult(RESULT_OK, Intent().putExtra("code", text))
+                finish()
+            }
+            return
+        }
         if (done || !PairCodeReader.isPairCode(text)) return // another QR: keep looking
         done = true
         runOnUiThread {

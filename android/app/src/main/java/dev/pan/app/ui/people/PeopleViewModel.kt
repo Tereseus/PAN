@@ -28,6 +28,9 @@ data class PersonLine(
     val unread: Int, val devices: List<String>,
 )
 
+/** Someone with their own ΠAN whose code this person scanned. */
+data class MetLine(val id: Long, val name: String, val firstAt: Long, val lastAt: Long, val times: Int)
+
 /** One message in a conversation. said: their device has it (read out unless muted). opened: they have seen it here. */
 data class TalkLine(val id: Long, val fromMe: Boolean, val body: String, val at: Long, val said: Boolean, val opened: Boolean)
 
@@ -55,6 +58,17 @@ class PeopleViewModel @Inject constructor(
     /** On a child's device: the owner's name, who can read these conversations. null: nobody else can. */
     private val _readBy = MutableStateFlow<String?>(null)
     val readBy: StateFlow<String?> = _readBy
+
+    /** What the owner calls the people on this hub ("Family", a company's name). Empty until named. */
+    private val _group = MutableStateFlow("")
+    val group: StateFlow<String> = _group
+    private val _myName = MutableStateFlow("")
+    val myName: StateFlow<String> = _myName
+    /** May this person add people they meet (the hub's `meet` limit). */
+    private val _canMeet = MutableStateFlow(false)
+    val canMeet: StateFlow<Boolean> = _canMeet
+    private val _met = MutableStateFlow<List<MetLine>>(emptyList())
+    val met: StateFlow<List<MetLine>> = _met
 
     /** The owner reading a child's conversations: whose, and who that child has talked with. */
     private val _watching = MutableStateFlow<PersonLine?>(null)
@@ -116,6 +130,50 @@ class PeopleViewModel @Inject constructor(
         return out
     }
 
+    /** The people this person has met, the latest first. */
+    suspend fun loadMet() {
+        val r = hub("GET", "/api/v1/people/met")?.takeIf { it.first == 200 } ?: return
+        val out = ArrayList<MetLine>()
+        val list = r.second.optJSONArray("met")
+        if (list != null) for (i in 0 until list.length()) {
+            val m = list.optJSONObject(i) ?: continue
+            out.add(MetLine(m.optLong("id"), m.optString("name"), m.optLong("first_at"), m.optLong("last_at"), m.optInt("times", 1)))
+        }
+        _met.value = out
+    }
+
+    /** The wearer said yes to a scanned code: this person's own hub keeps the meeting. */
+    fun addMet(card: MeetCard.Card) {
+        viewModelScope.launch {
+            val r = hub("POST", "/api/v1/people/met", JSONObject().put("name", card.name).put("key", card.key))
+            _message.value = when (r?.first) {
+                200 -> if ((r.second.optJSONObject("met")?.optInt("times") ?: 1) > 1) "You have met ${card.name} before. Noted again." else "${card.name} is in Met."
+                403 -> "Whoever set up this ΠAN has not opened that for you."
+                else -> "ΠAN could not keep that right now."
+            }
+            loadMet()
+        }
+    }
+
+    fun forgetMet(person: MetLine) {
+        viewModelScope.launch {
+            val r = hub("DELETE", "/api/v1/people/met?id=${person.id}")
+            if (r == null || r.first != 200) _message.value = "ΠAN could not forget ${person.name} right now."
+            loadMet()
+        }
+    }
+
+    /** The owner names the people on this hub: the first part's label on every device. */
+    fun nameGroup(name: String) {
+        viewModelScope.launch {
+            val r = hub("PUT", "/api/v1/settings", JSONObject().put("people_group_name", name.trim().take(30)))
+            if (r == null || r.first != 200) _message.value = "ΠAN could not change that right now."
+            load(withDevices = false)
+        }
+    }
+
+    fun say(text: String) { _message.value = text }
+
     /** The owner opens a child's conversations to read. The hub refuses it for anyone who is not a child. */
     fun watch(child: PersonLine) {
         _watching.value = child
@@ -150,6 +208,9 @@ class PeopleViewModel @Inject constructor(
         _owner.value = isOwner
         _canSend.value = r.second.optBoolean("can_send", true)
         _readBy.value = r.second.optJSONObject("me")?.optString("read_by")?.takeIf { it.isNotBlank() && it != "null" }
+        _group.value = r.second.optString("group")
+        _myName.value = r.second.optJSONObject("me")?.optString("name").orEmpty()
+        _canMeet.value = r.second.optBoolean("can_meet", false)
         if (isOwner && (withDevices || devices.isEmpty())) {
             val list = hub("GET", "/api/v1/link/people")?.takeIf { it.first == 200 }?.second?.optJSONArray("devices")
             if (list != null) {

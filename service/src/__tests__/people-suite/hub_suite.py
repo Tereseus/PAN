@@ -642,6 +642,33 @@ def main():
                  "the child, her own by that door": call("GET", "/api/v1/people?of=%s" % quill["id"], device=quill["device"])[0]}
         check("messages", "nobody else reads anybody's, and the owner only a child's", all(v == 403 for v in tries.values()), tries)
 
+        # ── people met: someone with their own ΠAN whose code was scanned ────────
+        key_a, key_b = "A" * 120, "B" * 120
+        s, j = call("POST", "/api/v1/people/met", {"name": "Rin Okafor", "key": key_a}, device=zora["device"])
+        s2, hers = call("GET", "/api/v1/people/met", device=zora["device"])
+        check("met", "an adult adds someone she met, and it is on her list", s == 200 and j.get("met", {}).get("times") == 1 and [m.get("name") for m in hers.get("met", [])] == ["Rin Okafor"], (s, j, hers))
+        lists = {"the owner's": call("GET", "/api/v1/people/met", device=OWNER, headers=PHONE), "the child's": call("GET", "/api/v1/people/met", device=quill["device"])}
+        check("met", "it is on nobody else's list", all(v[0] == 200 and v[1].get("met") == [] for v in lists.values()), lists)
+        s, j = call("POST", "/api/v1/people/met", {"name": "Rin Okafor", "key": key_a}, device=quill["device"])
+        s2, me = call("GET", "/api/v1/people", device=quill["device"])
+        s3, her = call("GET", "/api/v1/people", device=zora["device"])
+        check("met", "a child cannot add a stranger unless the owner opens it, and the app is told so", s == 403 and me.get("can_meet") is False and her.get("can_meet") is True, (s, j, me.get("can_meet")))
+        s, j = call("POST", "/api/v1/people/met", {"name": "Rin O.", "key": key_a}, device=OWNER, headers=PHONE)
+        s2, his = call("GET", "/api/v1/people/met", device=OWNER, headers=PHONE)
+        check("met", "the owner's record of the same person is his own", s == 200 and [m.get("name") for m in his.get("met", [])] == ["Rin O."] and call("GET", "/api/v1/people/met", device=zora["device"])[1].get("met", [{}])[0].get("name") == "Rin Okafor", (s, his))
+        tries = {"no key": call("POST", "/api/v1/people/met", {"name": "Sam"}, device=zora["device"])[0],
+                 "a key with other signs": call("POST", "/api/v1/people/met", {"name": "Sam", "key": "A" * 60 + "<script>"}, device=zora["device"])[0],
+                 "no name": call("POST", "/api/v1/people/met", {"name": "  ", "key": key_b}, device=zora["device"])[0]}
+        check("met", "a code with no name or a bad key is refused", all(v == 400 for v in tries.values()), tries)
+        his_id = his.get("met", [{}])[0].get("id")
+        s, j = call("DELETE", "/api/v1/people/met?id=%s" % his_id, device=zora["device"])
+        still = call("GET", "/api/v1/people/met", device=OWNER, headers=PHONE)[1].get("met", [])
+        check("met", "she cannot forget the owner's record", s == 200 and j.get("forgotten") is False and len(still) == 1, (s, j, still))
+        s, j = call("DELETE", "/api/v1/people/met?id=%s" % hers.get("met", [{}])[0].get("id"), device=zora["device"])
+        check("met", "forgetting takes her record and leaves his", j.get("forgotten") is True and call("GET", "/api/v1/people/met", device=zora["device"])[1].get("met") == []
+              and len(call("GET", "/api/v1/people/met", device=OWNER, headers=PHONE)[1].get("met", [])) == 1, j)
+        call("DELETE", "/api/v1/people/met?id=%s" % his_id, device=OWNER, headers=PHONE)
+
         # Removing the computer takes its threads with it.
         s, j = call("DELETE", "/api/v1/link/devices/%s" % quill["device"], device=OWNER)
         s2, reg = call("GET", "/api/v1/threads", device=OWNER)

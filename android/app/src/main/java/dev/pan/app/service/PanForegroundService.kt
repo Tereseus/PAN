@@ -2921,6 +2921,24 @@ class PanForegroundService : Service() {
             panLog("TEST_CAR: car mode ${if (tts.carMode) "on" else "off"}")
         }
 
+        // TEST_MEET_CARD -> logs this device's own meeting code (ui/people/MeetCard).
+        // TEST_MEET --es uri "pan://meet?..." -> takes a code as if the camera had read it and the
+        // wearer had tapped Add: checks it and tells the hub. For testing with the screen locked.
+        if (dev.pan.app.BuildConfig.DEBUG && intent?.action == "TEST_MEET_CARD") {
+            serviceScope.launch {
+                val name = serverClient.hubJson("GET", "/api/v1/people")?.second?.optJSONObject("me")?.optString("name").orEmpty()
+                panLog("TEST_MEET_CARD: " + (dev.pan.app.ui.people.MeetCard.mine(name.ifBlank { "Someone" }) ?: "none"))
+            }
+        }
+        if (dev.pan.app.BuildConfig.DEBUG && intent?.action == "TEST_MEET") {
+            val card = dev.pan.app.ui.people.MeetCard.read(intent.getStringExtra("uri").orEmpty())
+            if (card == null) panLog("TEST_MEET: not a good code") else serviceScope.launch {
+                val r = serverClient.hubJson("POST", "/api/v1/people/met",
+                    org.json.JSONObject().put("name", card.name).put("key", card.key))
+                panLog("TEST_MEET: ${card.name} -> ${r?.first} ${r?.second?.optJSONObject("met")?.optInt("times")}")
+            }
+        }
+
         if (dev.pan.app.BuildConfig.DEBUG && intent?.action == "TEST_SAY") {
             val t = intent.getStringExtra("text") ?: "hello"
             // Clear the dedup window and the post-TTS echo cooldown first. Both

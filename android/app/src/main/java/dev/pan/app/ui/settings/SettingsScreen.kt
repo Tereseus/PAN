@@ -474,16 +474,7 @@ fun SettingsScreen(
                     viewModel = mainViewModel
                 )
             }
-
-            HorizontalDivider()
-
-            Text("Data dividend", style = MaterialTheme.typography.titleMedium)
-            Text(
-                "Get paid when you choose to share parts of your data. Not ready yet. " +
-                "Nothing is shared, and it stays off until you turn it on here.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            // The data dividend row comes back here when there is something to turn on (the owner, 2026-11-18).
             }
             if (page == "about") {
             // App Updates — manual OTA pull. The app auto-checks ~8s after

@@ -18,6 +18,7 @@ import { noteSaid, dropOwnTail } from '../own-tail.js';
 import { scopeFor, may, refusal } from '../people.js';
 import { addNote, takeNotesFor, noteSender, maySpeakNow, noteOwnerSpokeOn, notesDevices, SPEAK_PER_MINUTE } from '../phone-notes.js';
 import { takeMessagesFor, peopleFor, conversation, sendMessage, peopleHere, ownerMayRead } from '../person-messages.js';
+import { recordMet, metFor, forgetMet } from '../met-people.js';
 import { linkDevice } from '../pan-link-auth.js';
 import { getDataDir as notesDataDir } from '../platform.js';
 
@@ -976,7 +977,11 @@ router.get('/people', (req, res) => {
   const canSend = !person || may(person, 'messages');
   const people = canSend ? peopleFor(me) : [];
   const owner = peopleHere().find((p) => p.id === 1);
-  res.json({ ok: true, me: { id: me, name: self?.name || '', role: self?.role || (person ? person.role : 'owner'), owner: !person,
+  // group: what the owner calls the people on this hub ("Family", a company's name); '' until named.
+  let group = '';
+  try { group = String(get("SELECT value FROM settings WHERE key = 'people_group_name'")?.value || '').replace(/^"|"$/g, '').trim().slice(0, 30); } catch {}
+  res.json({ ok: true, group, can_meet: !person || may(person, 'meet'),
+    me: { id: me, name: self?.name || '', role: self?.role || (person ? person.role : 'owner'), owner: !person,
       read_by: person && ownerMayRead(me) ? (owner?.first || 'the owner') : null },
     can_send: canSend, people, unread: people.reduce((n, p) => n + p.unread, 0) });
 });
@@ -993,6 +998,22 @@ router.get('/people/messages', (req, res) => {
   const talk = conversation(callerId(req), Number(req.query.with), { before: Number(req.query.before) || 0 });
   if (!talk) return res.status(404).json({ ok: false, error: 'nobody by that id on this hub' });
   res.json({ ok: true, ...talk });
+});
+// People with a ΠAN of their own that the caller has met (met-people.js). The phone scans the
+// other person's code, checks it, and tells its own hub; the hub hears from nobody else. Each
+// person's list is their own.
+router.get('/people/met', (req, res) => {
+  res.json({ ok: true, met: metFor(callerId(req)) });
+});
+router.post('/people/met', (req, res) => {
+  const person = req.user?.person ? req.user : null;
+  if (person && !may(person, 'meet')) return res.status(403).json({ ok: false, error: refusal('meet') });
+  const met = recordMet(callerId(req), { name: req.body?.name, key: req.body?.key });
+  if (met.error) return res.status(400).json({ ok: false, error: `bad ${met.error}` });
+  res.json({ ok: true, met });
+});
+router.delete('/people/met', (req, res) => {
+  res.json({ ok: true, forgotten: forgetMet(callerId(req), Number(req.query.id)) });
 });
 router.post('/people/messages', (req, res) => {
   const person = req.user?.person ? req.user : null;

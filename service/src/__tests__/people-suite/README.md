@@ -22,6 +22,7 @@ change to `people.js`, `routes/link.js`, the person branch of `server.js`, `rout
 | unit | `../pan-link-auth.test.js` | A device's identity comes from PAN Link's secret, and forged headers are refused. |
 | unit | `../notes-sender.test.js` | A note's sender is the PAN Link device, not what the note says; six spoken notes a minute per device; a note goes to the device of the person it is for (pinned device, the device he last talked on, the asker of a thread, what happens when that device is away, expiry). |
 | unit | `../person-messages.test.js` | What counts as a message to someone on the hub and what does not; whose device says it; a person to the owner and to another person; who may send; a device that is off; six a minute. Kept in the database: a restart loses nothing; one device says it, once; the conversation both people see and nobody else; what is too old to read out; pages. Two people with one first name: ΠAN asks which, and the whole name or the rest of it answers. The owner may read a child's and nobody else's, and looking opens nothing. |
+| unit | `../met-people.test.js` | A meeting is kept and the same key is the same person; each person's own list; a stranger's name as plain text; a bad code; forgetting only one's own; 500 at most. |
 | unit | `../thread-people.test.js` | Whose a relay host is; which threads the owner and each person can reach; the owner's own thread first; what one person heard or asked never reaches another; a job is taken only by the computer that holds its host; handing over, taking back, removing. |
 | link | `pan-link/allow_test.go` | PAN Link's own wall (runs when Go is installed). |
 | hub | `hub_suite.py` | A dev hub with its own port and database and a stand-in for PAN Link's admin. Five people (child, guest, adult, manager, admin), each with a paired device, plus the owner's two devices, a device whose person was removed and a device nobody knows. |
@@ -66,6 +67,9 @@ The hub part, by group:
   oneself or with nothing in them are refused. The owner reads a child's list and
   conversation and it opens nothing; the child's list says who can read; an adult's, the
   owner's own, and any try from a person's device are refused.
+- **met**: an adult adds someone she met and only her list has it; a child cannot unless the
+  owner opens it; the owner's record of the same person is his own; a code with no name or a
+  bad key is refused; nobody forgets another person's record.
 - **admin**: no role can add, rename, promote or remove people, pair a device, free their own
   device or change the limits; the owner can; handing over and taking back; removal.
 
