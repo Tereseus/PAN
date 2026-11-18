@@ -7,7 +7,7 @@
 
 Parts:
   unit   people.test.js, person-voice.test.js, pan-link-routes.test.js, pan-link-auth.test.js,
-         notes-sender.test.js, thread-people.test.js  (plain node, fresh database in a temp folder each)
+         notes-sender.test.js, thread-people.test.js, person-messages.test.js  (plain node, fresh database in a temp folder each)
   link   pan-link's own tests of its allow list (go test, when Go is installed)
   hub    hub_suite.py: a dev hub on its own port and database, a stand-in for pan-link's admin,
          every route in the source sent from a person's device
@@ -27,7 +27,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 TESTS = os.path.normpath(os.path.join(HERE, ".."))
 SERVICE = os.path.normpath(os.path.join(HERE, "..", "..", ".."))
 REPO = os.path.normpath(os.path.join(SERVICE, ".."))
-UNIT = ["people.test.js", "person-voice.test.js", "pan-link-routes.test.js", "pan-link-auth.test.js", "notes-sender.test.js", "thread-people.test.js"]
+UNIT = ["people.test.js", "person-voice.test.js", "pan-link-routes.test.js", "pan-link-auth.test.js", "notes-sender.test.js", "thread-people.test.js", "person-messages.test.js"]
 
 
 def unit():

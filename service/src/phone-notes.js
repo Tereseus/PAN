@@ -22,6 +22,7 @@
 // from the clock so a device's high-water mark stays valid across one.
 
 import { get } from './db.js';
+import { devicePeople } from './people.js';
 
 export const OWNER_ID = 1;
 const MAX_NOTES = 80;
@@ -74,9 +75,10 @@ export function noteOwnerSpokeOn(deviceKey, now = Date.now()) {
  * Queue a note. to_user: who it is for (the owner unless said). to_device: the one device it
  * answers, when there is one. from: noteSender(req), or null for the hub's own notes.
  */
-export function addNote(fields, { from = null, toUser = OWNER_ID, toDevice = null, now = Date.now() } = {}) {
+export function addNote(fields, { from = null, toUser = OWNER_ID, toDevice = null, keepMs = null, now = Date.now() } = {}) {
+  // keepMs: how long it waits for a device (a message between people outlives a reminder).
   const note = { ...fields, id: ++seq, from, to_user: Number(toUser) || OWNER_ID,
-    to_device: toDevice ? String(toDevice).toLowerCase() : null, at: now };
+    to_device: toDevice ? String(toDevice).toLowerCase() : null, at: now, keep_ms: Number(keepMs) > 0 ? Number(keepMs) : null };
   queue.push(note);
   if (queue.length > MAX_NOTES) queue = queue.slice(-MAX_NOTES);
   return note;
@@ -108,7 +110,7 @@ function ownerDeviceTakes(note, dev, now) {
 export function takeNotesFor({ key = '', linkDevice = '', person = null } = {}, now = Date.now()) {
   const keys = [String(key || '').toLowerCase(), String(linkDevice || '').toLowerCase()].filter(Boolean);
   for (const k of keys) lastAsked.set(k, now);
-  queue = queue.filter((n) => now - n.at < (TTL_MS[n.type] ?? TTL_DEFAULT_MS));
+  queue = queue.filter((n) => now - n.at < (n.keep_ms ?? TTL_MS[n.type] ?? TTL_DEFAULT_MS));
   const dev = { keys };
   const mine = (n) => {
     if (person) {
@@ -120,7 +122,7 @@ export function takeNotesFor({ key = '', linkDevice = '', person = null } = {}, 
   };
   const out = queue.filter(mine);
   if (out.length) queue = queue.filter((n) => !out.includes(n));
-  return out.map(({ at, to_user, to_device, ...rest }) => rest);
+  return out.map(({ at, to_user, to_device, keep_ms, ...rest }) => rest);
 }
 
 /**
@@ -131,6 +133,20 @@ export function notesDevices(now = Date.now()) {
   const asking = [...lastAsked].filter(([k, t]) => now - t < 10 * 60_000 && !/^d[0-9a-f]{12}$/.test(k))
     .map(([key, t]) => ({ key, away: now - t > AWAY_MS })).sort((a, b) => a.key.localeCompare(b.key));
   return { pinned: pinnedDevice(now, true) || null, last_spoke: lastSpoke && now - lastSpoke.at < LAST_SPOKE_MS ? lastSpoke.key : null, asking };
+}
+
+/**
+ * Is a device of this person's asking for notes right now? A device paired for a person is theirs
+ * (people.js); every other device that asks is the owner's.
+ */
+export function userAsking(userId, now = Date.now()) {
+  const theirs = new Map();
+  try { for (const d of devicePeople()) theirs.set(String(d.link_device_id).toLowerCase(), Number(d.user_id)); } catch {}
+  for (const [key, t] of lastAsked) {
+    if (now - t > AWAY_MS) continue;
+    if ((theirs.get(key) ?? OWNER_ID) === Number(userId)) return true;
+  }
+  return false;
 }
 
 /** For the tests and the log: how many notes wait, and for whom. */

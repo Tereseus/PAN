@@ -40,6 +40,7 @@ import { warmReader } from './voice-reader.js';
 import { asksForCamera } from './camera-ask.js';
 import { asksToMute } from './mute-ask.js';
 import { may, refusal } from './people.js';
+import { messageTurn, parseMessage } from './person-messages.js';
 
 // Recall-intent sniff — only when text matches this do we run a DB lookup on
 // the first pass. Pure conversation never touches FTS5/vector. See task #744
@@ -2389,6 +2390,23 @@ function isTestTurn(context) {
   return !!((context?.source && /benchmark|regression/.test(context.source)) || /-bench$/.test(String(context?.device_id || '')));
 }
 
+// A message to someone else on this ΠAN ("PAN, tell Maria dinner is ready"): her own device says
+// it (person-messages.js). Only a line said to PAN, never while interpreting. It is looked at
+// before the thread relay, because a message can hold the word "thread" ("tell Maria the garden
+// thread is done"); a line that names a real thread the speaker can reach stays the relay's
+// ("tell Maria Homework thread to stop", when there is a thread called that).
+async function messageToPerson(text, context, { person = null, addressed = false } = {}) {
+  if (!addressed || interpretingFor(context?.device_id)) return null;
+  try {
+    if (!parseMessage(text, { from: person, addressed })) return null;
+    if (!person || may(person, 'own_thread')) {
+      const tr = await import('./thread-relay.js');
+      if (tr.parseThreadCommand(text, { person, peek: true })?.kind === 'send') return null;
+    }
+    return messageTurn(text, { person, addressed, test: isTestTurn(context) });
+  } catch (e) { console.warn('[router] message parse failed:', e.message); return null; }
+}
+
 async function* _threadRelayFastPath(text, context) {
   // "Ask them where the station is" is a line to translate, not a job for a thread.
   if (interpretingFor(context?.device_id)) return;
@@ -2886,6 +2904,18 @@ async function* personTurn(text, context, withProsody) {
   }
   if (!may(person, 'talk')) { yield* say(refusal('talk')); return; }
 
+  // A message to someone else on this ΠAN, the owner included.
+  {
+    const inTalk = Number.isFinite(context.since_pan_ms) && context.since_pan_ms < TALK_MS;
+    const msg = await messageToPerson(text, context, { person, addressed: saysPanName(text) || inTalk });
+    if (msg) {
+      notePath(msg.refused ? 'person_refused' : 'person_message');
+      if (msg.response) yield { type: 'chunk', text: msg.response };
+      yield { type: 'done', result: withProsody(msg) };
+      return;
+    }
+  }
+
   // A Claude thread or a computer. A person's own computer is that person's client
   // (docs/PEOPLE-PLAN.md): the threads on it are theirs to use (own_thread). Every other thread
   // and computer is the owner's, unless the owner opened them to this person (thread).
@@ -3033,6 +3063,16 @@ export async function* routeStream(text, context = {}) {
     if (quick) {
       yield { type: 'chunk', text: quick.response };
       yield { type: 'done', result: withProsody(quick) };
+      return;
+    }
+  }
+
+  {
+    const msg = await messageToPerson(text, context, { addressed: saysPanName(text) || talking });
+    if (msg) {
+      insertRouterEvent(text, msg.intent, msg.response, context);
+      if (msg.response) yield { type: 'chunk', text: msg.response };
+      yield { type: 'done', result: withProsody(msg) };
       return;
     }
   }

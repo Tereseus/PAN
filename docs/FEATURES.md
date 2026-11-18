@@ -309,6 +309,28 @@ asks for its notes every few seconds.
 
 ---
 
+## Messages between people on one ΠAN (`service/src/person-messages.js`)
+
+- **What it does:** "PAN, tell Maria dinner is ready" from anyone on the hub puts "Sam says:
+  dinner is ready." on Maria's own device, read out and shown. Forms: tell / text / message /
+  ping NAME ..., let NAME know ..., send a message to NAME ..., send NAME a message ...,
+  ask NAME ... ("Sam asks: ..."). A body that starts with "to" reads "Sam says to come down."
+- **Calls:** `messageToPerson` in `router.js` (both the owner's path and `personTurn`) calls
+  `parseMessage` then `messageTurn`, which calls `sendMessage` -> `addNote` (type `speak`,
+  `data.kind = 'message'`, `to_user`, kept 12 hours) in `phone-notes.js`. Result intent
+  `message`. `userAsking` says whether a device of the other person's is asking right now.
+- **Preserves:** the words as heard, no model in between; nothing in a message is acted on.
+- **Pre-gate:** the line must be said to ΠAN (`saysPanName` or ΠAN spoke within 45 s) and not
+  while interpreting; NAME must be the first name of an active person on this hub other than
+  the speaker (the owner goes by the setting `display_name`); a person needs `messages`
+  (`people.js`), else "I can't send messages for you ..."; six a minute per sender. A line that
+  names a real thread the speaker can reach is left to the thread relay. A test turn
+  (`-bench`) parses and sends nothing.
+- **Tests:** `service/src/__tests__/person-messages.test.js` (9), the suite's messages group.
+
+---
+
+
 ## Tailscale keys for PAN Link phones (`POST /api/v1/tailscale/auto-auth`, `service/src/routes/tailscale-key.js`)
 
 - **Calls:** Tailscale's API (`POST /api/v2/tailnet/-/keys`, `PAN_TAILSCALE_API` overrides the
