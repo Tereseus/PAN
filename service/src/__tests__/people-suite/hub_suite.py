@@ -309,7 +309,7 @@ def main():
             allow = set(re.findall(r"'([A-Z]+) (/[^']*)'", block))
         except (OSError, ValueError):
             pass
-        check("wall", "the list of what a person may reach is read from people.js (%d paths)" % len(allow), 5 <= len(allow) <= 20, allow)
+        check("wall", "the list of what a person may reach is read from people.js (%d paths)" % len(allow), 5 <= len(allow) <= 30, allow)
         if safe:
             open_wrongly, closed_wrongly = [], []
             for n, (method, path) in enumerate(routes):
@@ -641,6 +641,46 @@ def main():
                  "the child, an adult's conversation": call("GET", "/api/v1/people/messages?with=1&of=%s" % zora["id"], device=quill["device"])[0],
                  "the child, her own by that door": call("GET", "/api/v1/people?of=%s" % quill["id"], device=quill["device"])[0]}
         check("messages", "nobody else reads anybody's, and the owner only a child's", all(v == 403 for v in tries.values()), tries)
+
+        # ── a call between two people on this ΠAN ────────────────────────────────
+        for dev_ in (zora["device"], quill["device"]):
+            pending(dev_)
+        pending(OWNER, PHONE)
+        s, done, said = turn("Hey PAN, talk to Zora.", OWNER, headers=PHONE)
+        s2, raw = call("GET", "/api/v1/slack/pending", device=zora["device"])
+        check("calls", "the owner opens a call; her device is told once and asks faster", (done or {}).get("intent") == "talk" and bodies(raw) == ["%s wants to talk. Say: PAN, talk to %s." % (boss, boss)] and raw.get("fast") is True, (done, raw))
+        s, done, said = turn("Are you home yet?", OWNER, headers=PHONE)
+        check("calls", "his next line goes to her and PAN says nothing back", (done or {}).get("intent") == "talk" and (done or {}).get("response") == "" and (done or {}).get("sent") is True and pending(zora["device"])[1] == ["%s says: Are you home yet?" % boss], done)
+        s, done, said = turn("Who is that on the phone?", zora["device"])
+        check("calls", "being called passes on nothing she says until she answers", (done or {}).get("intent") != "talk" and pending(OWNER, PHONE)[1] == [], done)
+        s, done, said = turn("PAN, answer.", zora["device"])
+        check("calls", "she answers, and he is told she is on", "on with %s" % boss in str((done or {}).get("response")) and pending(OWNER, PHONE)[1] == ["Zora is on."], done)
+        s, done, said = turn("Almost there, ten minutes", zora["device"])
+        got = {"his": pending(OWNER, PHONE)[1], "the child's": pending(quill["device"])[1]}
+        check("calls", "her words reach him alone, without her name, as on a phone", (done or {}).get("intent") == "talk" and got == {"his": ["Almost there, ten minutes."], "the child's": []}, (done, got))
+        s, j = call("GET", "/api/v1/people", device=zora["device"])
+        check("calls", "the app is told who she is on with", j.get("talk", {}).get("with") == 1 and j.get("talk", {}).get("joined") is True, j.get("talk"))
+        s, done, said = turn("PAN, hang up.", OWNER, headers=PHONE)
+        check("calls", "hanging up ends it for both, and she is told", "ended" in str((done or {}).get("response")) and pending(zora["device"])[1] == ["%s ended the call." % boss]
+              and call("GET", "/api/v1/people", device=zora["device"])[1].get("talk", {}).get("with") is None, done)
+        s, j = call("POST", "/api/v1/people/talk", {"with": 1}, device=quill["device"])
+        s2, j2 = call("DELETE", "/api/v1/people/talk", device=quill["device"])
+        tries = {"a call with nobody": call("POST", "/api/v1/people/talk", {"with": 99999}, device=zora["device"])[0], "a call with herself": call("POST", "/api/v1/people/talk", {"with": zora["id"]}, device=zora["device"])[0]}
+        check("calls", "the app can open and close a call, and not with nobody", s == 200 and j.get("talk", {}).get("with") == 1 and j2.get("talk", {}).get("with") is None and all(v == 404 for v in tries.values()), (s, j, j2, tries))
+        pending(OWNER, PHONE)
+        # Read out, or shown only.
+        s, j = call("PUT", "/api/v1/people/mode", {"mode": "show"}, device=zora["device"])
+        call("POST", "/api/v1/people/messages", {"to": zora["id"], "body": "Back by nine."}, device=OWNER, headers=PHONE)
+        s2, raw = call("GET", "/api/v1/slack/pending", device=zora["device"])
+        kinds = [n.get("type") for n in raw.get("notifications", [])]
+        check("calls", "a person chooses shown only: her messages come to be shown, not read out", s == 200 and j.get("mode") == "show" and kinds == ["message"] and bodies(raw) == ["%s says: Back by nine." % boss], (s, j, raw))
+        s, j = call("PUT", "/api/v1/people/mode", {"user": quill["id"], "mode": "show", "locked": True}, device=OWNER, headers=PHONE)
+        tries = {"the child, unlocking her own": call("PUT", "/api/v1/people/mode", {"mode": "speak"}, device=quill["device"])[0],
+                 "an adult, setting the child's": call("PUT", "/api/v1/people/mode", {"user": quill["id"], "mode": "speak", "locked": False}, device=zora["device"])[0]}
+        mine = call("GET", "/api/v1/people", device=quill["device"])[1].get("me", {}).get("messages")
+        check("calls", "the owner sets it for a child and locks it; nobody else can undo that", s == 200 and j.get("locked") is True and tries["the child, unlocking her own"] == 403 and mine == {"mode": "show", "locked": True}, (s, j, tries, mine))
+        call("PUT", "/api/v1/people/mode", {"user": quill["id"], "mode": "speak", "locked": False}, device=OWNER, headers=PHONE)
+        call("PUT", "/api/v1/people/mode", {"user": zora["id"], "mode": "speak", "locked": False}, device=OWNER, headers=PHONE)
 
         # ── people met: someone with their own ΠAN whose code was scanned ────────
         key_a, key_b = "A" * 120, "B" * 120

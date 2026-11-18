@@ -27,6 +27,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
@@ -42,6 +43,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -141,6 +143,11 @@ private fun PeopleList(viewModel: PeopleViewModel, snackbar: SnackbarHostState) 
     val group by viewModel.group.collectAsState()
     val canMeet by viewModel.canMeet.collectAsState()
     val met by viewModel.met.collectAsState()
+    val talkWith by viewModel.talkWith.collectAsState()
+    val talkJoined by viewModel.talkJoined.collectAsState()
+    val callingMe by viewModel.callingMe.collectAsState()
+    val myMode by viewModel.myMode.collectAsState()
+    val myModeLocked by viewModel.myModeLocked.collectAsState()
     val scope = rememberCoroutineScope()
     // Which part is showing: the people on this hub, or the people met who have their own ΠAN.
     var part by rememberSaveable { mutableStateOf("group") }
@@ -184,6 +191,17 @@ private fun PeopleList(viewModel: PeopleViewModel, snackbar: SnackbarHostState) 
             if (part == "met") { MetPart(viewModel); return@Column }
         }
         LazyColumn(modifier = Modifier.fillMaxSize()) {
+            // A call: who is calling, or who this person is on with.
+            rows.firstOrNull { it.id == callingMe }?.let { caller ->
+                item(key = "calling") {
+                    CallBar("${firstName(caller.name)} wants to talk.", "Answer") { viewModel.startTalk(caller.id, firstName(caller.name)) }
+                }
+            }
+            rows.firstOrNull { it.id == talkWith }?.let { other ->
+                item(key = "oncall") {
+                    CallBar(if (talkJoined) "On with ${firstName(other.name)}. Just talk." else "Calling ${firstName(other.name)}. What you say is passed on.", "End") { viewModel.endTalk() }
+                }
+            }
             if (!canSend) item {
                 Text("Whoever set up this ΠAN has not opened messages for you.",
                     style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -207,6 +225,7 @@ private fun PeopleList(viewModel: PeopleViewModel, snackbar: SnackbarHostState) 
                 PersonRow(person, owner = owner, busy = busy,
                     onOpen = { viewModel.openTalk(person) },
                     onRead = { viewModel.watch(person) },
+                    onMode = { mode, locked -> viewModel.setMode(mode, person.id, locked) },
                     onAddDevice = { scope.launch { codeFor(person.id, person.name) } },
                     onRename = { renaming = person },
                     onRemove = { removing = person })
@@ -220,9 +239,23 @@ private fun PeopleList(viewModel: PeopleViewModel, snackbar: SnackbarHostState) 
                 }
             }
             if (rows.isNotEmpty() && canSend) item {
-                Text("Say \"ΠAN, tell ${firstName(rows.first().name)} ...\" and their device says it. Or open a name and type.",
+                Text("Say \"ΠAN, tell ${firstName(rows.first().name)} ...\" for one message, or \"ΠAN, talk to ${firstName(rows.first().name)}\" and then just talk. \"ΠAN, hang up\" ends it.",
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
+            }
+            // Read out, or shown only: this person's choice unless the owner locked it.
+            item {
+                Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Read messages out loud", style = MaterialTheme.typography.bodyLarge)
+                        Text(when {
+                            myModeLocked -> "Set by whoever runs this ΠAN."
+                            myMode == "show" -> "Off: what people send you is only shown."
+                            else -> "On: ΠAN says what people send you. Off shows it only."
+                        }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Switch(checked = myMode == "speak", enabled = !myModeLocked, onCheckedChange = { viewModel.setMode(if (it) "speak" else "show") })
+                }
             }
         }
     }
@@ -359,7 +392,7 @@ private fun PeopleList(viewModel: PeopleViewModel, snackbar: SnackbarHostState) 
 @Composable
 private fun PersonRow(
     person: PersonLine, owner: Boolean, busy: Boolean,
-    onOpen: () -> Unit, onRead: () -> Unit, onAddDevice: () -> Unit, onRename: () -> Unit, onRemove: () -> Unit,
+    onOpen: () -> Unit, onRead: () -> Unit, onMode: (String, Boolean) -> Unit, onAddDevice: () -> Unit, onRename: () -> Unit, onRemove: () -> Unit,
 ) {
     var menu by remember { mutableStateOf(false) }
     Row(
@@ -380,7 +413,7 @@ private fun PersonRow(
                     0 -> "no device yet"
                     1 -> "1 device"
                     else -> "${person.devices.size} devices"
-                }
+                } + (if (person.locked) " · messages ${if (person.mode == "show") "shown only" else "read out"}, set by you" else "")
                 person.role == "owner" -> "Owner"
                 else -> null
             }
@@ -398,6 +431,10 @@ private fun PersonRow(
             DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                 // A child's conversations with others are the owner's to read (the hub holds this to children).
                 if (person.role == "child") DropdownMenuItem(text = { Text("${firstName(person.name)}'s messages") }, onClick = { menu = false; onRead() })
+                // How what is sent to them reaches them: his to set and lock, or theirs to choose.
+                DropdownMenuItem(text = { Text("Messages: read out") }, onClick = { menu = false; onMode("speak", true) })
+                DropdownMenuItem(text = { Text("Messages: show only") }, onClick = { menu = false; onMode("show", true) })
+                if (person.locked) DropdownMenuItem(text = { Text("Let ${firstName(person.name)} choose") }, onClick = { menu = false; onMode(person.mode, false) })
                 DropdownMenuItem(text = { Text("Add device") }, onClick = { menu = false; onAddDevice() })
                 DropdownMenuItem(text = { Text("Rename") }, onClick = { menu = false; onRename() })
                 DropdownMenuItem(text = { Text("Remove") }, onClick = { menu = false; onRemove() })
@@ -512,6 +549,20 @@ private fun MetPart(viewModel: PeopleViewModel) {
     }
 }
 
+/** One line about a call, with the one thing to do about it. */
+@Composable
+private fun CallBar(text: String, action: String, onAction: () -> Unit) {
+    Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = RoundedCornerShape(12.dp),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
+        Row(modifier = Modifier.padding(start = 14.dp, end = 6.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.Call, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer)
+            Text(text, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onPrimaryContainer,
+                modifier = Modifier.weight(1f).padding(horizontal = 10.dp))
+            TextButton(onClick = onAction) { Text(action) }
+        }
+    }
+}
+
 /** The owner reading a child's conversations: who the child has talked with. Read only. */
 @Composable
 private fun ChildMessages(viewModel: PeopleViewModel, child: PersonLine) {
@@ -561,6 +612,9 @@ private fun Conversation(viewModel: PeopleViewModel, person: PersonLine, reading
     val sending by viewModel.sending.collectAsState()
     val mayType by viewModel.canSend.collectAsState()
     val canSend = mayType && readingFor == null
+    val talkWith by viewModel.talkWith.collectAsState()
+    val talkJoined by viewModel.talkJoined.collectAsState()
+    val onCall = talkWith == person.id
     var draft by remember(person.id) { mutableStateOf("") }
     val list = rememberLazyListState()
     val first = firstName(person.name)
@@ -576,8 +630,13 @@ private fun Conversation(viewModel: PeopleViewModel, person: PersonLine, reading
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to People")
             }
             Text(if (readingFor != null) "${firstName(readingFor.name)} and $first" else person.name,
-                style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            // A call: after this, what this person says goes to them without "ΠAN, tell ..." each time.
+            if (canSend && !onCall) IconButton(onClick = { viewModel.startTalk(person.id, first) }) {
+                Icon(Icons.Default.Call, contentDescription = "Talk to $first")
+            }
         }
+        if (onCall) CallBar(if (talkJoined) "On with $first. Just talk." else "Calling $first. What you say is passed on.", "End") { viewModel.endTalk() }
         HorizontalDivider()
         if (talk.isEmpty()) {
             Box(modifier = Modifier.weight(1f).fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {

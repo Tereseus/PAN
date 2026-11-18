@@ -60,6 +60,9 @@ export const PERSON_ALLOW = Object.freeze([
   'GET /api/v1/people',
   'GET /api/v1/people/messages',
   'POST /api/v1/people/messages',
+  'POST /api/v1/people/talk',      // open their own side of a call with someone here
+  'DELETE /api/v1/people/talk',
+  'PUT /api/v1/people/mode',       // read out or shown only, for themselves, unless the owner locked it
   // The people with their own ΠAN that this person has met (met-people.js): their own list only.
   'GET /api/v1/people/met',
   'POST /api/v1/people/met',

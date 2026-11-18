@@ -23,6 +23,8 @@ const take = (dev, now) => [...notes.takeNotesFor(dev, now), ...pm.takeMessagesF
 function clear() {
   notes.resetNotes();
   pm.resetAsked();
+  pm.resetTalks();
+  run(`DELETE FROM settings WHERE key = 'people_message_mode'`);
   pm.ensureMessagesSchema();
   run(`DELETE FROM person_messages`);
 }
@@ -268,6 +270,83 @@ test('the owner can read a child\'s conversations, and only a child\'s', () => {
   ok(seen.messages.length === 2 && seen.messages[0].from_me === false && seen.messages[1].from_me === true, J(seen));
   ok(pm.peopleFor(kit.id).find((p) => p.id === mia.id).unread === 1 && pm.peopleFor(mia.id).find((p) => p.id === kit.id).unread === 1, 'looking marked it opened');
   ok(pm.peopleFor(kit.id).find((p) => p.id === mia.id).last.body === 'five more minutes', 'the child\'s list');
+});
+
+test('a call: his lines reach her, hers go nowhere until she answers, then the words alone', () => {
+  const r = pm.messageTurn('PAN, talk to Mia.', { addressed: true });
+  ok(r.intent === 'talk' && r.talk_with === mia.id && /Mia/.test(r.response), J(r));
+  ok(bodies(take(MIA_PHONE, Date.now())) === 'Alex wants to talk. Say: PAN, talk to Alex.', 'she was not told');
+  const said = pm.talkLine('Are you home yet?', {});
+  ok(said && said.sent === true && said.to === mia.id, J(said));
+  ok(bodies(take(MIA_PHONE, Date.now())) === 'Alex says: Are you home yet?', 'his line before she joined');
+  // Being called passes on nothing of hers: only her own act opens her side.
+  ok(pm.talkLine('Who is that on the phone?', { person: mia }) === null && pm.messagesWaiting().length === 0, 'her room was passed on');
+  ok(pm.talkFast(mia.id) === true && pm.talkState(mia.id).calling_me === 1 && pm.talkState(1).joined === false, J(pm.talkState(mia.id)));
+  const r2 = pm.messageTurn('PAN, answer.', { person: mia, addressed: true });
+  ok(r2.intent === 'talk' && r2.response === "You're on with Alex.", J(r2));
+  ok(bodies(take(OWNER_PHONE, Date.now())) === 'Mia is on.' && pm.talkState(1).joined === true, 'he was not told she is on');
+  pm.talkLine('Almost. Ten minutes', { person: mia });
+  ok(bodies(take(OWNER_PHONE, Date.now())) === 'Almost. Ten minutes.', 'her words, without her name, as on a phone');
+  pm.talkLine('Okay, see you then.', {});
+  const hers = take(MIA_PHONE, Date.now());
+  ok(hers.length === 1 && hers[0].body === 'Okay, see you then.' && hers[0].type === 'speak' && hers[0].data.talk === true && hers[0].title === 'Alex', J(hers));
+});
+
+test('in a call: what is PAN\'s, someone else\'s voice, and his own loudspeaker are not passed on', () => {
+  pm.startTalk(null, mia.id);
+  pm.startTalk(mia, 1);
+  take(MIA_PHONE, Date.now()); take(OWNER_PHONE, Date.now());
+  ok(pm.talkLine('PAN, what time is it?', {}) === null && pm.talkLine('Hey Pan hang up', {}) === null, 'a line for PAN went to her');
+  ok(pm.talkLine('And now the weather for tonight', { wearer: false }) === null, 'another voice in his room went out as his');
+  ok(pm.talkLine('  ...  ', {}) === null, 'a line of nothing');
+  pm.talkLine('Bring the blue folder from my desk', { person: mia });
+  take(OWNER_PHONE, Date.now());   // his device reads it out
+  const echo = pm.talkLine('bring the blue folder from my desk', {});
+  ok(echo && echo.sent === false && echo.reason === 'echo' && pm.messagesWaiting().length === 0, J(echo));
+  ok(pm.talkLine('Which desk?', {}).sent === true, 'his real answer was held back');
+  // The lines are kept in the conversation like any message.
+  const talk = pm.conversation(1, mia.id).messages;
+  ok(talk.length === 2 && talk.every((m) => m.how === 'talk') && talk[1].body === 'Which desk?', J(talk));
+});
+
+test('a call ends on hang up for both, or by itself after five quiet minutes; forty lines a minute', () => {
+  pm.startTalk(null, mia.id);
+  pm.startTalk(mia, 1);
+  take(MIA_PHONE, Date.now()); take(OWNER_PHONE, Date.now());
+  const r = pm.messageTurn('PAN, hang up.', { addressed: true });
+  ok(r.intent === 'talk' && r.response === 'Call with Mia ended.', J(r));
+  ok(bodies(take(MIA_PHONE, Date.now())) === 'Alex ended the call.', 'she was not told');
+  ok(pm.talkLine('Hello?', { person: mia }) === null && pm.talkLine('Hello?', {}) === null && pm.talkFast(mia.id) === false, 'the call is still open');
+  ok(pm.messageTurn('PAN, end the call', { addressed: true }).response === "You're not in a call.", 'ending nothing');
+  ok(pm.messageTurn('PAN, answer', { addressed: true }).response === 'Nobody is calling.', 'answering nobody');
+  const t = Date.now();
+  pm.startTalk(null, mia.id, t);
+  ok(pm.talkLine('still there?', {}, t + 4 * 60_000).sent === true, 'four minutes');
+  ok(pm.talkLine('hello?', {}, t + 10 * 60_000) === null, 'a call open after six quiet minutes');
+  const t2 = t + 30 * 60_000;
+  pm.startTalk(null, mia.id, t2);
+  let sent = 0;
+  for (let i = 0; i < 45; i++) if (pm.talkLine(`line number ${i}`, {}, t2 + i * 100)?.sent) sent++;
+  ok(sent === 40, `${sent} lines in a minute`);
+  // A test turn starts nothing, and a child whose role may not send cannot call.
+  pm.resetTalks();
+  ok(/nothing started/.test(pm.messageTurn('PAN, call Mia', { addressed: true, test: true }).response) && pm.talkState(1).with === null, 'a test turn opened a call');
+  ok(pm.messageTurn('PAN, talk to Mia about the trip', { addressed: true }) === null, 'a line about talking was taken as a call');
+});
+
+test('read out or shown only: a person chooses, the owner can set it for anyone and lock it', () => {
+  ok(pm.messageMode(mia.id).mode === 'speak' && pm.messageMode(mia.id).locked === false, 'the start');
+  ok(pm.setMessageMode(mia.id, { mode: 'show' }, mia).ok === true && pm.messageMode(mia.id).mode === 'show', 'her own choice');
+  pm.sendMessage({ to: { id: mia.id }, body: 'dinner is ready' });
+  const got = take(MIA_PHONE, Date.now());
+  ok(got.length === 1 && got[0].type === 'message' && got[0].body === 'Alex says: dinner is ready.', J(got));
+  ok(pm.setMessageMode(kit.id, { mode: 'show' }, mia).reason === 'not_yours' && pm.setMessageMode(mia.id, { mode: 'loud' }, mia).reason === 'mode', 'someone else\'s, and a bad mode');
+  // The owner sets it for the child and locks it: the child cannot change it back.
+  const set = pm.setMessageMode(kit.id, { mode: 'show', locked: true });
+  ok(set.ok && set.locked === true && pm.setMessageMode(kit.id, { mode: 'speak' }, kit).reason === 'locked' && pm.messageMode(kit.id).mode === 'show', J(set));
+  ok(pm.setMessageMode(kit.id, { mode: 'speak', locked: false }).ok && pm.setMessageMode(kit.id, { mode: 'show' }, kit).ok, 'unlocked, it is the child\'s again');
+  ok(pm.setMessageMode(1, { mode: 'show', locked: true }).locked === false && pm.setMessageMode(9999, { mode: 'show' }).reason === 'nobody', 'the owner\'s own is never locked');
+  ok(pm.peopleFor(1).find((p) => p.id === kit.id).messages.mode === 'show' && pm.peopleFor(mia.id)[0].messages === undefined, 'only the owner sees how it is set for others');
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

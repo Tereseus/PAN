@@ -67,6 +67,10 @@ The hub part, by group:
   oneself or with nothing in them are refused. The owner reads a child's list and
   conversation and it opens nothing; the child's list says who can read; an adult's, the
   owner's own, and any try from a person's device are refused.
+- **calls**: the owner opens a call and her device is told once and asks faster; his next line
+  goes to her and ΠAN says nothing; nothing she says is passed on until she answers; then her
+  words reach him alone, without her name; hanging up ends it for both; the app's own open and
+  close; a person chooses shown only; the owner sets and locks it for a child.
 - **met**: an adult adds someone she met and only her list has it; a child cannot unless the
   owner opens it; the owner's record of the same person is his own; a code with no name or a
   bad key is refused; nobody forgets another person's record.

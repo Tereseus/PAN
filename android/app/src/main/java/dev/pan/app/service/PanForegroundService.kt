@@ -1134,10 +1134,14 @@ class PanForegroundService : Service() {
     // supports voice dictation natively — reply by typing OR speaking.
     private fun startSlackPolling() {
         serviceScope.launch {
+            // In a call with someone on this ΠAN the hub answers fast = true, and the next ask is a
+            // second away, not five: the other person's words are waiting to be read out.
+            var fast = false
             while (isActive) {
-                delay(SLACK_POLL_INTERVAL_MS)
+                delay(if (fast) 1000L else SLACK_POLL_INTERVAL_MS)
                 try {
                     val resp = serverClient.api.getSlackPending(getPanDeviceId())
+                    fast = resp.body()?.fast == true
                     val notes = resp.body()?.notifications ?: continue
                     for (note in notes) {
                         if (note.id <= lastSlackId) continue
@@ -1154,11 +1158,14 @@ class PanForegroundService : Service() {
                             val say = note.body?.trim().orEmpty()
                             if (say.isNotEmpty()) mainHandler.post { panSpeak(say) }
                             showAlertNotification(note)
-                            // A message from someone on this ΠAN: the People tab shows it at once.
-                            if (note.data?.get("kind") == "message") dev.pan.app.ui.people.PeopleSignal.bump()
                         } else {
+                            // Everything else is shown and not read out: a meeting, or a message
+                            // from someone here when this person chose "show only".
                             showAlertNotification(note)
                         }
+                        // A message or a call from someone on this ΠAN: the People tab shows it at once.
+                        val kind = note.data?.get("kind")
+                        if (kind == "message" || kind == "talk") dev.pan.app.ui.people.PeopleSignal.bump()
                     }
                 } catch (_: Exception) {}
             }

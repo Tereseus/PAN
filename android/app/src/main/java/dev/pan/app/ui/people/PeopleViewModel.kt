@@ -26,6 +26,8 @@ data class PersonLine(
     val id: Int, val name: String, val role: String,
     val last: String?, val lastFromMe: Boolean, val lastAt: Long,
     val unread: Int, val devices: List<String>,
+    /** The owner's view: how this person's messages reach them, and whether he locked that. */
+    val mode: String = "speak", val locked: Boolean = false,
 )
 
 /** Someone with their own ΠAN whose code this person scanned. */
@@ -69,6 +71,19 @@ class PeopleViewModel @Inject constructor(
     val canMeet: StateFlow<Boolean> = _canMeet
     private val _met = MutableStateFlow<List<MetLine>>(emptyList())
     val met: StateFlow<List<MetLine>> = _met
+
+    /** A call: who this person's side is open with (0: nobody), whether they joined, and who is calling. */
+    private val _talkWith = MutableStateFlow(0)
+    val talkWith: StateFlow<Int> = _talkWith
+    private val _talkJoined = MutableStateFlow(false)
+    val talkJoined: StateFlow<Boolean> = _talkJoined
+    private val _callingMe = MutableStateFlow(0)
+    val callingMe: StateFlow<Int> = _callingMe
+    /** Whether what is sent to this person is read out ("speak") or only shown ("show"), and if the owner locked it. */
+    private val _myMode = MutableStateFlow("speak")
+    val myMode: StateFlow<String> = _myMode
+    private val _myModeLocked = MutableStateFlow(false)
+    val myModeLocked: StateFlow<Boolean> = _myModeLocked
 
     /** The owner reading a child's conversations: whose, and who that child has talked with. */
     private val _watching = MutableStateFlow<PersonLine?>(null)
@@ -125,6 +140,8 @@ class PeopleViewModel @Inject constructor(
                 id = p.optInt("id"), name = p.optString("name"), role = p.optString("role"),
                 last = last?.optString("body"), lastFromMe = last?.optBoolean("from_me") == true, lastAt = last?.optLong("at") ?: 0L,
                 unread = p.optInt("unread"), devices = if (withDevices) devices[p.optInt("id")] ?: emptyList() else emptyList(),
+                mode = if (p.optJSONObject("messages")?.optString("mode") == "show") "show" else "speak",
+                locked = p.optJSONObject("messages")?.optBoolean("locked") == true,
             ))
         }
         return out
@@ -174,6 +191,42 @@ class PeopleViewModel @Inject constructor(
 
     fun say(text: String) { _message.value = text }
 
+    private fun readTalk(t: JSONObject?) {
+        _talkWith.value = if (t == null || t.isNull("with")) 0 else t.optInt("with")
+        _talkJoined.value = t?.optBoolean("joined") == true
+        _callingMe.value = if (t == null || t.isNull("calling_me")) 0 else t.optInt("calling_me")
+    }
+
+    /** Open this person's side of a call: the same as saying "ΠAN, talk to <name>". Then they just talk. */
+    fun startTalk(id: Int, name: String) {
+        viewModelScope.launch {
+            val r = hub("POST", "/api/v1/people/talk", JSONObject().put("with", id))
+            if (r == null || r.first != 200) _message.value = if (r?.first == 403) "Whoever set up this ΠAN has not opened that for you." else "ΠAN could not start that right now."
+            else {
+                readTalk(r.second.optJSONObject("talk"))
+                _message.value = if (r.second.optBoolean("joined")) "You're on with $name. Just talk." else "Calling $name. Just talk: what you say is passed on."
+            }
+        }
+    }
+
+    fun endTalk() {
+        viewModelScope.launch {
+            val r = hub("DELETE", "/api/v1/people/talk")
+            if (r != null && r.first == 200) readTalk(r.second.optJSONObject("talk"))
+        }
+    }
+
+    /** Read out or show only. user 0: this person's own choice; else the owner setting it for someone, with a lock. */
+    fun setMode(mode: String, user: Int = 0, locked: Boolean = false) {
+        viewModelScope.launch {
+            val body = JSONObject().put("mode", mode)
+            if (user != 0) body.put("user", user).put("locked", locked)
+            val r = hub("PUT", "/api/v1/people/mode", body)
+            if (r == null || r.first != 200) _message.value = if (r?.first == 403) "Whoever set up this ΠAN decides that for you." else "ΠAN could not change that right now."
+            load(withDevices = false)
+        }
+    }
+
     /** The owner opens a child's conversations to read. The hub refuses it for anyone who is not a child. */
     fun watch(child: PersonLine) {
         _watching.value = child
@@ -211,6 +264,11 @@ class PeopleViewModel @Inject constructor(
         _group.value = r.second.optString("group")
         _myName.value = r.second.optJSONObject("me")?.optString("name").orEmpty()
         _canMeet.value = r.second.optBoolean("can_meet", false)
+        readTalk(r.second.optJSONObject("talk"))
+        r.second.optJSONObject("me")?.optJSONObject("messages")?.let {
+            _myMode.value = if (it.optString("mode") == "show") "show" else "speak"
+            _myModeLocked.value = it.optBoolean("locked")
+        }
         if (isOwner && (withDevices || devices.isEmpty())) {
             val list = hub("GET", "/api/v1/link/people")?.takeIf { it.first == 200 }?.second?.optJSONArray("devices")
             if (list != null) {

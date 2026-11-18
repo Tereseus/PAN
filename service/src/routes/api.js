@@ -17,7 +17,7 @@ import { plainLook, spokenLook } from '../camera-ask.js';
 import { noteSaid, dropOwnTail } from '../own-tail.js';
 import { scopeFor, may, refusal } from '../people.js';
 import { addNote, takeNotesFor, noteSender, maySpeakNow, noteOwnerSpokeOn, notesDevices, SPEAK_PER_MINUTE } from '../phone-notes.js';
-import { takeMessagesFor, peopleFor, conversation, sendMessage, peopleHere, ownerMayRead } from '../person-messages.js';
+import { takeMessagesFor, peopleFor, conversation, sendMessage, peopleHere, ownerMayRead, talkLine, talkFast, talkState, startTalk, endTalk, messageMode, setMessageMode } from '../person-messages.js';
 import { recordMet, metFor, forgetMet } from '../met-people.js';
 import { linkDevice } from '../pan-link-auth.js';
 import { getDataDir as notesDataDir } from '../platform.js';
@@ -947,7 +947,10 @@ router.get('/slack/pending', (req, res) => {
   // people on this hub that wait for its person (person-messages.js keeps those in the database).
   const notifications = takeNotesFor(dev);
   try { notifications.push(...takeMessagesFor(dev)); } catch (e) { console.warn('[/slack/pending] messages:', e.message); }
-  res.json({ ok: true, notifications });
+  // fast: this person is in a call or being called, so the device asks again in a second, not five.
+  let fast = false;
+  try { fast = talkFast(person ? Number(person.id) : 1); } catch {}
+  res.json({ ok: true, notifications, fast });
 });
 
 // The People tab (person-messages.js): the other people on this hub with the newest message
@@ -980,8 +983,8 @@ router.get('/people', (req, res) => {
   // group: what the owner calls the people on this hub ("Family", a company's name); '' until named.
   let group = '';
   try { group = String(get("SELECT value FROM settings WHERE key = 'people_group_name'")?.value || '').replace(/^"|"$/g, '').trim().slice(0, 30); } catch {}
-  res.json({ ok: true, group, can_meet: !person || may(person, 'meet'),
-    me: { id: me, name: self?.name || '', role: self?.role || (person ? person.role : 'owner'), owner: !person,
+  res.json({ ok: true, group, can_meet: !person || may(person, 'meet'), talk: talkState(me),
+    me: { id: me, name: self?.name || '', role: self?.role || (person ? person.role : 'owner'), owner: !person, messages: messageMode(me),
       read_by: person && ownerMayRead(me) ? (owner?.first || 'the owner') : null },
     can_send: canSend, people, unread: people.reduce((n, p) => n + p.unread, 0) });
 });
@@ -1014,6 +1017,27 @@ router.post('/people/met', (req, res) => {
 });
 router.delete('/people/met', (req, res) => {
   res.json({ ok: true, forgotten: forgetMet(callerId(req), Number(req.query.id)) });
+});
+// Read out or shown only (person-messages.js): a person for themselves unless the owner locked
+// it; the owner for anyone ({ user, mode, locked }).
+router.put('/people/mode', (req, res) => {
+  const person = req.user?.person ? req.user : null;
+  const user = person ? Number(person.id) : Number(req.body?.user) || 1;
+  const set = setMessageMode(user, { mode: req.body?.mode, locked: person ? undefined : req.body?.locked }, person);
+  if (!set.ok) return res.status(set.reason === 'locked' || set.reason === 'not_yours' ? 403 : set.reason === 'nobody' ? 404 : 400).json({ ok: false, error: set.reason });
+  res.json({ ok: true, user, mode: set.mode, locked: set.locked });
+});
+// A call, opened or closed from the app (the same thing as "PAN, talk to Maria" and "PAN, hang up").
+router.post('/people/talk', (req, res) => {
+  const person = req.user?.person ? req.user : null;
+  if (person && !may(person, 'messages')) return res.status(403).json({ ok: false, error: refusal('messages') });
+  const started = startTalk(person, Number(req.body?.with));
+  if (!started.ok) return res.status(404).json({ ok: false, error: started.reason });
+  res.json({ ok: true, joined: started.joined, talk: talkState(callerId(req)) });
+});
+router.delete('/people/talk', (req, res) => {
+  endTalk(req.user?.person ? req.user : null);
+  res.json({ ok: true, talk: talkState(callerId(req)) });
 });
 router.post('/people/messages', (req, res) => {
   const person = req.user?.person ? req.user : null;
@@ -2021,6 +2045,23 @@ router.post('/query/stream', async (req, res) => {
   let parsedSensors = sensors;
   if (typeof sensors === 'string') { try { parsedSensors = JSON.parse(sensors); } catch { parsedSensors = null; } }
   if (parsedSensors?.tz && !bench && !person) setPhoneTimeZone(parsedSensors.tz);
+
+  // In a call with someone on this hub (person-messages.js): a line that does not name ΠAN is
+  // this person's words to the other one. It is passed on as heard and ΠAN answers nothing.
+  // Never for a test turn, and never while interpreting.
+  if (!bench && !interp) {
+    let passed = null;
+    try { passed = talkLine(text, { person, wearer: person ? undefined : voiceWearer }); }
+    catch (e) { console.warn('[/query/stream] call line:', e.message); }
+    if (passed) {
+      recordTiming({ turn: turnId, stage: 'call_line', ms: Date.now() - turnStart });
+      send({ type: 'done', result: { intent: 'talk', response: '', talk_with: passed.to, sent: passed.sent, reason: passed.reason } });
+      clearInterval(keepaliveInterval);
+      if (streamControllers.get(streamKey)?.controller === controller) clearStream(streamKey);
+      if (!res.writableEnded) res.end();
+      return;
+    }
+  }
 
   try {
     const { routeStream } = await import('../router.js');

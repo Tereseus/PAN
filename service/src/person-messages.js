@@ -14,6 +14,16 @@
 //     ("tell my boss ...") is not a message of this kind and the line goes on as ordinary talk.
 //     When two people here share a first name, ΠAN asks which one and the next line answers
 //     it with the whole name or the rest of it ("Lopez").
+//   - A call ("PAN, talk to Maria"; the owner, 2026-11-18: voice, as if it were a phone call).
+//     While a person has a call open, every line they say that does not name ΠAN goes to the
+//     other person as their words, and ΠAN says nothing back. Only a person's OWN act opens
+//     their side: being called passes none of what the called person says until they answer
+//     ("PAN, talk to Sam", or "PAN, answer"). The words are heard, written down and read out
+//     by the other ΠAN: the voice itself is not sent. It ends on "PAN, hang up", when either
+//     side ends it, or after five quiet minutes. Calls are kept in memory: a restart ends them.
+//   - Read out or shown only (the owner, 2026-11-18): each person chooses whether what is sent
+//     to them is read out loud on their device or only shown. The owner can set it for anyone
+//     and lock it; a locked choice is not the person's to change.
 //   - The owner can read a child's conversations (the owner's call, 2026-11-18): only a person
 //     whose role is child, only the owner, and the child's own People tab says so.
 //   - A person needs the `messages` limit (people.js). The owner always may.
@@ -28,7 +38,7 @@
 //     until that person opens it. Only those two people can open it.
 
 import { get, all, run } from './db.js';
-import { maySpeakNow, userAsking, ownerTakesHere, nextNoteId } from './phone-notes.js';
+import { maySpeakNow, userAsking, ownerTakesHere, nextNoteId, addNote } from './phone-notes.js';
 import { may } from './people.js';
 
 const OWNER_ID = 1;
@@ -92,7 +102,8 @@ const NOT_A_PERSON = /^(?:thread|session|chat|computer|pc|laptop|desktop|machine
  * Is this line a message for someone on this hub?
  * from: the person speaking (null: the owner). addressed: the line was said to ΠAN.
  * -> null | { to, kind: 'says' | 'asks', body } | { to, empty: true } | { which: [people], kind, body }
- * which: two or more people here go by the name that was said.
+ *    | { talk: 'start', to } | { talk: 'answer' } | { talk: 'end' } | { talk: 'which', among }
+ * which: two or more people here go by the name that was said. talk: a call (see talkTurn).
  */
 export function parseMessage(text, { from = null, addressed = false, now = Date.now() } = {}) {
   if (!addressed) return null;
@@ -114,6 +125,19 @@ export function parseMessage(text, { from = null, addressed = false, now = Date.
   }
   const name = `(${[...spellings].sort((a, b) => b.length - a.length).join('|')})`;
   const after = String.raw`(?!['’]s|s['’])(?![\p{L}\p{N}])`;
+  // A call: opened, answered or ended. The whole line is the command ("talk to Maria about
+  // dinner" is not one).
+  const tail = String.raw`(?:\s+(?:now|please))?[\s.!?]*$`;
+  if (new RegExp(`${LEAD}(?:hang\\s+up|(?:end|stop|close)\\s+(?:the\\s+|this\\s+|my\\s+)?(?:call|talk)|stop\\s+talking\\s+(?:to|with)\\s+${name}${after})${tail}`, 'iu').test(said)) return { talk: 'end' };
+  if (new RegExp(`${LEAD}(?:answer|pick\\s+up|answer\\s+(?:it|the\\s+call))${tail}`, 'iu').test(said)) return { talk: 'answer' };
+  const call = new RegExp(`${LEAD}(?:(?:talk|speak)\\s+(?:to|with)|call|answer|(?:start|open)\\s+a\\s+(?:call|talk)\\s+with)\\s+${name}${after}${tail}`, 'iu').exec(said);
+  if (call) {
+    const k = key(call[1]);
+    const whole = others.filter((p) => p.full === k);
+    const named = whole.length ? whole : others.filter((p) => p.key === k);
+    if (named.length === 1) return { talk: 'start', to: named[0] };
+    if (named.length > 1) return { talk: 'which', among: named };
+  }
   const forms = [
     [new RegExp(`${LEAD}(?:tell|text|message|ping)\\s+${name}${after}[\\s,:]*(?:that\\s+)?(.*)$`, 'iu'), 'says'],
     [new RegExp(`${LEAD}let\\s+${name}${after}\\s+know[\\s,:]*(?:that\\s+)?(.*)$`, 'iu'), 'says'],
@@ -154,6 +178,7 @@ export function spokenLine(senderFirst, kind, body) {
  * -> { ok, id, reachable, line } | { ok: false, reason: 'nobody' | 'too_many' | 'empty' }
  */
 export function sendMessage({ from = null, to, kind = 'says', body, how = 'voice' }, now = Date.now()) {
+  const inCall = how === 'talk';
   const senderId = from ? Number(from.id) : OWNER_ID;
   const here = peopleHere();
   const sender = here.find((p) => p.id === senderId);
@@ -161,12 +186,13 @@ export function sendMessage({ from = null, to, kind = 'says', body, how = 'voice
   if (!sender || !other || other.id === senderId) return { ok: false, reason: 'nobody' };
   const text = String(body || '').trim().replace(/\s+/g, ' ').slice(0, MAX_BODY);
   if (!text.replace(/[^\p{L}\p{N}]/gu, '')) return { ok: false, reason: 'empty' };
-  if (!maySpeakNow({ device: `user-${senderId}`, name: sender.first }, now)) return { ok: false, reason: 'too_many' };
+  // A call is many short lines: its own count, forty a minute. Everything else is six.
+  if (inCall ? !mayTalkNow(senderId, now) : !maySpeakNow({ device: `user-${senderId}`, name: sender.first }, now)) return { ok: false, reason: 'too_many' };
   ensureMessagesSchema();
   const id = Number(run(`INSERT INTO person_messages (from_user, to_user, kind, body, how, created_at) VALUES (:f, :t, :k, :b, :h, :at)`,
-    { ':f': senderId, ':t': other.id, ':k': kind === 'asks' ? 'asks' : 'says', ':b': text, ':h': how === 'typed' ? 'typed' : 'voice', ':at': now }).lastInsertRowid);
+    { ':f': senderId, ':t': other.id, ':k': kind === 'asks' ? 'asks' : 'says', ':b': text, ':h': how === 'typed' ? 'typed' : inCall ? 'talk' : 'voice', ':at': now }).lastInsertRowid);
   const reachable = userAsking(other.id, now);
-  console.log(`[message] person ${senderId} -> person ${other.id}, ${text.length} characters${reachable ? '' : ' (their device is not asking right now)'}`);
+  if (!inCall) console.log(`[message] person ${senderId} -> person ${other.id}, ${text.length} characters${reachable ? '' : ' (their device is not asking right now)'}`);
   return { ok: true, id, reachable, line: spokenLine(sender.first, kind, text) };
 }
 
@@ -179,20 +205,173 @@ export function takeMessagesFor({ key = '', linkDevice = '', person = null } = {
   const me = person ? Number(person.id) : OWNER_ID;
   if (!me) return [];
   ensureMessagesSchema();
-  const rows = all(`SELECT id, from_user, kind, body, created_at FROM person_messages
+  const rows = all(`SELECT id, from_user, kind, body, how, created_at FROM person_messages
     WHERE to_user = :u AND delivered_at IS NULL AND created_at > :t ORDER BY id LIMIT 20`, { ':u': me, ':t': now - KEEP_MS });
   if (!rows.length) return [];
   const names = new Map(peopleHere().map((p) => [p.id, p.first]));
+  const quiet = messageMode(me).mode === 'show';
   const out = [];
   for (const r of rows) {
     if (!person && !ownerTakesHere({ key, linkDevice }, r.created_at, now)) continue;
     const first = names.get(Number(r.from_user)) || 'Someone';
     run(`UPDATE person_messages SET delivered_at = :n WHERE id = :i AND delivered_at IS NULL`, { ':n': now, ':i': r.id });
-    out.push({ id: nextNoteId(), type: 'speak', title: `${first} ${r.kind === 'asks' ? 'asks' : 'says'}`, body: spokenLine(first, r.kind, r.body),
-      data: { kind: 'message', from_user: Number(r.from_user), message_id: Number(r.id) }, from: null });
+    // In a call both have joined, the words alone are read out, as on a phone. Otherwise who said them comes first.
+    const both = r.how === 'talk' && talkOf(me, now)?.with === Number(r.from_user);
+    if (both) heardInCall(me, r.body, now);
+    // 'speak' is read out and shown; 'message' is shown only (this person's choice, or the owner's for them).
+    out.push({ id: nextNoteId(), type: quiet ? 'message' : 'speak', title: both ? first : `${first} ${r.kind === 'asks' ? 'asks' : 'says'}`,
+      body: both ? (/[.!?]$/.test(r.body) ? r.body : `${r.body}.`) : spokenLine(first, r.kind, r.body),
+      data: { kind: 'message', from_user: Number(r.from_user), message_id: Number(r.id), talk: r.how === 'talk' }, from: null });
   }
   return out;
 }
+
+// ── Read out, or shown only ────────────────────────────────────────────────────────────────
+// The setting people_message_mode: { "<user id>": { mode: 'speak' | 'show', locked: boolean } }.
+function modes() {
+  try { return JSON.parse(get(`SELECT value FROM settings WHERE key = 'people_message_mode'`)?.value || '{}') || {}; } catch { return {}; }
+}
+
+/** How what is sent to this person reaches them, and whether the owner locked that. */
+export function messageMode(userId) {
+  const m = modes()[String(Number(userId))];
+  return { mode: m?.mode === 'show' ? 'show' : 'speak', locked: !!m?.locked && Number(userId) !== OWNER_ID };
+}
+
+/**
+ * Set it. by: who is asking (null: the owner). A person sets their own unless it is locked; the
+ * owner sets anyone's and may lock it. -> { ok, mode, locked } | { ok: false, reason }
+ */
+export function setMessageMode(userId, { mode, locked } = {}, by = null) {
+  const uid = Number(userId);
+  if (mode !== 'speak' && mode !== 'show') return { ok: false, reason: 'mode' };
+  if (!peopleHere().some((p) => p.id === uid)) return { ok: false, reason: 'nobody' };
+  const all_ = modes();
+  const was = all_[String(uid)] || {};
+  if (by) {
+    if (Number(by.id) !== uid) return { ok: false, reason: 'not_yours' };
+    if (was.locked) return { ok: false, reason: 'locked' };
+    all_[String(uid)] = { mode, locked: false };
+  } else {
+    all_[String(uid)] = { mode, locked: uid === OWNER_ID ? false : locked === undefined ? !!was.locked : !!locked };
+  }
+  const value = JSON.stringify(all_);
+  run(`INSERT INTO settings (key, value) VALUES ('people_message_mode', :v) ON CONFLICT(key) DO UPDATE SET value = :v`, { ':v': value });
+  return { ok: true, ...messageMode(uid) };
+}
+
+// ── Calls ──────────────────────────────────────────────────────────────────────────────────
+// user id -> { with, since, last, heard: [{ k, at }] }. heard: what the other one's words were,
+// so the device's own loudspeaker coming back through its microphone is not sent back to them.
+const talks = new Map();
+const TALK_IDLE_MS = 5 * 60_000;
+const TALK_PER_MINUTE = 40;
+const talkLines = new Map();
+const PAN_NAMED = /\b(?:pan|pam|pann)\b/i;
+const letters = (s) => String(s || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+
+function mayTalkNow(senderId, now) {
+  const recent = (talkLines.get(senderId) || []).filter((t) => now - t < 60_000);
+  if (recent.length >= TALK_PER_MINUTE) { talkLines.set(senderId, recent); return false; }
+  recent.push(now);
+  talkLines.set(senderId, recent);
+  return true;
+}
+
+/** This person's open call, or null. A call nobody has spoken in for five minutes is over. */
+export function talkOf(userId, now = Date.now()) {
+  const t = talks.get(Number(userId));
+  if (!t) return null;
+  if (now - t.last > TALK_IDLE_MS) { talks.delete(Number(userId)); return null; }
+  return t;
+}
+
+function heardInCall(userId, body, now) {
+  const t = talks.get(Number(userId));
+  if (!t) return;
+  t.last = now;
+  t.heard = [...t.heard.filter((h) => now - h.at < 20_000), { k: letters(body), at: now }].slice(-6);
+}
+
+/** Whether this person's device should ask for its notes every second: in a call, or being called. */
+export function talkFast(userId, now = Date.now()) {
+  const me = Number(userId);
+  if (talkOf(me, now)) return true;
+  for (const [id, t] of talks) if (t.with === me && talkOf(id, now)) return true;
+  return false;
+}
+
+/** For the app: who this person is in a call with, and whether that person has joined. */
+export function talkState(userId, now = Date.now()) {
+  const me = Number(userId);
+  const t = talkOf(me, now);
+  const caller = [...talks].filter(([id, x]) => x.with === me && talkOf(id, now)).sort((a, b) => b[1].since - a[1].since)[0];
+  return { with: t ? t.with : null, joined: !!t && talkOf(t.with, now)?.with === me, calling_me: caller && (!t || t.with !== caller[0]) ? caller[0] : null };
+}
+
+/**
+ * Open this person's side of a call with [otherId]. The other is told once; nothing they say is
+ * passed on until they open their own side. -> { ok, joined, name } | { ok: false, reason }
+ */
+export function startTalk(person, otherId, now = Date.now()) {
+  const me = person ? Number(person.id) : OWNER_ID;
+  const here = peopleHere();
+  const mine = here.find((p) => p.id === me);
+  const other = here.find((p) => p.id === Number(otherId) && p.id !== me);
+  if (!mine || !other) return { ok: false, reason: 'nobody' };
+  const already = talkOf(me, now);
+  if (already && already.with !== other.id) endTalk(person, now);
+  talks.set(me, { with: other.id, since: now, last: now, heard: [] });
+  const joined = talkOf(other.id, now)?.with === me;
+  if (joined) talks.get(other.id).last = now;
+  if (!already || already.with !== other.id) {
+    addNote({ type: 'speak', title: mine.first, data: { kind: 'talk', from_user: me },
+      body: joined ? `${mine.first} is on.` : `${mine.first} wants to talk. Say: PAN, talk to ${mine.first}.` }, { toUser: other.id, keepMs: 60_000, now });
+  }
+  console.log(`[call] person ${me} opened a call with person ${other.id}${joined ? ' (both on)' : ''}`);
+  return { ok: true, joined, name: other.first, reachable: userAsking(other.id, now) };
+}
+
+/** Close this person's call, and the other side of it. -> the other's first name, or null */
+export function endTalk(person, now = Date.now()) {
+  const me = person ? Number(person.id) : OWNER_ID;
+  const t = talks.get(me);
+  if (!t) return null;
+  talks.delete(me);
+  const here = peopleHere();
+  const other = here.find((p) => p.id === t.with);
+  if (talks.get(t.with)?.with === me) {
+    talks.delete(t.with);
+    const mine = here.find((p) => p.id === me);
+    addNote({ type: 'speak', title: mine?.first || 'ΠAN', body: `${mine?.first || 'They'} ended the call.`, data: { kind: 'talk', from_user: me } }, { toUser: t.with, keepMs: 60_000, now });
+  }
+  console.log(`[call] person ${me} ended the call with person ${t.with}`);
+  return other?.first || null;
+}
+
+/**
+ * A line heard on the device of someone in a call. Not said to ΠAN by name: it is their words to
+ * the other person, passed on as heard. -> null (not in a call, or the line is ΠAN's to handle)
+ * | { to, sent } (handled: ΠAN answers nothing). wearer false: the hub is sure it was someone
+ * else's voice, so it is not passed on as this person's.
+ */
+export function talkLine(text, { person = null, wearer } = {}, now = Date.now()) {
+  const me = person ? Number(person.id) : OWNER_ID;
+  const t = talkOf(me, now);
+  if (!t) return null;
+  const said = String(text || '').trim();
+  if (!letters(said) || PAN_NAMED.test(said) || wearer === false) return null;
+  if (person && !may(person, 'messages')) return null;
+  // Their own loudspeaker: the other one's words, heard again by this microphone.
+  const k = letters(said);
+  if (t.heard.some((h) => now - h.at < 20_000 && (h.k === k || (k.length > 12 && (h.k.includes(k) || k.includes(h.k)))))) return { to: t.with, sent: false, reason: 'echo' };
+  const sent = sendMessage({ from: person, to: { id: t.with }, kind: 'says', body: said, how: 'talk' }, now);
+  if (sent.ok) t.last = now;
+  return { to: t.with, sent: !!sent.ok, reason: sent.ok ? undefined : sent.reason };
+}
+
+/** For the tests: no calls. */
+export function resetTalks() { talks.clear(); talkLines.clear(); }
 
 /** For the tests and the log: the messages not yet said on a device. */
 export function messagesWaiting(now = Date.now()) {
@@ -217,8 +396,10 @@ export function peopleFor(meId) {
   }
   const unread = new Map(all(`SELECT from_user, COUNT(*) AS n FROM person_messages WHERE to_user = :u AND read_at IS NULL GROUP BY from_user`, { ':u': me })
     .map((r) => [Number(r.from_user), Number(r.n)]));
+  // The owner also sees how each person's messages reach them, to set it for them.
+  const how = me === OWNER_ID ? (id) => ({ messages: messageMode(id) }) : () => ({});
   return peopleHere().filter((p) => p.id !== me)
-    .map((p) => ({ id: p.id, name: p.name, role: p.role, last: last.get(p.id) || null, unread: unread.get(p.id) || 0 }))
+    .map((p) => ({ id: p.id, name: p.name, role: p.role, last: last.get(p.id) || null, unread: unread.get(p.id) || 0, ...how(p.id) }))
     .sort((a, b) => (b.last?.at || 0) - (a.last?.at || 0) || a.name.localeCompare(b.name));
 }
 
@@ -261,6 +442,28 @@ export function messageTurn(text, { person = null, addressed = false, test = fal
   const base = { intent: 'message', speech_act: 'command', addressed: 1, importance: 0.5 };
   const senderId = person ? Number(person.id) : OWNER_ID;
   if (person && !may(person, 'messages')) return { ...base, response: `I can't send messages for you. Whoever set me up decides that.`, refused: 'messages' };
+  if (msg.talk) {
+    const call = { ...base, intent: 'talk' };
+    if (msg.talk === 'which') return { ...call, response: `Which ${msg.among[0].first}? Say the whole name: ${msg.among.map((p) => p.name).join(', or ')}.` };
+    if (msg.talk === 'end') {
+      if (test) return { ...call, response: '[benchmark: end of call parsed, nothing ended]' };
+      const who = endTalk(person);
+      return { ...call, response: who ? `Call with ${who} ended.` : `You're not in a call.` };
+    }
+    let to = msg.to;
+    if (msg.talk === 'answer') {
+      const calling = talkState(senderId).calling_me;
+      to = peopleHere().find((p) => p.id === calling);
+      if (!to) return { ...call, response: `Nobody is calling.` };
+    }
+    if (test) return { ...call, response: `[benchmark: call with ${to.first} parsed, nothing started]`, talk_parse: { to: to.id } };
+    const started = startTalk(person, to.id);
+    if (!started.ok) return { ...call, response: `I couldn't start that.` };
+    return { ...call, talk_with: to.id,
+      response: started.joined ? `You're on with ${to.first}.`
+        : started.reachable ? `Calling ${to.first}. Go ahead, I'll pass on what you say.`
+          : `${to.first}'s device is not on right now. I'll pass on what you say when it is.` };
+  }
   if (msg.which) {
     const names = msg.which.map((p) => p.name);
     const same = new Set(names).size < names.length;

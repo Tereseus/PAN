@@ -186,7 +186,9 @@ data class TerminalWaitResponse(
 // same high-water dedup covers all types.
 data class SlackPendingResponse(
     val ok: Boolean = true,
-    val notifications: List<SlackNotify> = emptyList()
+    val notifications: List<SlackNotify> = emptyList(),
+    // The hub says to ask again in a second: this person is in a call or being called.
+    val fast: Boolean = false
 )
 
 // Tolerant of BOTH queue shapes. Slack items fill channelId/sender/text/…;
