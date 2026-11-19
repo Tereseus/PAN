@@ -17,8 +17,8 @@ android {
         applicationId = "dev.pan.app"
         minSdk = 31
         targetSdk = 34
-        versionCode = 168
-        versionName = "0.5.39"
+        versionCode = 169
+        versionName = "0.5.40"
         ndk {
             // Phones are arm64 â€” ship only that ABI. Drops the x86/x86_64/armeabi-v7a
             // copies of sherpa-onnx (Piper), onnxruntime, and gojni (Tailscale): ~100 MB.
@@ -196,6 +196,50 @@ val fetchVoice by tasks.registering {
     }
 }
 tasks.named("preBuild") { dependsOn(fetchVoice) }
+
+// The models that hear are part of the app too (2026-11-19). They were a 107 MB download from
+// two outside sites on the first tap of the mic, on any network, with "listening" on screen
+// while nothing could be heard yet, and a deaf mic if it failed. Same way as the voice: fetched
+// once by the build, each file checked against its sha256, put in the assets, not in git. The
+// app copies them to its own folder the first time the mic is turned on (stt/SherpaStreamingStt).
+val speechRepo = "https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-en-2023-06-26/resolve/main"
+val speechFiles = mapOf(
+    "encoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx" to ("$speechRepo/encoder-epoch-99-avg-1-chunk-16-left-128.int8.onnx" to "563fde436d16cf7607cf408cd6b30909819d03162652ef389c2450ced3f45ac1"),
+    "decoder-epoch-99-avg-1-chunk-16-left-128.onnx" to ("$speechRepo/decoder-epoch-99-avg-1-chunk-16-left-128.onnx" to "7bf787f90b194b307e5a4ad6a34fadb4e748304c35f78a8d66358a05b13ee6ef"),
+    "joiner-epoch-99-avg-1-chunk-16-left-128.int8.onnx" to ("$speechRepo/joiner-epoch-99-avg-1-chunk-16-left-128.int8.onnx" to "d944208d660d67c8d72cd2acaeac971fa5ceb8c80e76c1968148846fedd6e297"),
+    "tokens.txt" to ("$speechRepo/tokens.txt" to "49e3c2646595fd907228b3c6787069658f67b17377c60aeb8619c4551b2316fb"),
+    "silero_vad.onnx" to ("https://huggingface.co/csukuangfj/vad/resolve/main/silero_vad.onnx" to "a35ebf52fd3ce5f1469b2a36158dba761bc47b973ea3382b3186ca15b1f5af28"),
+    "smart-turn-v3.2-gpu.onnx" to ("https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/main/smart-turn-v3.2-gpu.onnx" to "ab8dc64b88713f90b571c15b714bd1330e6c883cad8763dacf65c9376dc539be"),
+)
+val fetchSpeech by tasks.registering {
+    val out = layout.projectDirectory.dir("src/main/assets/asr").asFile
+    val cache = rootProject.layout.projectDirectory.dir(".voice-cache/asr").asFile
+    outputs.dir(out)
+    onlyIf { speechFiles.keys.any { !File(out, it).exists() } }
+    doLast {
+        fun sha(f: File): String {
+            val md = MessageDigest.getInstance("SHA-256")
+            f.inputStream().use { input ->
+                val buf = ByteArray(1 shl 20)
+                while (true) { val n = input.read(buf); if (n < 0) break; md.update(buf, 0, n) }
+            }
+            return md.digest().joinToString("") { "%02x".format(it) }
+        }
+        cache.mkdirs(); out.mkdirs()
+        for ((name, from) in speechFiles) {
+            val (url, want) = from
+            val kept = File(cache, name)
+            if (!kept.exists() || sha(kept) != want) {
+                logger.lifecycle("Fetching a speech model file (once): $name")
+                URI(url).toURL().openStream().use { input -> kept.outputStream().use { input.copyTo(it) } }
+            }
+            val got = sha(kept)
+            check(got == want) { "The speech model file $name is not the one expected: sha256 $got, want $want (${kept.path})" }
+            kept.copyTo(File(out, name), overwrite = true)
+        }
+    }
+}
+tasks.named("preBuild") { dependsOn(fetchSpeech) }
 
 // The voice's models are stored as they are: they do not compress, and stored files are read
 // faster at start.

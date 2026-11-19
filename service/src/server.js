@@ -101,6 +101,7 @@ import { hostname, homedir } from 'os';
 import { networkInterfaces as osNetworkInterfaces } from 'os';
 import { PROFILE, featureEnabled, profileSummary } from './profiles.js';
 import { redactSettings, getSecret } from './secrets.js';
+import { withoutWords } from './log-words.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -6506,6 +6507,9 @@ app.post('/api/v1/logs', (req, res) => {
     // Incognito: the app's own log lines carry what was heard ("Heard: ...") and what PAN said, and this
     // table is in the main store, so in incognito they are not kept at all. The device still counts as seen.
     const incognito = String(req.headers['x-pan-scope'] || '').trim() === 'incognito';
+    // A device that belongs to another person on this hub: its lines are kept without the words they
+    // carry (log-words.js). The owner reads this table, and it held everything that phone heard.
+    const persons = !!req.user?.person;
     let inserted = 0;
     const seenDevices = new Set();
     for (const e of entries) {
@@ -6519,8 +6523,8 @@ app.post('/api/v1/logs', (req, res) => {
         e.device_type || 'browser',
         e.level || 'error',
         e.source || 'console',
-        String(e.message).slice(0, 4000),
-        JSON.stringify(e.meta || {})
+        (persons ? withoutWords(e.message) : String(e.message)).slice(0, 4000),
+        JSON.stringify(persons ? {} : (e.meta || {}))
       );
       inserted++;
       // Track unique device IDs to update last_seen once per batch

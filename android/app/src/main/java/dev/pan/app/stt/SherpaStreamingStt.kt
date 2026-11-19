@@ -612,12 +612,13 @@ class SherpaStreamingStt @Inject constructor(
             for ((name, size) in MODEL_FILES) {
                 val dest = File(modelDir, name)
                 if (dest.length() == size) { done += size; continue }
-                log("downloading $name (${size / 1_048_576}MB)")
+                val inApp = fromApp(name)
+                log(if (inApp != null) "copying $name from the app (${size / 1_048_576}MB)" else "downloading $name (${size / 1_048_576}MB)")
                 try {
                     val tmp = File(modelDir, "$name.tmp")
-                    URL(MODEL_URLS[name] ?: "$MODEL_REPO/$name").openConnection().apply {
+                    (inApp ?: URL(MODEL_URLS[name] ?: "$MODEL_REPO/$name").openConnection().apply {
                         connectTimeout = 15000; readTimeout = 60000
-                    }.getInputStream().use { input ->
+                    }.getInputStream()).use { input ->
                         FileOutputStream(tmp).use { output ->
                             val buf = ByteArray(8192)
                             var n: Int
@@ -639,6 +640,14 @@ class SherpaStreamingStt @Inject constructor(
             ok
         }
 
+    /**
+     * A model file that came inside the app (assets/asr/, put there by the build: fetchSpeech in
+     * app/build.gradle.kts), or null in a build without it. The models were a 107 MB download
+     * from outside sites on the first tap of the mic; now that tap copies them from the app, with
+     * no network. An older install that already downloaded them keeps its copy.
+     */
+    private fun fromApp(name: String): java.io.InputStream? = runCatching { context.assets.open("asr/$name") }.getOrNull()
+
     private val turnModelFile get() = File(modelDir, SmartTurn.MODEL_FILE)
     private val turnModelDownloading = AtomicBoolean(false)
 
@@ -653,11 +662,12 @@ class SherpaStreamingStt @Inject constructor(
         scope.launch {
             try {
                 modelDir.mkdirs()
-                log("downloading smart-turn (${SmartTurn.MODEL_BYTES / 1_048_576}MB)")
+                val inApp = fromApp(SmartTurn.MODEL_FILE)
+                log(if (inApp != null) "copying smart-turn from the app (${SmartTurn.MODEL_BYTES / 1_048_576}MB)" else "downloading smart-turn (${SmartTurn.MODEL_BYTES / 1_048_576}MB)")
                 val tmp = File(modelDir, "${SmartTurn.MODEL_FILE}.tmp")
-                URL(SmartTurn.MODEL_URL).openConnection().apply {
+                (inApp ?: URL(SmartTurn.MODEL_URL).openConnection().apply {
                     connectTimeout = 15000; readTimeout = 60000
-                }.getInputStream().use { input -> FileOutputStream(tmp).use { input.copyTo(it) } }
+                }.getInputStream()).use { input -> FileOutputStream(tmp).use { input.copyTo(it) } }
                 if (tmp.length() == SmartTurn.MODEL_BYTES && tmp.renameTo(turnModelFile)) {
                     log("smart-turn ready")
                 } else {
@@ -735,7 +745,7 @@ class SherpaStreamingStt @Inject constructor(
             // what makes "two loops at once" impossible rather than unlikely.
             runCatching { previous?.cancelAndJoin() }
             if (!isModelReady()) {
-                log("model not present - downloading (~45MB, once)")
+                log("model not present - getting it (from the app, or a download in an older build)")
                 if (!downloadModel()) { log("cannot start: no model"); return@launch }
             }
 

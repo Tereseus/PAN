@@ -208,26 +208,8 @@ class PanVpnService : Service() {
                 }
             }
 
-            // 2. Try pan-hub hostname
-            if (serverHost.isEmpty()) {
-                // 'pan-hub' is the name the hub SHOULD have; 'minipc-pan-hub' is what
-                // the machine is actually called in Tailscale today. Trying only the
-                // aspirational name meant this step never once succeeded.
-                var hubIp = Panvpn.findServerIP("pan-hub")
-                if (hubIp.isEmpty()) hubIp = Panvpn.findServerIP("minipc-pan-hub")
-                Log.i(TAG, "FindServerIP = '$hubIp'")
-                if (hubIp.isNotEmpty() && hubIp != myIp) {
-                    try {
-                        val health = Panvpn.dialHTTP(hubIp, srvPort.toLong(), "/health")
-                        if (health.isNotEmpty()) {
-                            serverHost = hubIp
-                            Log.i(TAG, "pan-hub OK: $hubIp")
-                        }
-                    } catch (_: Exception) {}
-                }
-            }
-
-            // 3. Scan all online peers
+            // 2. The person's own tailnet is asked, machine by machine. (Two names of the first
+            // hub were tried before this until 0.5.40; the scan finds any hub, whatever it is called.)
             if (serverHost.isEmpty()) {
                 Log.i(TAG, "Scanning all peers...")
                 val peers = Panvpn.listPeers()

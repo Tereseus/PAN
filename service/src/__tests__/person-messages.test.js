@@ -443,7 +443,9 @@ test('hang up inside a longer line, without the name, and a line that grew', () 
   ok(pm.messageTurn('Right, that is all. PAN, hang up. End the call.', { addressed: true }).response === 'Call with Mia ended.', 'the long line said to PAN');
   // Not in a call, a line that only holds the words is nothing.
   ok(p('I told him to hang up. Then he left.') === null && p('PAN, hang up.')?.talk === 'end', 'out of a call');
-  ok(pm.saysHangUp('Hang, hang up') === false && pm.saysHangUp('We should hang up the coats') === false, 'not the command');
+  ok(pm.saysHangUp('We should hang up the coats') === false && pm.saysHangUp('hang on') === false, 'not the command');
+  // Said with a stutter, as the speech model kept it in the owner's call (2026-11-19): it is the command.
+  ok(pm.saysHangUp('Hang hang up.') && pm.saysHangUp('Hang, hang up'), 'a stuttered hang up');
 });
 
 test('saying no to a call: the caller is told and their side closes; nothing of hers went anywhere', () => {

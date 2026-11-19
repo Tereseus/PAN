@@ -197,7 +197,8 @@ function answerToWhich(said, senderId, now) {
 // ΠAN's name as the speech model writes it, and the small words a line starts with.
 const WAKE = String.raw`(?:pan|pam|pann|pand|pahn|han|parent)`;
 const LEAD = String.raw`^(?:(?:hey|hi|ok|okay|yo|oh|uh|um|a)[,\s]+)*(?:${WAKE}[,.!\s]+)?(?:(?:can|could|would|will)\s+you\s+)?(?:please\s+)?`;
-const HANG_UP = new RegExp(String.raw`${LEAD}(?:hang\s+up|(?:end|stop|close)\s+(?:the\s+|this\s+|my\s+)?(?:call|talk)|stop\s+calling)(?:\s+(?:now|please|the\s+(?:call|phone)))?(?:[,\s]+${WAKE})?$`, 'iu');
+// "hang hang up": a stutter the speech model keeps (the owner's call, 2026-11-19: it did not end the call).
+const HANG_UP = new RegExp(String.raw`${LEAD}(?:(?:hang[,\s]+)+up|(?:end|stop|close)\s+(?:the\s+|this\s+|my\s+)?(?:call|talk)|stop\s+calling)(?:\s+(?:now|please|the\s+(?:call|phone)))?(?:[,\s]+${WAKE})?$`, 'iu');
 /** One sentence of the line is "hang up" and nothing else ("Right. Hang up. PAN, end the call."). */
 export function saysHangUp(text) {
   return String(text || '').split(/[.!?;]+/).map((s) => s.trim().replace(/[,\s]+$/, '')).some((s) => s && HANG_UP.test(s));

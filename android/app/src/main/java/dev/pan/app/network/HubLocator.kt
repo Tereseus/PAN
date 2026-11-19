@@ -29,9 +29,11 @@ import javax.inject.Singleton
  * Resolution order, first that answers /health wins:
  *   1. lastGood      — whatever worked last time, persisted across launches
  *   2. tsnet proxy   — RemoteAccessManager's 127.0.0.1:<port> tunnel
- *   3. MagicDNS      — "pan-hub". Move the hub to another machine, rename that
- *                      machine in Tailscale, every client follows. No rebuild.
- *   4. LAN fallbacks — for when Tailscale is down on the same network
+ *
+ * Nothing else. Until 0.5.40 three guesses followed: a machine name, the first hub's own name
+ * and its home address. On any other network the app would have taken whatever machine
+ * answered "ok" under one of those names as its hub and sent it turns, sound and location.
+ * A hub is reached through the tunnel this device was paired with, or where it last was.
  *
  * Whatever answers is also asked /api/v1/hub-address, so a stale instance can
  * redirect us to the real hub rather than quietly serving an old database.
@@ -49,15 +51,7 @@ class HubLocator @Inject constructor(
         private const val PREFS = "pan_hub"
         private const val KEY_LAST_GOOD = "last_good_base_url"
 
-        /** Stable MagicDNS name. Rename the hub machine to this in Tailscale. */
-        const val MAGIC_DNS_NAME = "pan-hub"
-        private const val TAILNET_NAME = "minipc-pan-hub"
         const val PORT = 7777
-
-        /** Last-resort guesses. Deliberately short — discovery, not a subnet scan. */
-        private val LAN_FALLBACKS = listOf(
-            "http://192.168.1.83:$PORT",
-        )
 
         /**
          * The address that answered last, for the few callers that use plain URL()
@@ -221,12 +215,14 @@ class HubLocator @Inject constructor(
             // ahead of it cost a full probe timeout on every scan.
             proxyBase?.let { add(it) }
             prefs.getString(KEY_LAST_GOOD, null)?.let { add(it) }
-            add("http://$MAGIC_DNS_NAME:$PORT")
-            // What the hub is really called. With the regular Tailscale app holding the phone's
-            // one VPN slot there is no tunnel, and this name is the only way in.
-            add("http://$TAILNET_NAME:$PORT")
-            addAll(LAN_FALLBACKS)
         }.distinct()
+        if (candidates.isEmpty()) {
+            // Not paired, or the tunnel is not up yet: nothing to ask, and no name to guess.
+            lastScanProxy = proxyBase
+            lastEmptyScanAt = SystemClock.elapsedRealtime()
+            emptyScanBackoffMs = NO_TUNNEL_SCAN_BACKOFF_MS
+            return null
+        }
 
         // All candidates are probed AT ONCE and the first in list order that answered wins.
         // One by one, every dead candidate cost a full PROBE_TIMEOUT_MS (AP isolation makes the

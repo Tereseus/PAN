@@ -22,7 +22,7 @@ object PanVpn {
     private const val KEY_HOSTNAME = "hostname"
     private const val KEY_SERVER_HOSTNAME = "server_hostname"
     private const val KEY_ENABLED = "enabled"
-    private const val DEFAULT_SERVER_HOSTNAME = "desktop-pc"
+    private const val DEFAULT_SERVER_HOSTNAME = ""
 
     /** VPN consent request code for Activity.startActivityForResult */
     const val VPN_REQUEST_CODE = 0x50414E  // "PAN" in hex
@@ -181,7 +181,7 @@ object PanVpn {
      */
     suspend fun serverRequest(context: Context, path: String): String = withContext(Dispatchers.IO) {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val serverHostname = prefs.getString(KEY_SERVER_HOSTNAME, "pan-desktop") ?: "pan-desktop"
+        val serverHostname = prefs.getString(KEY_SERVER_HOSTNAME, DEFAULT_SERVER_HOSTNAME) ?: DEFAULT_SERVER_HOSTNAME
         Panvpn.dialHTTP(serverHostname, 7777, path)
     }
 

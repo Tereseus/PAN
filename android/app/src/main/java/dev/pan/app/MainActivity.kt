@@ -83,7 +83,8 @@ class MainActivity : ComponentActivity() {
                         if (done is UpdateChecker.Result.Error) toast("Update failed: ${done.message}")
                     }
                     is UpdateChecker.Result.UpToDate -> toast("ΠAN ${BuildConfig.VERSION_NAME} is up to date")
-                    is UpdateChecker.Result.Error -> toast("Couldn't check for updates: ${found.message}")
+                    // A phone that was never paired has no computer to ask: Home says so, no error here.
+                    is UpdateChecker.Result.Error -> if (updateChecker.paired()) toast("Couldn't check for updates: ${found.message}")
                     else -> {}
                 }
             }

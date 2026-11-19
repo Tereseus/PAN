@@ -73,7 +73,7 @@ class UpdateChecker @Inject constructor(
         // LAN fallback if Tailscale isn't up yet
         // Placeholder host only: okHttpClient's interceptor sends every request to the hub
         // HubLocator found. Was the hub's old Dell address, which read like a real fallback.
-        private const val LAN_FALLBACK = "http://pan-hub:7777"
+        private const val LAN_FALLBACK = "http://hub.invalid:7777"
         // Tries per download; each one resumes where the last stopped
         private const val DOWNLOAD_ATTEMPTS = 40
     }
@@ -96,6 +96,9 @@ class UpdateChecker @Inject constructor(
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var running: Deferred<Result>? = null
+
+    /** This device has been paired with a computer. */
+    fun paired(): Boolean = runCatching { remoteAccessManager.link.isPaired() }.getOrDefault(true)
 
     /**
      * Asks the server what it has, without downloading. Used to say "update found"
@@ -128,6 +131,9 @@ class UpdateChecker @Inject constructor(
         val base = remoteAccessManager.getTailscaleBaseUrl() ?: LAN_FALLBACK
         val req = Request.Builder().url("$base/api/v1/apk/version").build()
         okHttpClient.newCall(req).execute().use { resp ->
+            // A hub with no build to hand out answers 404: nothing newer, not an error. (Every hub
+            // but the first is like that until builds come from a store.)
+            if (resp.code == 404) return Manifest(base, -1, "", "/apk/latest", "", 0L)
             if (!resp.isSuccessful) throw IOException("version endpoint HTTP ${resp.code}")
             val json = JSONObject(resp.body?.string() ?: throw IOException("empty version body"))
             val srvAppId = json.optString("applicationId")
@@ -171,8 +177,14 @@ class UpdateChecker @Inject constructor(
                 return Result.Error("download failed")
             }
 
-            // Verify
-            if (m.sha256.isNotEmpty()) {
+            // Verify. A build the hub gives no sha256 for is not installed: the check used to be
+            // skipped for it.
+            if (m.sha256.isEmpty()) {
+                logShipper.info("update", "Update check: the hub gave no sha256 for version ${m.versionCode}, refusing install")
+                apkFile.delete()
+                return Result.Error("the hub gave no checksum for the update")
+            }
+            run {
                 val actual = sha256(apkFile)
                 if (!actual.equals(m.sha256, ignoreCase = true)) {
                     Log.w(TAG, "sha256 mismatch — expected=${m.sha256} actual=$actual")
@@ -186,7 +198,11 @@ class UpdateChecker @Inject constructor(
 
             // Trigger install
             logShipper.info("update", "Launching system installer for version ${m.versionCode} (${m.versionName})")
-            triggerInstall(context, apkFile)
+            if (!triggerInstall(context, apkFile)) {
+                // Android's page for "install unknown apps" was opened. Said in words, or the
+                // person lands on a settings page with no idea why.
+                return Result.Error("allow ΠAN to install its own update on the page that just opened, then tap Check for updates again")
+            }
             return Result.UpdateInstalling(m.versionCode, m.versionName)
         } catch (e: Exception) {
             Log.w(TAG, "checkAndInstall error: ${e.message}")
@@ -292,7 +308,8 @@ class UpdateChecker @Inject constructor(
         return md.digest().joinToString("") { "%02x".format(it) }
     }
 
-    private fun triggerInstall(context: Context, apkFile: File) {
+    /** True when Android's installer was opened; false when its permission page was. */
+    private fun triggerInstall(context: Context, apkFile: File): Boolean {
         // Android 8+ requires the calling app to hold REQUEST_INSTALL_PACKAGES
         // AND the user must grant "Install unknown apps" for this app once in
         // system settings. If that isn't granted, kick the user there with a
@@ -305,7 +322,7 @@ class UpdateChecker @Inject constructor(
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             runCatching { context.startActivity(intent) }
-            return
+            return false
         }
 
         val uri = FileProvider.getUriForFile(context, FILE_PROVIDER_AUTHORITY, apkFile)
@@ -317,5 +334,6 @@ class UpdateChecker @Inject constructor(
         Log.i(TAG, "Launching system installer for ${apkFile.name}")
         runCatching { context.startActivity(intent) }
             .onFailure { Log.w(TAG, "startActivity failed: ${it.message}") }
+        return true
     }
 }

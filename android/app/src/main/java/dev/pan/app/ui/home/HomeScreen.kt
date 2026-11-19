@@ -82,6 +82,9 @@ fun HomeScreen(viewModel: MainViewModel) {
 
     // Is it the phone's internet, or the computer? Asked every few seconds; cheap.
     var online by remember { mutableStateOf(true) }
+    // Never paired with a computer: say that and offer the scanner, not "your computer is not
+    // answering" on a phone that has no computer yet. True until the link says otherwise.
+    var paired by remember { mutableStateOf(true) }
     var incognito by remember { mutableStateOf(ScopeHolder.scope == "incognito") }
     val interpreting by dev.pan.app.stt.LiveWords.interpreting.collectAsState()
     LaunchedEffect(Unit) {
@@ -91,6 +94,7 @@ fun HomeScreen(viewModel: MainViewModel) {
                 cm?.getNetworkCapabilities(cm.activeNetwork)?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true
             }.getOrDefault(true)
             incognito = ScopeHolder.scope == "incognito"
+            paired = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { runCatching { viewModel.linkPaired() }.getOrDefault(true) }
             delay(3_000)
         }
     }
@@ -108,6 +112,7 @@ fun HomeScreen(viewModel: MainViewModel) {
                 Spacer(Modifier.width(12.dp))
                 val (dot, words) = when {
                     connected -> MaterialTheme.colorScheme.secondary to "Connected"
+                    !paired -> MaterialTheme.colorScheme.error to "Not paired with a computer yet"
                     !online -> MaterialTheme.colorScheme.error to "No internet on this device"
                     else -> MaterialTheme.colorScheme.error to "Your computer is not answering"
                 }
@@ -136,6 +141,19 @@ fun HomeScreen(viewModel: MainViewModel) {
                 }
             }
             SituationLine(intuition)
+            if (!connected && !paired) {
+                Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceVariant,
+                    modifier = Modifier.fillMaxWidth().padding(top = 12.dp)) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text("Pair this phone with your computer", style = MaterialTheme.typography.titleMedium)
+                        Text("On the computer that runs ΠAN, open Devices and choose Add a device. Then scan the code it shows.",
+                            style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Button(onClick = {
+                            context.startActivity(android.content.Intent(context, dev.pan.app.vpn.ScanPairActivity::class.java))
+                        }) { Text("Scan the code") }
+                    }
+                }
+            }
         }
 
         // ---- needs you ---------------------------------------------------

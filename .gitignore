@@ -216,3 +216,6 @@ service/dashboard/.immutable-backup/
 
 # Research reports and notes stay on the owner's machines, not in the public repo (2026-11-18)
 /docs/research/
+
+# The speech models, fetched by the build (android/app/build.gradle.kts fetchSpeech)
+android/app/src/main/assets/asr/

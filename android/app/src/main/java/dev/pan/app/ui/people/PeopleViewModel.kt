@@ -420,6 +420,8 @@ class PeopleViewModel @Inject constructor(
         viewModelScope.launch {
             val r = hub("DELETE", "/api/v1/people/talk")
             if (r != null && r.first == 200) readTalk(r.second.optJSONObject("talk"))
+            // The button used to do nothing at all when the computer could not be reached.
+            else _message.value = "Your computer isn't answering, so the call can't be ended there yet. Its sound stops on this phone by itself in a few seconds."
         }
     }
 

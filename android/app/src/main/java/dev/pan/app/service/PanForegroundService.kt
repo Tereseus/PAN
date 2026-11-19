@@ -170,6 +170,8 @@ class PanForegroundService : Service() {
     private var isMuted = false
     /** The mic was off when a call's sound started and the call turned it on (CallRules). */
     @Volatile private var micOpenedByCall = false
+    /** When the hub first failed to answer during a call (elapsed time), 0 while it answers. */
+    private var callPollFailedAt = 0L
     private var flashlightOn = false
     private var lastActionContext = "" // tracks what "it" / "that" refers to
     private var lastTtsDoneTime = 0L  // When TTS last finished speaking
@@ -1150,6 +1152,7 @@ class PanForegroundService : Service() {
                 delay(if (fast) 1000L else SLACK_POLL_INTERVAL_MS)
                 try {
                     val resp = serverClient.api.getSlackPending(getPanDeviceId())
+                    callPollFailedAt = 0L
                     val nowFast = resp.body()?.fast == true
                     // A call opened or closed for this person, maybe from another of their devices:
                     // the app's call strip and People tab look again.
@@ -1207,7 +1210,27 @@ class PanForegroundService : Service() {
                         val kind = note.data?.get("kind")
                         if (kind == "message" || kind == "talk") dev.pan.app.ui.people.PeopleSignal.bump()
                     }
-                } catch (_: Exception) {}
+                } catch (_: Exception) {
+                    // The hub cannot be reached. In a call that used to go on for ever in silence:
+                    // call sound mode, the mic open, and nobody told. After a quarter of a minute
+                    // the call's sound stops here and the person hears why. If the hub comes back
+                    // and the call is still open there, the next answer turns the sound on again.
+                    if (dev.pan.app.audio.CallAudio.active) {
+                        val now = android.os.SystemClock.elapsedRealtime()
+                        if (callPollFailedAt == 0L) callPollFailedAt = now
+                        if (dev.pan.app.audio.CallRules.dropsCall(now - callPollFailedAt)) {
+                            callPollFailedAt = 0L
+                            panLog("Call voice: the hub has not answered for ${dev.pan.app.audio.CallRules.DROP_AFTER_MS / 1000} s, the call's sound stops here")
+                            dev.pan.app.audio.CallAudio.stop(getSystemService(AUDIO_SERVICE) as AudioManager, pan_is_speaking = tts.isSpeaking)
+                            if (dev.pan.app.audio.CallRules.closesMic(micOpenedByCall, micEnabled.value)) {
+                                startService(Intent(this@PanForegroundService, PanForegroundService::class.java).setAction("TOGGLE_MIC").putExtra("on", false).putExtra("by_call", true))
+                            }
+                            micOpenedByCall = false
+                            dev.pan.app.ui.people.PeopleSignal.bump()
+                            mainHandler.post { panSpeak("The call lost its connection.") }
+                        }
+                    }
+                }
             }
         }
     }
@@ -2287,7 +2310,14 @@ class PanForegroundService : Service() {
                     val now = System.currentTimeMillis()
                     if (now - lastNoReplySpokenAt > NO_REPLY_REPEAT_MS) {
                         lastNoReplySpokenAt = now
-                        mainHandler.post { panSpeak("Server didn't respond.") }
+                        // Which of the three it is: the same sentence for all of them told nobody
+                        // what to do (not paired, no internet, the computer is off).
+                        val cm = getSystemService(android.net.ConnectivityManager::class.java)
+                        val online = runCatching { cm?.getNetworkCapabilities(cm.activeNetwork)?.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true }.getOrDefault(true)
+                        val paired = runCatching { linkManager.isPaired() }.getOrDefault(true)
+                        val words = dev.pan.app.network.NoAnswer.words(paired = paired, online = online)
+                        panLog("No answer: $words")
+                        mainHandler.post { panSpeak(words) }
                     } else {
                         feedbackSounds.onCommandFailed()
                     }
@@ -2501,7 +2531,9 @@ class PanForegroundService : Service() {
         }
 
         // Flashlight
-        if (lower.contains("flashlight") || (lower.contains("flash") && lower.contains("light")) || lower.contains("torch")) {
+        // Only a short line that is the command itself ("flashlight on", "turn the torch off").
+        // Any sentence with the word in it used to toggle the light ("where did I leave the torch").
+        if (dev.pan.app.service.InstantWords.flashlight(lower)) {
             try {
                 val cameraManager = getSystemService(CAMERA_SERVICE) as CameraManager
                 val cameraId = cameraManager.cameraIdList.firstOrNull() ?: return "No camera found."
@@ -3346,6 +3378,20 @@ class PanForegroundService : Service() {
             val newState = if (intent.hasExtra("on")) intent.getBooleanExtra("on", true) else !micEnabled.value
             // A mic press by hand during a call: the call no longer puts the mic back at its end.
             if (!intent.getBooleanExtra("by_call", false)) micOpenedByCall = false
+            if (newState) {
+                // Without the permission the button showed "listening" and heard nothing.
+                if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                    panLog("Mic not turned on: ΠAN has no microphone permission")
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        android.widget.Toast.makeText(this, "Allow the microphone for ΠAN in the phone's settings first", android.widget.Toast.LENGTH_LONG).show()
+                    }
+                    return START_STICKY
+                }
+                // The service claims the microphone as it turns the mic on. After a reboot it starts
+                // without that claim, and only the spoken "unmute" made it: the notification's button
+                // and the app's own turned the mic on in a service Android gives no sound to.
+                if (!ensureMicForeground()) panLog("Mic on, but Android has not let the service hold the microphone yet: open ΠAN once if nothing is heard")
+            }
             if (!newState && micEnabled.value) {
                 // Muting stopped the microphone but left PAN talking: it finished
                 // its sentence and then announced a server error for a query that

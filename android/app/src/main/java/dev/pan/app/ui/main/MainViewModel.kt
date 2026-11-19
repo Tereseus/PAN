@@ -44,6 +44,9 @@ class MainViewModel @Inject constructor(
      * "PAN Link, over your home network" (or through Tailscale) while the app reaches PAN
      * through PAN Link, else null. Asks the link, so call it off the main thread.
      */
+    /** This device has been paired with a computer (ΠAN Link holds its key). Asks the link: off the main thread. */
+    fun linkPaired(): Boolean = remoteAccessManager.link.isPaired()
+
     fun linkLine(): String? {
         val link = remoteAccessManager.link
         if (link.baseUrlIfConnected() == null) return null

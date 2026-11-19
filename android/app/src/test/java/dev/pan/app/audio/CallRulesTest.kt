@@ -15,4 +15,7 @@ class CallRulesTest {
     @Test fun outsideACallALineIsJoinedToTheOneBefore() = assertTrue(CallRules.joinsLineBefore(wouldJoin = true, inCall = false))
     @Test fun inACallEveryLineGoesAlone() = assertFalse(CallRules.joinsLineBefore(wouldJoin = true, inCall = true))
     @Test fun nothingToJoinIsNotJoined() = assertFalse(CallRules.joinsLineBefore(wouldJoin = false, inCall = false))
+
+    @Test fun aShortGapInTheNetworkDoesNotEndTheSound() = assertFalse(CallRules.dropsCall(failedForMs = 5_000))
+    @Test fun aQuarterOfAMinuteWithoutTheHubDoes() = assertTrue(CallRules.dropsCall(failedForMs = 15_000))
 }

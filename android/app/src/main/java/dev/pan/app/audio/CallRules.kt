@@ -24,4 +24,14 @@ object CallRules {
      * them is answered, and the joined sound grew without end.
      */
     fun joinsLineBefore(wouldJoin: Boolean, inCall: Boolean): Boolean = wouldJoin && !inCall
+
+    /** How long the hub may stay unreachable in a call before the call's sound stops on this device. */
+    const val DROP_AFTER_MS = 15_000L
+
+    /**
+     * The hub has not answered for [failedForMs] during a call: the sound stops here, the mic the
+     * call opened is given back, and the person is told. It used to stay in call mode with the
+     * mic open and say nothing.
+     */
+    fun dropsCall(failedForMs: Long): Boolean = failedForMs >= DROP_AFTER_MS
 }

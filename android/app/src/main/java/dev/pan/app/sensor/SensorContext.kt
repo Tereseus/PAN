@@ -43,7 +43,10 @@ class SensorContext @Inject constructor(
 
     // Latest sensor readings
     var gps: GpsReading? = null; private set
-    var address: String? = null; private set  // reverse geocoded address
+    @Volatile var address: String? = null; private set  // reverse geocoded address
+    @Volatile private var geocoding = false
+    private var geocodedAt: android.location.Location? = null
+    private var geocodedAtMs = 0L
     var compass: Float? = null; private set          // degrees from north
     var accelerometer: FloatArray? = null; private set  // x, y, z m/s²
     var gyroscope: FloatArray? = null; private set      // x, y, z rad/s
@@ -207,18 +210,31 @@ class SensorContext @Inject constructor(
             accuracy = if (location.hasAccuracy()) location.accuracy.toDouble() else null,
             bearing = if (location.hasBearing()) location.bearing.toDouble() else null
         )
-        // Reverse geocode to get address (don't block — best effort)
-        try {
-            val geocoder = Geocoder(context, Locale.getDefault())
-            val results = geocoder.getFromLocation(location.latitude, location.longitude, 1)
-            if (!results.isNullOrEmpty()) {
-                val a = results[0]
-                address = listOfNotNull(
-                    a.subThoroughfare, a.thoroughfare, a.locality, a.adminArea, a.countryCode
-                ).joinToString(", ")
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Geocode failed: ${e.message}")
+        // The address for this place, best effort. The lookup asks the network and can take
+        // seconds: it ran right here, on the main thread, at every fix (every 5 s while moving).
+        // Now it runs on its own thread, one at a time, and only after 50 m or a minute.
+        val nowMs = android.os.SystemClock.elapsedRealtime()
+        val moved = geocodedAt?.distanceTo(location) ?: Float.MAX_VALUE
+        if (!geocoding && (moved > 50f || nowMs - geocodedAtMs > 60_000L)) {
+            geocoding = true
+            geocodedAt = location
+            geocodedAtMs = nowMs
+            Thread({
+                try {
+                    val geocoder = Geocoder(context, Locale.getDefault())
+                    val results = geocoder.getFromLocation(location.latitude, location.longitude, 1)
+                    if (!results.isNullOrEmpty()) {
+                        val a = results[0]
+                        address = listOfNotNull(
+                            a.subThoroughfare, a.thoroughfare, a.locality, a.adminArea, a.countryCode
+                        ).joinToString(", ")
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Geocode failed: ${e.message}")
+                } finally {
+                    geocoding = false
+                }
+            }, "pan-geocode").start()
         }
     }
 
