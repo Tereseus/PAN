@@ -27,7 +27,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 TESTS = os.path.normpath(os.path.join(HERE, ".."))
 SERVICE = os.path.normpath(os.path.join(HERE, "..", "..", ".."))
 REPO = os.path.normpath(os.path.join(SERVICE, ".."))
-UNIT = ["people.test.js", "person-voice.test.js", "pan-link-routes.test.js", "pan-link-auth.test.js", "notes-sender.test.js", "thread-people.test.js", "thread-relay-parse.test.js", "voice-report-voices.test.js", "person-messages.test.js", "met-people.test.js", "people-groups.test.js", "group-calls.test.js", "call-voice.test.js", "person-voices.test.js", "same-line.test.js"]
+UNIT = ["people.test.js", "person-remove.test.js", "person-voice.test.js", "pan-link-routes.test.js", "pan-link-auth.test.js", "notes-sender.test.js", "thread-people.test.js", "thread-relay-parse.test.js", "voice-report-voices.test.js", "person-messages.test.js", "met-people.test.js", "people-groups.test.js", "group-calls.test.js", "call-voice.test.js", "person-voices.test.js", "same-line.test.js"]
 
 
 def unit():

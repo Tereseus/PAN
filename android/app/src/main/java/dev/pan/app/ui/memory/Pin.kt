@@ -17,12 +17,13 @@ import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.PBEKeySpec
 
 /**
- * A PIN for Memory on a device that has no fingerprint (a car unit, a TV, some tablets). SWITCHED
- * OFF: the owner's call the day it was written (2026-11-18) is that such a device does not open
- * Memory at all, so a shared screen can never search it. [allowed] is false everywhere and nothing
- * in the app sets it; the code stays for the day the owner can grant it to one device from his own
- * phone. It must never become a switch on the device itself: whoever holds the device could turn
- * it on and set their own PIN. A device with a fingerprint never gets here.
+ * A PIN for Memory on a device that has no fingerprint. ON FOR PHONES since 2026-11-19 (the
+ * owner: a person without a fingerprint on their phone uses the PIN). STILL OFF for a car unit,
+ * a TV and a tablet: the owner's call the day it was written (2026-11-18) is that such a device
+ * does not open Memory at all, so a shared screen can never search it; the code is there for the
+ * day the owner can grant it to one device from his own phone. It must never become a switch on
+ * the device itself: whoever holds the device could turn it on and set their own PIN. A device
+ * with a fingerprint never gets here.
  *
  * The PIN is 4 to 8 digits. Only a salted, slow hash of it is kept (PBKDF2), so the app's own files
  * do not give it away. Five wrong tries in a row and the lock rests, longer each time. There is no
@@ -41,8 +42,15 @@ object Pin {
 
     private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
-    /** Whether this device may use a PIN at all. Off unless granted; nothing grants it yet. */
-    fun allowed(context: Context): Boolean = prefs(context).getBoolean("memory_pin_allowed", false)
+    /**
+     * Whether this device may use a PIN at all. A phone may (the owner, 2026-11-19: a person whose
+     * phone has no fingerprint set up opens Memory with a PIN): a phone is one person's. A screen
+     * that is shared, a car unit, a TV or a tablet, still may not unless it is granted, and
+     * nothing grants it yet (the owner, 2026-11-18).
+     */
+    fun allowed(context: Context): Boolean = PinRule.allowed(
+        granted = prefs(context).getBoolean("memory_pin_allowed", false),
+        isPhone = runCatching { context.packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_TELEPHONY) }.getOrDefault(false))
 
     fun isSet(context: Context): Boolean = prefs(context).getString(KEY_HASH, null) != null
 

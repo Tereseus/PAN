@@ -22,7 +22,7 @@ import apiRouter from './routes/api.js';
 import authRouter from './routes/auth.js';
 import devicesRouter from './routes/devices.js';
 import linkRouter, { callAdmin as linkAdmin } from './routes/link.js';
-import { personOfDevice, pairingsWaiting, claimPairings, personMaySend, asUser } from './people.js';
+import { personOfDevice, pairingsWaiting, claimPairings, personMaySend, asUser, personGone } from './people.js';
 import { tailscaleKeyRouter } from './routes/tailscale-key.js';
 import dashboardRouter, { createAlert } from './routes/dashboard.js';
 import sensorsRouter, { seedSensors } from './routes/sensors.js';
@@ -398,6 +398,8 @@ app.use((req, res, next) => {
   req.panLinkDevice = { id: link.deviceId, name: link.deviceName };
   linkPerson(link.deviceId).then((person) => {
     if (person === undefined) return res.status(503).json({ error: 'PAN Link is not answering, try again' });
+    // Before every route: a device whose person was removed from the hub gets nothing.
+    if (personGone(person)) return res.status(403).json({ error: 'this device belonged to a person who was removed', gone: true });
     if (person && person.role !== 'owner' && !personMaySend(req.method, req.path)) return res.status(403).json({ error: 'not open to this person' });
     next();
   }).catch(next);

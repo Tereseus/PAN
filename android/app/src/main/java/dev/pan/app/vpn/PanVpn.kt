@@ -53,8 +53,17 @@ object PanVpn {
      * Connect to the PAN tailnet (starts PanVpnService).
      * Returns a login URL if interactive Tailscale auth is needed, null if already authenticated.
      */
-    suspend fun connect(context: Context): String? = withContext(Dispatchers.IO) {
+    suspend fun connect(context: Context, byHand: Boolean = false): String? = withContext(Dispatchers.IO) {
         try {
+            // Not for everyone (TailscaleRule): only with a key from the hub, on a device that has
+            // reached its hub this way before, or when turned on by hand.
+            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            val haveKey = !prefs.getString(KEY_AUTH_KEY, "").isNullOrBlank()
+            val usedBefore = !prefs.getString("verified_server_ip", "").isNullOrBlank()
+            if (!TailscaleRule.starts(haveKey, usedBefore, byHand)) {
+                Log.i(TAG, "Tailscale not started: no key from the hub and never used on this device (PAN Link only)")
+                return@withContext null
+            }
             Log.i(TAG, "Starting VPN service...")
 
             val intent = Intent(context, PanVpnService::class.java).apply {

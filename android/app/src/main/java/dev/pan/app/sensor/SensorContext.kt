@@ -45,6 +45,8 @@ class SensorContext @Inject constructor(
     var gps: GpsReading? = null; private set
     @Volatile var address: String? = null; private set  // reverse geocoded address
     @Volatile private var geocoding = false
+    private val GPS_EVERY_MS = 30_000L
+    private val GPS_AFTER_METERS = 25f
     private var geocodedAt: android.location.Location? = null
     private var geocodedAtMs = 0L
     var compass: Float? = null; private set          // degrees from north
@@ -155,8 +157,12 @@ class SensorContext @Inject constructor(
             for (provider in providers) {
                 try {
                     if (locationManager.isProviderEnabled(provider)) {
+                        // A fix at most every half minute, and only after 25 m. It was every 5 s
+                        // and 5 m, an old setting nothing needed (the owner asked why, 2026-11-19):
+                        // where the phone is goes into a turn as background, and a place half a
+                        // minute old is the same place.
                         locationManager.requestLocationUpdates(
-                            provider, 5000, 5f, this, Looper.getMainLooper()
+                            provider, GPS_EVERY_MS, GPS_AFTER_METERS, this, Looper.getMainLooper()
                         )
                         Log.i(TAG, "GPS using provider: $provider")
                         break

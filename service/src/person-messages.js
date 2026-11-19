@@ -413,7 +413,24 @@ export function talkOf(userId, now = Date.now()) {
   const t = talks.get(Number(userId));
   if (!t) return null;
   if (now - t.last > TALK_IDLE_MS) { talks.delete(Number(userId)); return null; }
+  // Nobody answered. The ring used to go on for as long as there was speech near the caller's
+  // phone, and every line of it was passed to the other person's device (found 2026-11-19).
+  if (now - t.since > RING_MS && talks.get(t.with)?.with !== Number(userId)) { unanswered(Number(userId), t, now); return null; }
   return t;
+}
+
+/** How long a call rings before it gives up. */
+export const RING_MS = 45_000;
+
+function unanswered(me, t, now) {
+  talks.delete(me);
+  const here = peopleHere();
+  const mine = here.find((p) => p.id === me);
+  const other = here.find((p) => p.id === t.with);
+  // Their device stops ringing and keeps a line; the caller is told and their side closes.
+  addNote({ type: 'message', title: mine?.first || 'ΠAN', body: `Missed call from ${mine?.first || 'someone'}.`, data: { kind: 'talk', from_user: me, call: 'gone' } }, { toUser: t.with, keepMs: 30_000, now });
+  addNote({ type: 'speak', title: other?.first || 'ΠAN', body: `${other?.first || 'They'} didn't answer.`, data: { kind: 'talk', from_user: t.with, call: 'ended' } }, { toUser: me, keepMs: 60_000, now });
+  console.log(`[call] person ${me} rang person ${t.with} for ${Math.round(RING_MS / 1000)} s, no answer`);
 }
 
 function heardInCall(userId, body, now) {
@@ -496,14 +513,22 @@ function callBlocks() {
 }
 /** Does [userId] take no calls from [fromId]? */
 export function callsBlocked(userId, fromId) {
+  // A child does not refuse the owner's calls (the owner, 2026-11-19), whatever was set before.
+  if (childCannotRefuse(userId, fromId)) return false;
   const list = callBlocks()[String(Number(userId))];
   return Array.isArray(list) && list.map(Number).includes(Number(fromId));
 }
 /** [userId] takes calls from [fromId] or not. Their own choice. -> { ok, blocked } | { ok: false, reason } */
+/** A child and the one who runs the hub: the child takes that person's calls. */
+function childCannotRefuse(userId, fromId) {
+  return Number(fromId) === OWNER_ID && peopleHere().some((p) => p.id === Number(userId) && p.role === 'child');
+}
+
 export function setCallsBlocked(userId, fromId, blocked) {
   const me = Number(userId), from = Number(fromId);
   const here = peopleHere();
   if (me === from || !here.some((p) => p.id === me) || !here.some((p) => p.id === from)) return { ok: false, reason: 'nobody' };
+  if (blocked && childCannotRefuse(me, from)) return { ok: false, reason: 'not_yours_to_refuse' };
   const all_ = callBlocks();
   const list = new Set((Array.isArray(all_[String(me)]) ? all_[String(me)] : []).map(Number));
   if (blocked) list.add(from); else list.delete(from);
@@ -597,7 +622,7 @@ export function peopleFor(meId) {
     const other = Number(r.from_user) === me ? Number(r.to_user) : Number(r.from_user);
     last.set(other, { id: Number(r.id), from_me: Number(r.from_user) === me, kind: r.kind, body: r.body, at: Number(r.created_at) });
   }
-  const unread = new Map(all(`SELECT from_user, COUNT(*) AS n FROM person_messages WHERE to_user = :u AND read_at IS NULL GROUP BY from_user`, { ':u': me })
+  const unread = new Map(all(`SELECT from_user, COUNT(*) AS n FROM person_messages WHERE to_user = :u AND read_at IS NULL AND how != 'talk' GROUP BY from_user`, { ':u': me })
     .map((r) => [Number(r.from_user), Number(r.n)]));
   // The owner also sees how each person's messages reach them, to set it for them.
   const how = me === OWNER_ID ? (id) => ({ messages: messageMode(id) }) : () => ({});

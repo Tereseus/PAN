@@ -478,7 +478,11 @@ class MainViewModel @Inject constructor(
                 } catch (_: Exception) {}
 
                 val loginUrl = dev.pan.app.vpn.PanVpn.connect(application)
-                if (loginUrl != null) {
+                if (loginUrl == null && !dev.pan.app.vpn.PanVpn.isRunning()) {
+                    // Not started on this device (TailscaleRule): nothing to wait for, and the
+                    // status does not sit on "Connecting..." for ever.
+                    remoteAccessManager.setStatus("Off")
+                } else if (loginUrl != null) {
                     // Never a browser on its own (the owner, Nov 15: people must never see Tailscale).
                     // PAN Link carries the app; Settings > Advanced has the sign-in for a developer.
                     android.util.Log.i("PAN-VPN", "Tailscale wants a sign-in and the hub gave no key: PAN Link only")
@@ -517,7 +521,7 @@ class MainViewModel @Inject constructor(
                 remoteAccessManager.setEnabled(true)
                 remoteAccessManager.setStatus("Connecting...")
                 try {
-                    dev.pan.app.vpn.PanVpn.connect(context)   // no browser; see connectTailscale
+                    dev.pan.app.vpn.PanVpn.connect(context, byHand = true)   // no browser; see connectTailscale
                     remoteAccessManager.refreshFromVpn()
                 } catch (e: Exception) {
                     remoteAccessManager.setStatus("Failed: ${e.message}")

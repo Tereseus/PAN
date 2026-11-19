@@ -1159,7 +1159,7 @@ router.get('/people/room/lines', (req, res) => {
 // Take calls from one person or not: { from, take }. Each person's own choice.
 router.put('/people/calls', (req, res) => {
   const set = setCallsBlocked(callerId(req), Number(req.body?.from), req.body?.take === false);
-  if (!set.ok) return res.status(404).json({ ok: false, error: set.reason });
+  if (!set.ok) return res.status(set.reason === 'nobody' ? 404 : 403).json({ ok: false, error: set.reason });
   res.json({ ok: true, from: Number(req.body?.from), take: !set.blocked });
 });
 // The person being called says no: { from }. The caller is told and their side closes.

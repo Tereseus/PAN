@@ -496,12 +496,32 @@ router.post('/users', requireRole('owner'), (req, res) => {
 });
 
 // DELETE /api/v1/auth/users/:id — remove a user (owner only, cannot delete self)
-router.delete('/users/:id', requireRole('owner'), (req, res) => {
+router.delete('/users/:id', requireRole('owner'), async (req, res) => {
   const userId = parseInt(req.params.id);
   if (userId === req.user?.id) return res.status(400).json({ error: 'Cannot delete yourself' });
   if (userId === 1) return res.status(400).json({ error: 'Cannot delete the primary owner' });
-  run('DELETE FROM users WHERE id = :id', { ':id': userId });
-  res.json({ ok: true });
+  // Everything that was theirs goes with them, and their devices are unpaired (person-remove.js).
+  // This used to delete the row and nothing else: the person's phone kept talking to PAN.
+  try {
+    const { removePerson } = await import('../person-remove.js');
+    const { callAdmin } = await import('./link.js');
+    const { forgetPersonVoice } = await import('../person-voices.js');
+    const done = await removePerson(userId, {
+      unpair: async (deviceId) => {
+        if (!/^[a-z0-9]{1,64}$/i.test(deviceId)) return false;
+        const { status } = await callAdmin(`/admin/devices/${deviceId}`, { method: 'DELETE' });
+        if (status === 200) { try { (await import('../thread-relay.js')).forgetHostsOf(deviceId); } catch {} }
+        return status === 200;
+      },
+      forgetVoice: forgetPersonVoice,
+    });
+    if (!done.ok) return res.status(400).json({ error: done.reason });
+    console.log(`[people] person ${userId} removed: ${done.devices} device(s), ${done.unpaired} unpaired, ${done.still_paired.length} still paired and closed`);
+    res.json({ ok: true, devices: done.devices, unpaired: done.unpaired, still_paired: done.still_paired.length });
+  } catch (e) {
+    console.warn(`[people] removing person ${userId} failed: ${e.message}`);
+    res.status(500).json({ error: 'could not remove this person' });
+  }
 });
 
 // GET /api/v1/auth/users — list all instance users
@@ -536,7 +556,16 @@ router.put('/users/:id/role', requireRole('owner'), (req, res) => {
   if (userId === req.user.id && role !== 'owner') {
     return res.status(400).json({ error: 'Cannot demote yourself' });
   }
-  run("UPDATE users SET role = :role WHERE id = :id", { ':role': role, ':id': userId });
+  // What a person may do is read from power_lvl, set when they were made. Changing only the role
+  // left a child made adult limited like a child (and the reverse) while the owner's right to
+  // read a child's messages, which goes by the role, flipped. Both move together now.
+  const rolePower = { child: 5, guest: 15, user: 25, manager: 50, admin: 75, owner: 100, viewer: 0 };
+  if (rolePower[role] !== undefined) {
+    run("UPDATE users SET role = :role, power_lvl = :power WHERE id = :id", { ':role': role, ':power': rolePower[role], ':id': userId });
+  } else {
+    run("UPDATE users SET role = :role WHERE id = :id", { ':role': role, ':id': userId });
+  }
+  resetPeopleCache();
   res.json({ ok: true });
 });
 

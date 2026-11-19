@@ -100,6 +100,15 @@ export function allowFor(person) {
   return !person || person.role === 'owner' ? [] : [...PERSON_ALLOW];
 }
 
+/**
+ * The device's person was removed from the hub (personOfDevice gives id 0, "Nobody"). Such a
+ * device is refused everything: it used to keep the paths open to any person, talking to PAN
+ * included, and three group call functions read id 0 as the owner.
+ */
+export function personGone(person) {
+  return !!person && person.role !== 'owner' && !(Number(person.id) > 0);
+}
+
 /** Whether a person's device may send this request (the same rules pan-link applies). */
 export function personMaySend(method, path) {
   const m = String(method || '').toUpperCase();

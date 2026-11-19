@@ -323,8 +323,21 @@ test('a call ends on hang up for both, or by itself after five quiet minutes; fo
   ok(pm.messageTurn('PAN, answer', { addressed: true }).response === 'Nobody is calling.', 'answering nobody');
   const t = Date.now();
   pm.startTalk(null, mia.id, t);
+  pm.startTalk(mia, 1, t);
   ok(pm.talkLine('still there?', {}, t + 4 * 60_000).sent === true, 'four minutes');
   ok(pm.talkLine('hello?', {}, t + 10 * 60_000) === null, 'a call open after six quiet minutes');
+  // Nobody answers: the ring gives up after 45 seconds, however much is said near his phone.
+  // It used to stay open, and pass every line on, for as long as anyone spoke (2026-11-19).
+  pm.resetTalks();
+  const t0 = t + 20 * 60_000;
+  take(MIA_PHONE, t0); take(OWNER_PHONE, t0);
+  pm.startTalk(null, mia.id, t0);
+  take(MIA_PHONE, t0 + 1000);
+  ok(pm.talkLine('are you there', {}, t0 + 30_000).sent === true, 'thirty seconds of ringing');
+  ok(pm.talkLine('pick up', {}, t0 + 50_000) === null && pm.talkState(1).with === null, 'still ringing after 45 s');
+  ok(/Mia didn't answer\./.test(bodies(take(OWNER_PHONE, t0 + 51_000))), 'he was not told nobody answered');
+  ok(/Missed call from Alex\./.test(bodies(take(MIA_PHONE, t0 + 51_000))), 'no missed call on her side');
+  ok(pm.RING_MS === 45_000, 'the ring time');
   const t2 = t + 30 * 60_000;
   pm.startTalk(null, mia.id, t2);
   let sent = 0;

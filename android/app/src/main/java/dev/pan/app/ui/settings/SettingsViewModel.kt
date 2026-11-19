@@ -338,7 +338,7 @@ class SettingsViewModel @Inject constructor(
                 }
                 // Start the app's own Tailscale: uses the auth key if set, otherwise shows the login URL
                 try {
-                    val loginUrl = dev.pan.app.vpn.PanVpn.connect(application)
+                    val loginUrl = dev.pan.app.vpn.PanVpn.connect(application, byHand = true)
                     if (loginUrl != null) {
                         // No browser (Nov 15): the sign-in button is under Settings > Advanced.
                         Log.i("Settings", "Tailscale wants a sign-in; no key from the hub")
