@@ -4055,6 +4055,7 @@ answer an earlier question, and do not narrate what the context blocks mention.`
   let sawEnd = false;   // response string closed; keep reading for the tail
   let addressed = null;
   let spokenReply = null; // the reply minus a dropped trailing question, when one was dropped
+  let personAsked = false; // the line was looked at once as a call or message for a person, after the gate
 
   // A cloud stream can die after it starts ("Failed to parse stream", 2026-11-05). With nothing
   // spoken yet there is no sequence to corrupt, so the student answers, not "Sorry, I ran into a
@@ -4090,6 +4091,24 @@ answer an earlier question, and do not narrate what the context blocks mention.`
       if (gate === null) {
         const d = readAddressGate(fullBuf);
         if (d) { gate = d.gate; addressed = d.addressed; }
+        // The voice model says the line is for PAN, and the line is a call or a message for a
+        // person here said without PAN's name ("Call Maria"). The check before the model only
+        // runs on a line that names PAN or comes right after PAN spoke, so this one went to
+        // the model, which answered "Got it. Calling Maria." and called nobody: the owner had
+        // to say it twice (2026-11-19). Now that the model has said who the line is for, the
+        // hub does what was asked and the model's own words are dropped, unspoken.
+        if (gate === 'open' && lastLen === 0 && !personAsked && !(saysPanName(text) || talking)) {
+          personAsked = true;
+          const msg = await messageToPerson(text, context, { addressed: true });
+          if (msg) {
+            console.log(`[routeStream] for a person, said without PAN's name: ${msg.intent}`);
+            try { recordTiming({ turn: context.turn_id, device: context.device_id, stage: 'path', path: 'person_after_gate' }); } catch {}
+            insertRouterEvent(text, msg.intent, msg.response, context);
+            if (msg.response) yield { type: 'chunk', text: msg.response };
+            yield { type: 'done', result: withProsody(msg) };
+            return;
+          }
+        }
       }
       const { text: extracted, done } = extractResponseField(fullBuf);
       // Keep the text even while muted: the looksDirectedAtPan veto below can

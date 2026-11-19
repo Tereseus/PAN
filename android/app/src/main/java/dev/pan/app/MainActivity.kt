@@ -70,6 +70,14 @@ class MainActivity : ComponentActivity() {
                 delay(8_000)
                 when (val found = updateChecker.check()) {
                     is UpdateChecker.Result.UpdateAvailable -> {
+                        // The build is 219 MB since the voice is inside it. By itself it is only
+                        // fetched on a network that is not metered, and never during a call: on
+                        // 2026-11-19 it came down in the middle of one. Settings fetches it any time.
+                        val metered = (getSystemService(CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager)?.isActiveNetworkMetered ?: true
+                        if (!dev.pan.app.update.UpdatePolicy.fetchAtLaunch(metered, dev.pan.app.audio.CallAudio.active)) {
+                            toast("Update ${found.versionName} is ready. It downloads on Wi-Fi, or now from Settings.")
+                            return@launch
+                        }
                         toast("Update ${found.versionName} found, downloading…")
                         val done = updateChecker.checkAndInstall(this@MainActivity)
                         if (done is UpdateChecker.Result.Error) toast("Update failed: ${done.message}")

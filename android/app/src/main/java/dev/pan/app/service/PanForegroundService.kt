@@ -168,6 +168,8 @@ class PanForegroundService : Service() {
     private val DEDUP_WINDOW_MS = 3000L
     private val convoTracker = ConversationTracker()
     private var isMuted = false
+    /** The mic was off when a call's sound started and the call turned it on (CallRules). */
+    @Volatile private var micOpenedByCall = false
     private var flashlightOn = false
     private var lastActionContext = "" // tracks what "it" / "that" refers to
     private var lastTtsDoneTime = 0L  // When TTS last finished speaking
@@ -1158,8 +1160,22 @@ class PanForegroundService : Service() {
                     val nowVoice = resp.body()?.voice == true
                     if (nowVoice != dev.pan.app.audio.CallAudio.active) {
                         val am = getSystemService(AUDIO_SERVICE) as AudioManager
-                        if (nowVoice) dev.pan.app.audio.CallAudio.start(serviceScope, serverClient, am) { panLog(it) }
-                        else dev.pan.app.audio.CallAudio.stop(am, pan_is_speaking = tts.isSpeaking)
+                        if (nowVoice) {
+                            dev.pan.app.audio.CallAudio.start(serviceScope, serverClient, am) { panLog(it) }
+                            // The call's sound comes from the mic, and the app starts muted.
+                            if (dev.pan.app.audio.CallRules.opensMic(micEnabled.value)) {
+                                micOpenedByCall = true
+                                panLog("Call voice: the mic was off, turned on for the call")
+                                startService(Intent(this@PanForegroundService, PanForegroundService::class.java).setAction("TOGGLE_MIC").putExtra("on", true).putExtra("by_call", true))
+                            }
+                        } else {
+                            dev.pan.app.audio.CallAudio.stop(am, pan_is_speaking = tts.isSpeaking)
+                            if (dev.pan.app.audio.CallRules.closesMic(micOpenedByCall, micEnabled.value)) {
+                                panLog("Call voice: the mic goes back off, as it was before the call")
+                                startService(Intent(this@PanForegroundService, PanForegroundService::class.java).setAction("TOGGLE_MIC").putExtra("on", false).putExtra("by_call", true))
+                            }
+                            micOpenedByCall = false
+                        }
                     }
                     val notes = resp.body()?.notifications ?: continue
                     for (note in notes) {
@@ -1668,7 +1684,8 @@ class PanForegroundService : Service() {
         val prev = pendingTurn
         val unanswered = prev != null && now - prev.at < CARRY_ON_OPEN_MS &&
             (inFlightQuery?.isActive == true || replyWaiting.isNotEmpty())
-        if (prev != null && prev.seq == replySeq.get() && (now - prev.at < CARRY_ON_MS || unanswered)) {
+        val wouldJoin = prev != null && prev.seq == replySeq.get() && (now - prev.at < CARRY_ON_MS || unanswered)
+        if (prev != null && dev.pan.app.audio.CallRules.joinsLineBefore(wouldJoin, dev.pan.app.audio.CallAudio.active)) {
             text = "${prev.text} $text"
             lower = text.lowercase().trim()
             val a = turnAudio
@@ -3327,6 +3344,8 @@ class PanForegroundService : Service() {
             // engine's private flag is how the two drifted apart.
             // --ez on true/false sets it outright (tests, scripts); without it, it flips.
             val newState = if (intent.hasExtra("on")) intent.getBooleanExtra("on", true) else !micEnabled.value
+            // A mic press by hand during a call: the call no longer puts the mic back at its end.
+            if (!intent.getBooleanExtra("by_call", false)) micOpenedByCall = false
             if (!newState && micEnabled.value) {
                 // Muting stopped the microphone but left PAN talking: it finished
                 // its sentence and then announced a server error for a query that
