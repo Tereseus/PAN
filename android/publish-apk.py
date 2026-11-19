@@ -178,10 +178,24 @@ def main():
     open(os.path.join(CACHE, f"app-debug.v{new_code}.apk"), "wb").write(new)
 
     dest = f"{a.hub}:{D.replace(chr(92), '/')}/"
-    for f in patches + [apk, meta]:
+    for f in patches:
         r = run(["scp", "-q", f, dest])
         if r.returncode != 0:
             sys.exit(f"could not copy {os.path.basename(f)} to the hub: {r.stderr.strip()}")
+    # The build and its metadata go up beside the published pair and are put in place in one
+    # step. Copied straight over it, the hub answered "busy" to every version check for the
+    # minute and a half a 219 MB build takes (Nov 19), and could have served half a file.
+    for f in (apk, meta):
+        r = run(["scp", "-q", f, dest + os.path.basename(f) + ".new"])
+        if r.returncode != 0:
+            sys.exit(f"could not copy {os.path.basename(f)} to the hub: {r.stderr.strip()}")
+    for tries in range(5):
+        rc, out = hub(a.hub, f'(if exist "{D}\\app-debug.apk.new" move /y "{D}\\app-debug.apk.new" "{D}\\app-debug.apk") && (if exist "{D}\\output-metadata.json.new" move /y "{D}\\output-metadata.json.new" "{D}\\output-metadata.json")')
+        if rc == 0:
+            break
+        time.sleep(3)    # a device is reading the old build this second
+    else:
+        sys.exit(f"the new build is on the hub as app-debug.apk.new and could not be put in place: {out.strip()[:200]}")
     hub(a.hub, f"powershell -NoProfile -Command \"Get-ChildItem '{D}\\app-debug.p*.zst' | Where-Object {{ $_.Name -notlike '*-{new_code}.zst' }} | Remove-Item\"")
     _, now = hub(a.hub, "curl -s http://127.0.0.1:7777/api/v1/apk/version")
     try:

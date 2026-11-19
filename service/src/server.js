@@ -3296,6 +3296,12 @@ app.get('/api/v1/apk/version', (req, res) => {
       apkSize: size,
       sha256,
       patches: apkPatches(versionCode),      // builds a small patch exists from: /apk/latest?patch_from=<one of these>
+      // How big each one is: a patch is small between builds that changed code, and as big as
+      // whatever was added when a build brings a large file (the voice, 130 MB, in 0.5.38). A
+      // device on someone's mobile data looks before it fetches (android/car/pan-update.sh).
+      patch_bytes: Object.fromEntries(apkPatches(versionCode).map((from) => {
+        try { return [from, statSync(join(APK_DIR, `app-debug.p${from}-${versionCode}.zst`)).size]; } catch { return [from, null]; }
+      })),
       buildTime: new Date(mtimeMs).toISOString()
     });
   } catch (e) {

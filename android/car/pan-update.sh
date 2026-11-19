@@ -15,10 +15,15 @@
 #
 # Usage:
 #   pan-update.sh           one check now. Last word printed: UP_TO_DATE, DONE, NO_PATCH,
-#                           NO_HUB, ADB_CLOSED, BAD_FILE or INSTALL_FAILED.
-#   pan-update.sh full      the same, and when there is no patch it downloads the whole build
-#                           (it picks up where it stopped). Never by itself: that is 74 MB of
-#                           someone's mobile data.
+#                           BIG_PATCH, NO_HUB, ADB_CLOSED, BAD_FILE or INSTALL_FAILED.
+#   pan-update.sh big       the same, and it takes a patch of any size. By itself it takes one
+#                           only up to 5 MB (the number in ~/.pan-update-limit, in bytes, if that
+#                           file is there): a build that brings a large new file makes a large
+#                           patch (the voice in 0.5.38: 130 MB), and that waits for someone to
+#                           say so, on a good connection. Last word then: BIG_PATCH.
+#   pan-update.sh full      as big, and when there is no patch it downloads the whole build
+#                           (it picks up where it stopped). Never by itself: that is the whole
+#                           app over someone's mobile data.
 #   pan-update.sh loop      a check every two minutes, for as long as the unit is on.
 #
 # Needs: ~/.pan-hub holding the hub's address on the tailnet (one line), tailscaled running in
@@ -71,6 +76,14 @@ once() {
   size=$(sed -n 's/.*"apkSize":\([0-9]*\).*/\1/p' "$W/version.json")
   [ -n "$want" ] && [ -n "$sum" ] || { echo NO_HUB; return 3; }
   [ "$want" -gt "$have" ] || { echo "UP_TO_DATE $have"; return 0; }
+  # How big the patch from this unit's build is, when the hub says. A big one is not fetched by itself.
+  big=$(sed -n 's/.*"patch_bytes":{[^}]*"'"$have"'":\([0-9]*\).*/\1/p' "$W/version.json")
+  limit=$(head -n 1 "$HOME/.pan-update-limit" 2>/dev/null | tr -cd '0-9'); limit=${limit:-5000000}
+  if [ -n "$big" ] && [ "$big" -gt "$limit" ] && [ "$1" != big ] && [ "$1" != full ]; then
+    [ "$(cat "$W/told" 2>/dev/null)" = "big$want" ] || say "the patch from $have to $want is $big bytes, over $limit; 'pan-update.sh big' takes it"
+    echo "big$want" > "$W/told"
+    echo "BIG_PATCH $have $want $big"; return 8
+  fi
 
   new=$W/pan-$want.apk
   if [ "$(sha "$new")" != "$sum" ]; then

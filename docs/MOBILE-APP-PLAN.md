@@ -133,6 +133,7 @@ from the 0.4 builds.
 - **0.5.7** (code 136): how long each reply took, under the line; tap for where the time went and
   what ΠAN thought was going on; the address is off Home's top line.
 - **0.5.8** (code 137): an "Interpreting" badge on Home; lines the phone translates itself get their time.
+- **0.5.38** (code 167, published on the hub Nov 19; patches from 161 to 166, each 124 MB because the voice is new to those builds): ΠAN's voice is inside the app (`fetchVoice` in `app/build.gradle.kts`, read from the assets), no download on first start; the app file is 219 MB. On the OnePlus Pad, the Pixel 6 and the car unit; the Pixel 10 takes it from the hub.
 - **0.5.37** (code 166, published on the hub Nov 19; patches from 160 to 165): which voice speaks is decided in one tested place (`tts/VoiceChoice.kt`); every start logs its voice and every line the Android voice takes logs why; the turn's log line carries its upload size and time.
 - **0.5.36** (code 165, published on the hub Nov 19; patches from 159 to 164): a device that has ΠAN's voice downloaded but whose setting still says Android (the car unit since Nov 17) moves to it at start, unless Android was chosen by hand in Settings.
 - **0.5.35** (code 164, published on the hub Nov 19 with `android/publish-apk.py`; patches from 158 to 163): a call's sound is Opus, about 3 kB a second while someone talks where mu-law was 16. A call with a 0.5.34 device still works, on mu-law. Debug: `TEST_OPUS`.

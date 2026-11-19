@@ -1,4 +1,7 @@
-﻿plugins {
+﻿import java.net.URI
+import java.security.MessageDigest
+
+plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
@@ -14,8 +17,8 @@ android {
         applicationId = "dev.pan.app"
         minSdk = 31
         targetSdk = 34
-        versionCode = 166
-        versionName = "0.5.37"
+        versionCode = 167
+        versionName = "0.5.38"
         ndk {
             // Phones are arm64 â€” ship only that ABI. Drops the x86/x86_64/armeabi-v7a
             // copies of sherpa-onnx (Piper), onnxruntime, and gojni (Tailscale): ~100 MB.
@@ -150,6 +153,56 @@ configurations.matching { it.name.endsWith("UnitTestRuntimeClasspath") }.configu
 //     that by itself.
 // useLegacyPackaging = true compresses the libraries, so 2 does not apply, and the APK the
 // hub hands out stays near 73 MB instead of about 125 MB. Either value passes the check.
+// ΠAN's voice is part of the app (the owner, 2026-11-19). It was a 129 MB download on first
+// start; on the car unit that left the voice on disk and the Android voice speaking. The build
+// fetches the same file the app used to fetch (once, kept in android/.voice-cache, checked
+// against its sha256) and puts the seven files the voice needs into the app's assets. They are
+// not in git: one of them is 78 MB.
+val voiceName = "sherpa-onnx-supertonic-3-tts-int8-2026-05-11"
+val voiceUrl = "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/$voiceName.tar.bz2"
+val voiceSha256 = "82fa96f91c4ef8abaae3a14a3f4153facf88bed821d1f7331cec2700f432c427"
+val voiceFiles = listOf("text_encoder.int8.onnx", "duration_predictor.int8.onnx", "vector_estimator.int8.onnx",
+    "vocoder.int8.onnx", "voice.bin", "tts.json", "unicode_indexer.bin", "LICENSE")
+val fetchVoice by tasks.registering {
+    val out = layout.projectDirectory.dir("src/main/assets/voices/supertonic3").asFile
+    val cache = rootProject.layout.projectDirectory.file(".voice-cache/$voiceName.tar.bz2").asFile
+    outputs.dir(out)
+    onlyIf { voiceFiles.any { !File(out, it).exists() } }
+    doLast {
+        fun sha(f: File): String {
+            val md = MessageDigest.getInstance("SHA-256")
+            f.inputStream().use { input ->
+                val buf = ByteArray(1 shl 20)
+                while (true) { val n = input.read(buf); if (n < 0) break; md.update(buf, 0, n) }
+            }
+            return md.digest().joinToString("") { "%02x".format(it) }
+        }
+        if (!cache.exists() || sha(cache) != voiceSha256) {
+            cache.parentFile.mkdirs()
+            logger.lifecycle("Fetching PAN's voice (129 MB, once): $voiceUrl")
+            URI(voiceUrl).toURL().openStream().use { input -> cache.outputStream().use { input.copyTo(it) } }
+        }
+        val got = sha(cache)
+        check(got == voiceSha256) { "PAN's voice file is not the one expected: sha256 $got, want $voiceSha256 (${cache.path})" }
+        copy {
+            from(tarTree(resources.bzip2(cache))) {
+                include(voiceFiles.map { "$voiceName/$it" })
+                eachFile { path = name }
+                includeEmptyDirs = false
+            }
+            into(out)
+        }
+        voiceFiles.forEach { check(File(out, it).exists()) { "PAN's voice file has no $it" } }
+    }
+}
+tasks.named("preBuild") { dependsOn(fetchVoice) }
+
+// The voice's models are stored as they are: they do not compress, and stored files are read
+// faster at start.
+android.androidResources {
+    noCompress += listOf("onnx")
+}
+
 android.packaging {
     jniLibs {
         useLegacyPackaging = true

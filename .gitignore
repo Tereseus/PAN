@@ -79,6 +79,10 @@ llama.cpp/
 # Whisper models
 android/app/src/main/assets/models/*.bin
 
+# PAN's voice, fetched by the build (android/app/build.gradle.kts fetchVoice)
+android/app/src/main/assets/voices/
+android/.voice-cache/
+
 # Internal docs (not public)
 AI-CYCLOSIS.md
 BUSINESS.md

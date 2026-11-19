@@ -41,6 +41,8 @@ class PiperTtsEngine(private val context: Context) {
 
         // sherpa-onnx's own packaged models.
         private const val REL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models"
+        /** Where a voice that comes inside the app sits in its assets (app/build.gradle.kts fetchVoice). */
+        private const val BUNDLED = "voices"
 
         /**
          * Engines disagree wildly about output level. Measured on one sentence:
@@ -177,10 +179,24 @@ class PiperTtsEngine(private val context: Context) {
 
     fun isVoiceDownloaded(quality: String): Boolean {
         val v = VOICES[quality] ?: return false
+        if (isBundled(quality)) return true
         val voiceDir = File(modelsDir, v.id)
         // Four graphs plus three data files. A partial extract would load and then SIGSEGV.
         return SUPERTONIC_FILES.all { File(voiceDir, it).length() > 1000 }
     }
+
+    /**
+     * ΠAN's voice comes inside the app (assets/voices/<id>/, put there by the build: the owner,
+     * 2026-11-19). It used to be a 129 MB download on first start, and the car unit ended up with
+     * the voice on disk and the Android voice speaking. Nothing to download, nothing to go wrong.
+     */
+    fun isBundled(quality: String): Boolean {
+        val v = VOICES[quality] ?: return false
+        bundled[v.id]?.let { return it }
+        val have = runCatching { context.assets.list("$BUNDLED/${v.id}")?.toSet() }.getOrNull() ?: emptySet()
+        return SUPERTONIC_FILES.all { it in have }.also { bundled[v.id] = it }
+    }
+    private val bundled = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
 
     fun isFullyReady(quality: String): Boolean = isVoiceDownloaded(quality)
 
@@ -237,31 +253,41 @@ class PiperTtsEngine(private val context: Context) {
             Log.e(TAG, "Cannot load voice '$quality' — files not ready")
             return false
         }
+        // Already the voice: the app asks twice at start (the Android voice coming up, then the
+        // service), and loading it again cost 0.75 s on the main thread each time.
+        if (offlineTts != null && currentVoice?.id == voice.id) return true
         // Release previous
         try { offlineTts?.release() } catch (_: Exception) {}
         offlineTts = null
 
         val voiceDir = File(modelsDir, voice.id)
+        // From inside the app when the voice is there (read straight out of the app file, no copy
+        // on disk), else from the copy an older build downloaded.
+        val inApp = isBundled(quality)
+        val at = { name: String -> if (inApp) "$BUNDLED/${voice.id}/$name" else File(voiceDir, name).absolutePath }
 
         return try {
             val modelConfig = OfflineTtsModelConfig(
                 supertonic = OfflineTtsSupertonicModelConfig(
-                    textEncoder = File(voiceDir, "text_encoder.int8.onnx").absolutePath,
-                    durationPredictor = File(voiceDir, "duration_predictor.int8.onnx").absolutePath,
-                    vectorEstimator = File(voiceDir, "vector_estimator.int8.onnx").absolutePath,
-                    vocoder = File(voiceDir, "vocoder.int8.onnx").absolutePath,
-                    voiceStyle = File(voiceDir, "voice.bin").absolutePath,
-                    ttsJson = File(voiceDir, "tts.json").absolutePath,
-                    unicodeIndexer = File(voiceDir, "unicode_indexer.bin").absolutePath
+                    textEncoder = at("text_encoder.int8.onnx"),
+                    durationPredictor = at("duration_predictor.int8.onnx"),
+                    vectorEstimator = at("vector_estimator.int8.onnx"),
+                    vocoder = at("vocoder.int8.onnx"),
+                    voiceStyle = at("voice.bin"),
+                    ttsJson = at("tts.json"),
+                    unicodeIndexer = at("unicode_indexer.bin")
                 ),
                 numThreads = voice.numThreads,
                 debug = false,
                 provider = "cpu"
             )
             val config = OfflineTtsConfig(model = modelConfig)
-            offlineTts = OfflineTts(assetManager = null, config = config)
+            val began = SystemClock.elapsedRealtime()
+            offlineTts = OfflineTts(assetManager = if (inApp) context.assets else null, config = config)
             currentVoice = voice
-            Log.i(TAG, "Voice loaded: ${voice.name}, sampleRate=${offlineTts?.sampleRate()}")
+            Log.i(TAG, "Voice loaded: ${voice.name}, sampleRate=${offlineTts?.sampleRate()}, from ${if (inApp) "the app" else "a download"} in ${SystemClock.elapsedRealtime() - began} ms")
+            // The copy an older build downloaded is not needed any more: 142 MB back.
+            if (inApp && voiceDir.exists()) runCatching { voiceDir.deleteRecursively() }
             true
         } catch (e: Exception) {
             Log.e(TAG, "Failed to load voice: ${e.message}", e)
