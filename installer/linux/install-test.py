@@ -2,6 +2,11 @@
 device, crash it, restart it, update it, uninstall it, and check nothing is left again.
 
     python installer/linux/install-test.py --target user@host [--real] [--keep]
+    python installer/linux/install-test.py --target pan@127.0.0.1 --real \
+        --ssh-opt=-J --ssh-opt=user@windows-host --ssh-opt=-p --ssh-opt=2222 --check-host windows-host
+
+The second form is a Linux inside WSL on a Windows computer: ssh goes through the Windows
+computer, and "from another computer" is checked against the Windows computer's address.
 
 The bundle comes from the target's own ~/pan-build/<version>/ (build-bundle.py --linux leaves
 it there with its release-linux.json).
@@ -32,9 +37,10 @@ def stage(text):
 
 
 class Box:
-    def __init__(self, target, real):
+    def __init__(self, target, real, ssh_opts=(), check_host=None):
         self.target = target
-        self.host = target.split("@")[-1]
+        self.host = check_host or target.split("@")[-1]
+        self.ssh = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", *ssh_opts]
         self.real = real
         self.work = "pan-install-test-work"
         if real:
@@ -47,7 +53,7 @@ class Box:
 
     def sh(self, command, timeout=300):
         for attempt in range(3):
-            p = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", self.target, command],
+            p = subprocess.run([*self.ssh, self.target, command],
                                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
             if p.returncode != 255:
                 break
@@ -60,7 +66,7 @@ class Box:
         if b"\r\n" in data:
             sys.exit(f"{repo_path} is committed with Windows line ends")
         name = os.path.basename(repo_path)
-        p = subprocess.run(["ssh", "-o", "BatchMode=yes", self.target, f"mkdir -p {self.work} && cat > {self.work}/{name} && chmod +x {self.work}/{name}"],
+        p = subprocess.run([*self.ssh, self.target, f"mkdir -p {self.work} && cat > {self.work}/{name} && chmod +x {self.work}/{name}"],
                            input=data, capture_output=True, timeout=60)
         if p.returncode != 0:
             sys.exit(f"could not send {name}: {p.stderr.decode(errors='replace')}")
@@ -121,8 +127,10 @@ def main():
     ap.add_argument("--target", required=True, help="user@host of the Linux computer under test")
     ap.add_argument("--real", action="store_true", help="default folder and ports, all of PAN. Only for a clean test computer.")
     ap.add_argument("--keep", action="store_true", help="leave PAN installed at the end")
+    ap.add_argument("--ssh-opt", action="append", default=[], help="one more word for the ssh command line (repeat it)")
+    ap.add_argument("--check-host", help="the address to try PAN's ports on from here, when it is not the ssh host")
     args = ap.parse_args()
-    box = Box(args.target, args.real)
+    box = Box(args.target, args.real, args.ssh_opt, args.check_host)
     release = json.load(open(os.path.join(ROOT, "installer", "dist", "release-linux.json"), encoding="utf-8"))
     version = release["version"]
     source = f"$HOME/pan-build/{version}"
