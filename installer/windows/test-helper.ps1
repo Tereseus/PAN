@@ -98,7 +98,10 @@ switch ($Action) {
             uninstallEntry = $un
             startMenu = (Test-Path (Join-Path ([Environment]::GetFolderPath("Programs")) "PAN.url"))
             processes = @(Mine | ForEach-Object { @{ pid = $_.ProcessId; name = $_.Name; cmd = [string]$_.CommandLine } })
-            listen = @{ pan = @(Listen-Addresses $Port); carrier = @(Listen-Addresses $CarrierPort); craft = $craft; linkAdmin = @(Listen-Addresses ([int]($LinkAdmin.Split(':')[-1]))) }
+            listen = @{ pan = @(Listen-Addresses $Port); carrier = @(Listen-Addresses $CarrierPort); craft = $craft; linkAdmin = @(Listen-Addresses ([int]($LinkAdmin.Split(':')[-1]))); ollama = @(Listen-Addresses 11434); reader = @(Listen-Addresses 7786) }
+            ollamaExe = (Test-Path (Join-Path $env:LOCALAPPDATA "Programs\Ollama\ollama.exe"))
+            ollamaStore = (Test-Path (Join-Path $env:USERPROFILE ".ollama\models"))
+            ollamaAtSignIn = (Test-Path (Join-Path ([Environment]::GetFolderPath("Startup")) "Ollama.lnk"))
             linkUdp = $udp
             health = ((Http "GET" ("http://127.0.0.1:{0}/health" -f $Port) "").status -eq 200)
             appVersions = $apps
@@ -109,6 +112,14 @@ switch ($Action) {
         })
     }
     "http" { Out-Json (Http $Method $Url $BodyB64) }
+    "voice" {
+        # One real voice turn, the way the phone sends it. Prints voice-check.cjs's own JSON.
+        $cfg = Get-Content (Join-Path $InstallDir "install.json") -Raw | ConvertFrom-Json
+        $app = Join-Path $InstallDir ("app\{0}" -f $cfg.version)
+        $ErrorActionPreference = "Continue"
+        $line = (& (Join-Path $app "node\node.exe") (Join-Path $app "launcher\voice-check.cjs") $Port 2>$null | Select-Object -Last 1)
+        if ($line) { Write-Output $line } else { Out-Json @{ ok = $false; error = "no answer from voice-check" } }
+    }
     "kill-pan" {
         # PAN itself, not its launcher: the launcher has to bring it back.
         $pan = @(Mine | Where-Object { $_.Name -ieq "node.exe" -and $_.CommandLine -match 'pan\.js"?\s+start' })

@@ -81,3 +81,9 @@ test('Ollama names with and without a tag match', () => {
   assert.equal(s.photo_reader, 'moondream:latest');
   assert.equal(s.voice_student_model, 'reader:syrinx-lfm-r15:latest');
 });
+
+test('the stand in gives way when PAN own Phi arrives, a person own choice does not', () => {
+  assert.equal(settingsForModels(set, ALL, { voice_world_model: 'ollama:phi4-mini:3.8b' }).set.voice_world_model, 'ollama:pan-phi-r1:latest');
+  assert.equal('voice_world_model' in settingsForModels(set, ALL, { voice_world_model: 'ollama:their-own:1b' }).set, false);
+  assert.equal('voice_world_model' in settingsForModels(set, ['phi4-mini:3.8b'], { voice_world_model: 'ollama:phi4-mini:3.8b' }).set, false);
+});

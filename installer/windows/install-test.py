@@ -199,6 +199,8 @@ def main():
     ap.add_argument("--keep", action="store_true", help="leave PAN installed at the end (for the phone step)")
     ap.add_argument("--wipe-existing", action="store_true", help="remove a PAN on the target that this test did not install. Deletes its data.")
     ap.add_argument("--spare-ports", action="store_true", help="use spare ports on a target too")
+    ap.add_argument("--voice", action="store_true", help="also install Ollama and the models (several GB) and check PAN talks. Target only.")
+    ap.add_argument("--own-models", default="", help="folder ON THE TARGET, or an address, holding PAN's own models as .gguf files")
     args = ap.parse_args()
 
     remote = bool(args.target)
@@ -297,6 +299,9 @@ def main():
         devices = box.http("GET", "/api/v1/link/devices").get("json") or []
         check("the device is listed", any(d.get("name") == "install test device" for d in devices), [d.get("name") for d in devices])
 
+        if args.voice:
+            voice_stage(box, source, flags, args)
+
         stage("6. PAN crashes")
         killed = box.helper("kill-pan").get("killed")
         down = box.wait_health(False, 20)
@@ -310,6 +315,9 @@ def main():
         r = box.helper("run-autostart")
         back = box.wait_health(True, 180)
         check(f"signed in: PAN is back ({back} s)", r.get("ok") and back is not None, r)
+        if args.voice:
+            v = talk(box)
+            check(f"signed in: PAN still talks (first word {v.get('firstMs', 0) / 1000:.1f} s)", v.get("ok"), v)
 
         stage("8. Run PAN Setup again (an update)")
         rc, out = box.setup(source, flags)
@@ -346,9 +354,59 @@ def main():
             gone(box, p, "wiped")
             check("wiped: the folder is gone", not p["installDirExists"])
             check("wiped: PAN's ports are free", p["listen"]["pan"] == [] and not p["linkUdp"], p["listen"])
+            if args.voice and voice_state.get("ollama_was_here") is False:
+                check("wiped: Ollama and the models are gone", not p["ollamaExe"] and not p["ollamaStore"] and p["listen"]["ollama"] == [] and p["listen"]["reader"] == [],
+                      {"exe": p["ollamaExe"], "store": p["ollamaStore"], "listen": p["listen"]})
             if expect_firewall:
                 check("wiped: the firewall rule is gone", not p["firewallRule"])
     finish()
+
+
+voice_state = {}
+
+
+def talk(box):
+    """One voice turn. The first after a start loads the model, so it gets a few tries."""
+    v = {}
+    for attempt in range(4):
+        v = box.helper("voice", timeout=300)
+        if v.get("ok"):
+            break
+        time.sleep(15)
+    return v
+
+
+def voice_stage(box, source, flags, args):
+    stage("5b. Voice: Ollama, the models, one real turn")
+    before = box.probe()
+    voice_state["ollama_was_here"] = bool(before["ollamaExe"])
+    extra = ["-Voice"] + (["-OwnModels", args.own_models] if args.own_models else [])
+    t = time.time()
+    rc, out = box.ps("pan-setup.ps1", ["-Source", source, "-InstallDir", box.install_dir, "-Quiet"] + box.port_args() + flags + extra, 3 * 3600)
+    took = round((time.time() - t) / 60, 1)
+    check(f"PAN Setup with voice finished ({took} min)", rc == 0 and "PAN is installed." in out, out[-900:])
+    for line in out.splitlines():
+        if "PAN said:" in line or line.strip().startswith("! ") or "models," in line:
+            print("      " + line.strip())
+    state = box.http("GET", "/api/v1/setup/models").get("json") or {}
+    wanted = [m["name"] for m in state.get("wanted", [])]
+    have = [h.lower() for h in state.get("have", [])]
+    got = [n for n in wanted if n.lower() in have]
+    check(f"the models are here ({len(got)} of {len(wanted)})", len(got) == len(wanted) or not args.own_models, [n for n in wanted if n not in got])
+    check("PAN has a talking model", state.get("voice") is True, state.get("missing"))
+    p = box.probe()
+    check("Ollama and the voice reader listen on this computer only", only_local(p["listen"]["ollama"]) and only_local(p["listen"]["reader"]),
+          {"ollama": p["listen"]["ollama"], "reader": p["listen"]["reader"]})
+    check("Ollama starts at sign in", p["ollamaAtSignIn"])
+    v = talk(box)
+    check(f"PAN answers a spoken line (first word {v.get('firstMs', 0) / 1000:.1f} s)", v.get("ok"), v)
+    if v.get("ok"):
+        print(f"      said: {v.get('said')!r}  PAN: {v.get('reply')!r}  model: {v.get('model')}")
+        v2 = box.helper("voice", timeout=300)
+        check(f"the second line is quick (first word {v2.get('firstMs', 0) / 1000:.1f} s)", v2.get("ok") and v2.get("firstMs", 99999) < 5000, v2)
+    if box.target:
+        for label, port in (("Ollama", 11434), ("the voice reader", 7786)):
+            check(f"{label} port is closed from another computer", closed_from_here(box.host, port), port)
 
 
 def pair_from_here(box, ports):

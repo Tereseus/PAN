@@ -83,10 +83,12 @@ export function settingsForModels(modelSet, have, current = {}) {
     want.voice_hub_paths = 'all';
   } else missing.push('questions');
 
+  // A stand in that Setup itself put there gives way when the real model arrives.
+  const standIn = by.questions?.standIn ? `ollama:${by.questions.standIn}` : null;
   const set = {};
   for (const [key, value] of Object.entries(want)) {
     const now = String(current[key] ?? '').replace(/^"|"$/g, '').trim();
-    if (!now) set[key] = value;
+    if (!now || (key === 'voice_world_model' && now === standIn && value !== standIn)) set[key] = value;
   }
   return { set, missing, voice: !!talk };
 }

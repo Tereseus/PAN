@@ -342,11 +342,11 @@ try {
     # ---- 6. what PAN talks with ------------------------------------------------------
     if ($Voice -and -not $NoStart) {
         Step "voice" "Getting what PAN talks with"
-        $modelSet = Get-Content (Join-Path $target "service\model-set.json") -Raw | ConvertFrom-Json
-        $ollamaUrl = [string]$modelSet.ollama.url
+        $catalog = Get-Content (Join-Path $target "service\model-set.json") -Raw | ConvertFrom-Json
+        $ollamaUrl = [string]$catalog.ollama.url
         $setName = if ($ModelSet) { $ModelSet } elseif ($ramGB -ge 24) { "full" } else { "light" }
         $order = @("memory", "talk", "questions", "backup", "photos", "sorting")
-        $wanted = @($modelSet.models | Where-Object { $_.sets -contains $setName } | Sort-Object { $order.IndexOf($_.role) })
+        $wanted = @($catalog.models | Where-Object { $_.sets -contains $setName } | Sort-Object { $order.IndexOf($_.role) })
         $needGB = [Math]::Round((($wanted | Measure-Object -Property gb -Sum).Sum), 1)
         Say ("  {0} models, {1} GB, for a computer with {2} GB of memory" -f $wanted.Count, $needGB, $ramGB)
         $freeNow = [Math]::Round((Get-PSDrive -Name $drive.Name).Free / 1GB, 1)
@@ -379,10 +379,10 @@ try {
 
         # Ollama itself: its own installer, checked for Ollama's signature before it runs.
         if (-not (Ollama-Exe)) {
-            Say "  Downloading Ollama, the program that runs the models."
+            Say "  Getting Ollama, the program that runs the models."
             $setupExe = Join-Path $dl "OllamaSetup.exe"
             $curl = Join-Path $env:SystemRoot "System32\curl.exe"
-            $curlArgs = @("-L", "--fail", "--retry", "5", "--retry-delay", "3", "-C", "-", "-o", $setupExe, [string]$modelSet.ollama.installer)
+            $curlArgs = @("-L", "--fail", "--retry", "5", "--retry-delay", "3", "-C", "-", "-o", $setupExe, [string]$catalog.ollama.installer)
             if ($Quiet) { $curlArgs = @("-sS") + $curlArgs }
             # A whole, signed copy from an earlier run is used as it is.
             $whole = $false
@@ -392,7 +392,7 @@ try {
                 if ($LASTEXITCODE -ne 0) { Stop-Setup ("Ollama did not download (curl {0}). Run PAN Setup again to carry on." -f $LASTEXITCODE) }
             }
             $sig = Get-AuthenticodeSignature $setupExe
-            if ($sig.Status -ne "Valid" -or $sig.SignerCertificate.Subject -notmatch [regex]::Escape([string]$modelSet.ollama.signer)) {
+            if ($sig.Status -ne "Valid" -or $sig.SignerCertificate.Subject -notmatch [regex]::Escape([string]$catalog.ollama.signer)) {
                 Remove-Item $setupExe -Force -ErrorAction SilentlyContinue
                 Stop-Setup "The Ollama download is not signed by Ollama, so it was thrown away."
             }
@@ -406,7 +406,7 @@ try {
         $have = Ollama-Models
         if ($have -eq $null) {
             Start-Detached (Ollama-Exe) "serve"
-            for ($i = 0; $i -lt 30 -and $have -eq $null; $i++) { Start-Sleep -Seconds 2; $have = Ollama-Models }
+            for ($i = 0; $i -lt 90 -and $have -eq $null; $i++) { Start-Sleep -Seconds 2; $have = Ollama-Models }   # its first start is slow
             if ($have -eq $null) { Stop-Setup "Ollama is installed but does not answer." }
         }
         Say "  Ollama is running."
@@ -419,11 +419,14 @@ try {
                 Say ("  getting {0} ({1} GB): {2}" -f $name, $m.gb, $m.what)
                 if ((Run-Ollama @("pull", $name) $null) -ne 0) { Stop-Setup ("{0} did not download. Run PAN Setup again to carry on." -f $name) }
             } else {
-                if (-not $OwnModels) {
+                $ownHere = $false
+                if ($OwnModels -match '^https?://') { $ownHere = $true }
+                elseif ($OwnModels) { $ownHere = Test-Path (Join-Path $OwnModels ([string]$m.file)) }
+                if (-not $ownHere) {
                     Warn ("{0} is PAN's own model and has no public download yet. Skipped." -f $name)
                     if ($m.standIn -and -not (Has-Model $have ([string]$m.standIn))) {
                         Say ("  getting {0} in its place" -f $m.standIn)
-                        if ((Run-Ollama @("pull", [string]$m.standIn) $null) -eq 0) { $config.modelsAdded = @($config.modelsAdded) + [string]$m.standIn }
+                        if ((Run-Ollama @("pull", [string]$m.standIn) $null) -eq 0) { $config.modelsAdded = @($config.modelsAdded) + [string]$m.standIn; WriteText $configPath ($config | ConvertTo-Json) }
                     }
                     continue
                 }
@@ -434,9 +437,7 @@ try {
                     & (Join-Path $env:SystemRoot "System32\curl.exe") -L --fail --retry 5 -C - -sS -o $gguf ($OwnModels.TrimEnd('/') + "/" + $m.file)
                     if ($LASTEXITCODE -ne 0) { Stop-Setup ("{0} did not download." -f $name) }
                 } else {
-                    $src = Join-Path $OwnModels ([string]$m.file)
-                    if (-not (Test-Path $src)) { Warn ("{0} is not in {1}. Skipped." -f $m.file, $OwnModels); continue }
-                    Copy-Item $src $gguf -Force
+                    Copy-Item (Join-Path $OwnModels ([string]$m.file)) $gguf -Force
                 }
                 $short = ($name -split ':')[0]
                 Copy-Item (Join-Path $target ("service\model-files\{0}.Modelfile" -f $short)) (Join-Path $ownDir ($short + ".Modelfile")) -Force
