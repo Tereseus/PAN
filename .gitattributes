@@ -3,3 +3,5 @@
 .githooks/* text eol=lf
 # Runs under sh in Termux on the car unit.
 android/car/*.sh text eol=lf
+# Run by bash on the person's Linux computer.
+installer/linux/*.sh text eol=lf

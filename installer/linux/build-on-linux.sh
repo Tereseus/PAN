@@ -76,5 +76,5 @@ echo "files $(find "$APP" -type f | wc -l)"
 echo "size $(stat -c %s "$OUT")"
 echo "sha256 $(sha256sum "$OUT" | cut -d' ' -f1)"
 # The oldest glibc this bundle runs on: the newest GLIBC symbol any of its programs asks for.
-need="$( { objdump -T "$APP/node/bin/node" "$APP/pan-link/pan-link" 2>/dev/null; find "$APP/service/node_modules" -name '*.node' -exec objdump -T {} + 2>/dev/null; }         | grep -o 'GLIBC_[0-9][0-9.]*' | sed 's/GLIBC_//' | sort -Vu | tail -1 )"
+need="$( { objdump -T "$APP/node/bin/node" "$APP/pan-link/pan-link" 2>/dev/null || true; find "$APP/service/node_modules" -name '*.node' -exec objdump -T {} + 2>/dev/null || true; } | { grep -o 'GLIBC_[0-9][0-9.]*' || true; } | sed 's/GLIBC_//' | sort -Vu | tail -1 )"
 echo "glibc ${need:-$(getconf GNU_LIBC_VERSION | awk '{print $2}')}"
