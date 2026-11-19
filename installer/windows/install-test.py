@@ -136,7 +136,12 @@ class Box:
         end = time.time() + seconds
         started = time.time()
         while time.time() < end:
-            up = self.http("GET", "/health").get("status") == 200
+            h = self.http("GET", "/health")
+            up = h.get("status") == 200
+            if want and up:
+                # all of PAN, not just its front door (see Health in pan-setup.ps1)
+                j = h.get("json") or {}
+                up = (j.get("craftHealthy") is True or j.get("status") == "running") and self.http("GET", "/api/v1/auth/me").get("status") == 200
             if up == want:
                 return round(time.time() - started)
             time.sleep(3)
@@ -173,6 +178,8 @@ def closed_from_here(host, port):
 
 
 def only_local(addresses):
+    if isinstance(addresses, str):
+        addresses = [addresses]  # PowerShell writes a list of one as the one thing
     return len(addresses) > 0 and all(a in ("127.0.0.1", "::1") for a in addresses)
 
 
@@ -247,6 +254,7 @@ def main():
         box.marker(write=True)
 
         stage("3. What is on the computer now")
+        check("all of PAN is ready when Setup says so", box.wait_health(True, 5) is not None)
         p = box.probe()
         check("PAN answers", p["health"])
         check("PAN listens on this computer only", only_local(p["listen"]["pan"]), p["listen"]["pan"])

@@ -77,9 +77,15 @@ function Listening($port) {
     try { return @(Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction Stop) } catch { return @() }
 }
 function Health($port) {
+    # Ready means all of PAN, not just its front door: the front door answers /health a few
+    # seconds before the part behind it (the Craft) can serve anything.
     try {
         $r = Invoke-WebRequest -Uri ("http://127.0.0.1:{0}/health" -f $port) -UseBasicParsing -TimeoutSec 4
-        return ($r.StatusCode -eq 200)
+        if ($r.StatusCode -ne 200) { return $false }
+        $h = $r.Content | ConvertFrom-Json
+        if (-not ($h.craftHealthy -eq $true -or $h.status -eq "running")) { return $false }
+        $me = Invoke-WebRequest -Uri ("http://127.0.0.1:{0}/api/v1/auth/me" -f $port) -UseBasicParsing -TimeoutSec 6
+        return ($me.StatusCode -eq 200)
     } catch { return $false }
 }
 function Start-Detached($file, $argLine) {
