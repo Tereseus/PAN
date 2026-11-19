@@ -827,6 +827,16 @@ class PanForegroundService : Service() {
                     } else {
                         panLog("Voice: $MAIN_VOICE download failed, using the Android voice")
                     }
+                } else if (preferred == "android" && tts.voicePicked) {
+                    panLog("Voice: the Android voice, chosen in Settings")
+                } else {
+                    // The voice is on the device but the setting never moved to it: the download ended and
+                    // the app was stopped before the next line ran (a car turned off), or the setting names
+                    // a voice that is not there. Nothing was logged and the Android voice spoke from then
+                    // on, English and every other language: the car unit, from Nov 17 to Nov 19, where the
+                    // owner heard a voice that was not PAN's and a woman's voice for Japanese.
+                    panLog("Voice: $MAIN_VOICE is on the device and the setting was '$preferred', moving to it")
+                    mainHandler.post { tts.voiceQuality = MAIN_VOICE }
                 }
             }
 

@@ -369,7 +369,9 @@ fun SettingsScreen(
                                 currentVoice = id
                                 voiceExpanded = false
                                 context.getSharedPreferences("pan_tts_prefs", android.content.Context.MODE_PRIVATE)
-                                    .edit().putString("voice_quality", id).apply()
+                                    .edit().putString("voice_quality", id)
+                                    // Chosen here by hand: the service leaves an Android voice picked on purpose alone.
+                                    .putBoolean("voice_picked", true).apply()
                                 if (id != "android") {
                                     voiceStatus = "Downloading..."
                                     scope.launch {

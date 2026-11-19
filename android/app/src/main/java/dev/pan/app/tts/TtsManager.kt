@@ -45,6 +45,10 @@ class TtsManager @Inject constructor(
 
     private val otherSpeaking: Boolean get() = others.values.any { it.isSpeaking }
 
+    /** The voice was chosen in Settings by hand, not left at what a fresh install starts with. */
+    val voicePicked: Boolean
+        get() = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean("voice_picked", false)
+
     var voiceQuality: String
         get() = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getString(KEY_VOICE, "android") ?: "android"

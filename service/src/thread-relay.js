@@ -665,9 +665,11 @@ export function spokenOutcome(job) {
 // ── Voice parsing (deterministic, runs before the LLM) ───────────────────────
 
 // "send a new message to the X thread"; the phone often clips the first word, leaving "a new message the X thread".
-const VERB = '(?:tell|ask|(?:send\\s+)?(?:a\\s+)?(?:new\\s+)?message(?:\\s+to)?|ping|text|say to|send to|check with)';
+// "Send another message to Pan that says ..." matched nothing in the car (2026-11-19), and the voice model said it had sent it.
+const VERB = '(?:tell|ask|(?:send\\s+)?(?:a\\s+|another\\s+)?(?:new\\s+)?message(?:\\s+to)?|ping|text|say to|send to|check with)';
 // "Pen, I need you to send a message to the Elipsis thread" fell through to the voice model, which said it couldn't (2026-11-05).
-const LEAD = '^(?:(?:hey|ok|okay)\\s+)?(?:(?:pan|pam|pann|pen)[,.]?\\s+)?(?:(?:can|could|would) you\\s+|i (?:need|want) you to\\s+)?(?:please\\s+)?';
+// A second ask in a row starts with "also" or "and": "Also, ask them why ..." fell to the voice model the same night.
+const LEAD = '^(?:(?:and\\s+)?also[,.]?\\s+|and\\s+|then\\s+)?(?:(?:hey|ok|okay)\\s+)?(?:(?:pan|pam|pann|pen)[,.]?\\s+)?(?:(?:can|could|would) you\\s+|i (?:need|want) you to\\s+)?(?:please\\s+)?';
 const ANCHORED = new RegExp(`${LEAD}${VERB}\\s+(?:the\\s+|my\\s+)?(.{1,48}?)\\s+(?:thread|session|chat)\\b[\\s,:.-]*(.*)$`, 'i');
 const IN_THREAD = new RegExp(`${LEAD}(?:in|on|to|over in)\\s+(?:the\\s+|my\\s+)?(.{1,48}?)\\s+(?:thread|session|chat)\\b[\\s,:.-]+(.+)$`, 'i');
 const LOOSE = new RegExp(`${LEAD}${VERB}\\s+(?:the\\s+)?(.+)$`, 'i');
@@ -683,7 +685,7 @@ const STATUS = [
 ];
 
 function cleanBody(s) {
-  return String(s || '').replace(/^(?:that|to|saying)\s+/i, '').trim();
+  return String(s || '').replace(/^(?:that\s+says|that|to|saying|says)\s+/i, '').trim();
 }
 
 // Said any other way round. The forms above want the asking at the very start of the line. In
@@ -791,7 +793,16 @@ export function parseThreadCommand(utterance, { person = null, peek = false } = 
   const st = peek ? { list: heardBy(person).list, pending: heardBy(person).pending } : heardBy(person);
   const before = _st;
   _st = st;
-  try { return parseFor(utterance, person, st); } finally { _st = before; }
+  try {
+    const whole = parseFor(utterance, person, st);
+    if (whole) return whole;
+    // A few words first, then the ask: "I'm stopped. Send another message to ..." (the car,
+    // 2026-11-19). The forms above want the asking at the start of the line, so the line is read
+    // again from its second sentence. Only after a short first one: a long line that mentions a
+    // thread further on is namedAnywhere's to judge, above.
+    const first = /^(?:\S+\s+){0,4}\S+[.!?]\s+(?=\S)/.exec(String(utterance || '').trim());
+    return first ? parseFor(String(utterance).trim().slice(first[0].length), person, st) : null;
+  } finally { _st = before; }
 }
 
 function parseFor(utterance, person, st) {
