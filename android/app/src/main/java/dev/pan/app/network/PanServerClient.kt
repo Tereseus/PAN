@@ -198,6 +198,25 @@ class PanServerClient @Inject constructor(
         }
     }
 
+    // The stream of a call's sound stays open for as long as the call: no read timeout.
+    private val streamClient by lazy { okHttpClient.newBuilder().readTimeout(0, java.util.concurrent.TimeUnit.MILLISECONDS).build() }
+
+    /** A piece of this device's microphone sound for the call its person is on (CallAudio). -> the status, 0 when the hub cannot be reached */
+    suspend fun voiceSend(sound: ByteArray): Int = withContext(Dispatchers.IO) {
+        try {
+            val request = Request.Builder().url("${Constants.PLACEHOLDER_BASE_URL}/api/v1/people/voice")
+                .post(sound.toRequestBody("application/octet-stream".toMediaType())).build()
+            okHttpClient.newCall(request).execute().use { it.code }
+        } catch (e: Exception) { 0 }
+    }
+
+    /** The others' sound in the call, as one open stream. The caller reads it and closes it. Blocking: call it off the main thread. */
+    fun voiceStream(): okhttp3.Response? = try {
+        // The same path as the sound out, with listen=1 (one rule on the hub's list for a person's device).
+        streamClient.newCall(Request.Builder().url("${Constants.PLACEHOLDER_BASE_URL}/api/v1/people/voice?listen=1")
+            .post(ByteArray(0).toRequestBody("application/octet-stream".toMediaType())).build()).execute()
+    } catch (e: Exception) { null }
+
     /**
      * A plain JSON call to the hub: the status and the body, or null when the hub cannot be reached.
      * For the few screens that only show what the hub decides (People, in Settings).

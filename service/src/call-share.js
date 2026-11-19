@@ -18,6 +18,7 @@
 
 import { talkState, sendMessage, peopleHere } from './person-messages.js';
 import { roomOf, sayInRoom } from './group-calls.js';
+import { voiceLive } from './call-voice.js';
 
 const OWNER_ID = 1;
 
@@ -62,7 +63,9 @@ export async function shareAnswerInCall({ person = null, question, answer, inten
     const now_ = roomOf(me);
     if (!now_ || now_.key !== room.key || now_.on.size < 2) return { shared: false, reason: 'no_call' };
     const q = String(question || '').trim().replace(/\s+/g, ' ').slice(0, 160);
-    const put = sayInRoom(person, `Asked PAN: ${q} PAN said: ${said.replace(/\s+/g, ' ').slice(0, 300)}`);
+    // Those the asker's voice is reaching heard the question itself: all of them, then only the answer.
+    const heardIt = [...now_.on.keys()].filter((id) => id !== me).every((id) => voiceLive(me, id));
+    const put = sayInRoom(person, heardIt ? `PAN: ${said.replace(/\s+/g, ' ').slice(0, 300)}` : `Asked PAN: ${q} PAN said: ${said.replace(/\s+/g, ' ').slice(0, 300)}`);
     if (!put.ok) return { shared: false, reason: put.reason };
     console.log(`[call-share] person ${me}'s answer from PAN was also read out in ${room.key}`);
     return { shared: true, room: room.key, name: room.name };
@@ -71,8 +74,10 @@ export async function shareAnswerInCall({ person = null, question, answer, inten
   const now = talkState(me);
   if (now.with !== state.with || !now.joined) return { shared: false, reason: 'no_call' };
   const asked = String(question || '').trim().replace(/\s+/g, ' ').slice(0, 160);
-  const sent = sendMessage({ from: person, to: { id: state.with }, kind: 'says', how: 'talk',
-    body: `Asked PAN: ${asked} PAN said: ${said.replace(/\s+/g, ' ').slice(0, 300)}` });
+  // The other heard the question in the asker's own voice (call-voice.js): then only the answer.
+  // how 'pan': it is ΠAN's answer, read out by the other's own ΠAN whether or not voices flow.
+  const sent = sendMessage({ from: person, to: { id: state.with }, kind: 'says', how: 'pan',
+    body: voiceLive(me, state.with) ? `PAN: ${said.replace(/\s+/g, ' ').slice(0, 300)}` : `Asked PAN: ${asked} PAN said: ${said.replace(/\s+/g, ' ').slice(0, 300)}` });
   if (!sent.ok) return { shared: false, reason: sent.reason };
   const other = peopleHere().find((p) => p.id === state.with);
   console.log(`[call-share] person ${me}'s answer from PAN was also read out to person ${state.with}`);

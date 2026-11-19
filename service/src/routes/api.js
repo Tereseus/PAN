@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import express, { Router } from 'express';
 import { insert, all, get, run, db, logEvent, anonymize, anonymizeEventData, allScoped, getScoped, runScoped, insertScoped } from '../db.js';
 import { logEventScoped } from '../events.js';
 import { getActiveOrg, isIncognitoAllowed } from '../org-policy.js';
@@ -22,6 +22,7 @@ import { recordMet, metFor, forgetMet } from '../met-people.js';
 import { groupsHere, addGroup, renameGroup, removeGroup, setInGroup } from '../people-groups.js';
 import { shareAnswerInCall } from '../call-share.js';
 import { startRoom, leaveRoom, declineRoom, sayInRoom, roomLine, roomLines, roomState, roomFast } from '../group-calls.js';
+import { pushVoice, openVoiceStream, voiceFor, setCallDevice } from '../call-voice.js';
 import { whoseLine, speechLevel } from '../same-line.js';
 import { linkDevice } from '../pan-link-auth.js';
 import { getDataDir as notesDataDir } from '../platform.js';
@@ -954,7 +955,11 @@ router.get('/slack/pending', (req, res) => {
   // fast: this person is in a call or being called, so the device asks again in a second, not five.
   let fast = false;
   try { fast = talkFast(person ? Number(person.id) : 1) || roomFast(person ? Number(person.id) : 1); } catch {}
-  res.json({ ok: true, notifications, fast });
+  // voice: this device carries its person's call and someone else is on, so it sends its
+  // microphone's sound and plays the others' (call-voice.js).
+  let voice = false;
+  try { voice = voiceFor(person ? Number(person.id) : 1, dev); } catch {}
+  res.json({ ok: true, notifications, fast, voice });
 });
 
 // The People tab (person-messages.js): the other people on this hub with the newest message
@@ -965,6 +970,8 @@ router.get('/slack/pending', (req, res) => {
 // only a person whose role is child, nothing is marked opened by it, and the child's own list
 // says who can read (me.read_by).
 const callerId = (req) => (req.user?.person ? Number(req.user.id) : 1);
+// The device a request came from, as /slack/pending names it: the one that carries a call's voice.
+const callDev = (req) => ({ key: req.user?.person ? '' : String(req.headers['x-device-id'] || req.query.device_id || ''), linkDevice: req.panLinkDevice?.id || '' });
 function childToRead(req, res) {
   const of = Number(req.query.of);
   if (!req.user?.person && ownerMayRead(of)) return of;
@@ -1086,6 +1093,7 @@ router.post('/people/talk', (req, res) => {
   if (person && !may(person, 'messages')) return res.status(403).json({ ok: false, error: refusal('messages') });
   const started = startTalk(person, Number(req.body?.with));
   if (!started.ok) return res.status(started.reason === 'not_taking' ? 409 : 404).json({ ok: false, error: started.reason, name: started.name });
+  setCallDevice(callerId(req), callDev(req));
   res.json({ ok: true, joined: started.joined, talk: talkState(callerId(req)) });
 });
 router.delete('/people/talk', (req, res) => {
@@ -1102,7 +1110,26 @@ router.post('/people/room', (req, res) => {
     const status = got.reason === 'limit' || got.reason === 'not_in' ? 403 : got.reason === 'group' ? 404 : 409;
     return res.status(status).json({ ok: false, error: got.reason === 'limit' ? refusal('group_calls') : got.reason, name: got.name });
   }
+  setCallDevice(callerId(req), callDev(req));
   res.json({ ok: true, started: got.started, rooms: roomState(callerId(req)), talk: talkState(callerId(req)) });
+});
+// The voice itself in a call (call-voice.js). A device sends its microphone's sound in short
+// pieces (16 kHz mu-law, the request's body) and holds one stream open for what the others say.
+// The hub passes it on and keeps none of it. Only someone on a call others have joined, and
+// only from the device that opened or answered it.
+// One path, one method, both ways: with ?listen=1 the answer is the stream of the others' sound;
+// without it the body is a piece of this device's own. (One rule on the person allow list.)
+router.post('/people/voice', (req, res, next) => {
+  if (!req.query.listen) return next();
+  res.status(200).set({ 'Content-Type': 'application/octet-stream', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no', Connection: 'keep-alive' });
+  const got = openVoiceStream(req.user?.person ? req.user : null, res, callDev(req));
+  if (!got.ok) { res.status(409).type('json').end(JSON.stringify({ ok: false, error: got.reason })); return; }
+  res.flushHeaders();
+  req.socket?.setNoDelay?.(true);
+}, express.raw({ type: 'application/octet-stream', limit: '64kb' }), (req, res) => {
+  const got = pushVoice(req.user?.person ? req.user : null, req.body, callDev(req));
+  if (!got.ok) return res.status(got.reason === 'no_call' || got.reason === 'not_this_device' ? 409 : 400).json({ ok: false, error: got.reason });
+  res.json({ ok: true, to: got.to });
 });
 router.delete('/people/room', (req, res) => {
   leaveRoom(req.user?.person ? req.user : null);
@@ -2288,6 +2315,10 @@ router.post('/query/stream', async (req, res) => {
             if (spoken && !spoken.startsWith('[') && !['ambient', 'cancelled'].includes(event.result?.intent)) noteSaid(tailKey, spoken);
           }
           if (!bench && !person) recordVoiceTurn(req, { text, result: event.result, deviceId, turnId, sensors: parsedSensors });
+          // A call opened or answered by voice: this is the device that carries its sound.
+          if (!bench && event.result?.intent === 'talk' && (event.result?.talk_with || event.result?.talk_room)) {
+            try { setCallDevice(person ? Number(person.id) : 1, callDev(req)); } catch {}
+          }
           // In a call, a plain answer that is not personal is read out to the other person too
           // (call-share.js). After the asker's own answer has gone out; nothing waits on it.
           if (!bench && !interp && event.result?.intent === 'query') {

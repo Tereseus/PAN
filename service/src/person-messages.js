@@ -36,6 +36,11 @@
 //   - Not taking calls from someone (the owner, 2026-11-18): each person can say they take no
 //     calls from one other person (people_call_block). That person's call is not opened and
 //     they are told so; nothing reaches the one who blocked. Messages still do.
+//   - The voice itself (the owner, 2026-11-19: a call should be a call) is call-voice.js: each
+//     device sends its microphone's sound through the hub to the other. While a person's voice
+//     is reaching the other, their lines are only shown there, not read out. When the sound
+//     cannot flow the words are read out, as before. ΠAN's own answer, shared with the other
+//     (call-share.js), is kept as how 'pan' and is always read out by the other's ΠAN.
 //   - A call with a whole group ("PAN, call the Kids", "PAN, call everyone") is group-calls.js.
 //     A person's name is tried first, then a group's, then a name as it may have been misheard.
 //     A person is in one call at a time.
@@ -54,6 +59,7 @@ import { get, all, run } from './db.js';
 import { maySpeakNow, userAsking, ownerTakesHere, nextNoteId, addNote } from './phone-notes.js';
 import { may, refusal } from './people.js';
 import { roomOf, leaveRoom, startRoom, parseRoom, roomState } from './group-calls.js';
+import { voiceLive } from './call-voice.js';
 
 const OWNER_ID = 1;
 const KEEP_MS = 12 * 3600_000;
@@ -298,7 +304,7 @@ export function spokenLine(senderFirst, kind, body) {
  * -> { ok, id, reachable, line } | { ok: false, reason: 'nobody' | 'too_many' | 'empty' }
  */
 export function sendMessage({ from = null, to, kind = 'says', body, how = 'voice' }, now = Date.now()) {
-  const inCall = how === 'talk';
+  const inCall = how === 'talk' || how === 'pan';
   const senderId = from ? Number(from.id) : OWNER_ID;
   const here = peopleHere();
   const sender = here.find((p) => p.id === senderId);
@@ -310,7 +316,7 @@ export function sendMessage({ from = null, to, kind = 'says', body, how = 'voice
   if (inCall ? !mayTalkNow(senderId, now) : !maySpeakNow({ device: `user-${senderId}`, name: sender.first }, now)) return { ok: false, reason: 'too_many' };
   ensureMessagesSchema();
   const id = Number(run(`INSERT INTO person_messages (from_user, to_user, kind, body, how, created_at) VALUES (:f, :t, :k, :b, :h, :at)`,
-    { ':f': senderId, ':t': other.id, ':k': kind === 'asks' ? 'asks' : 'says', ':b': text, ':h': how === 'typed' ? 'typed' : inCall ? 'talk' : 'voice', ':at': now }).lastInsertRowid);
+    { ':f': senderId, ':t': other.id, ':k': kind === 'asks' ? 'asks' : 'says', ':b': text, ':h': how === 'typed' ? 'typed' : how === 'pan' ? 'pan' : inCall ? 'talk' : 'voice', ':at': now }).lastInsertRowid);
   const reachable = userAsking(other.id, now);
   if (!inCall) console.log(`[message] person ${senderId} -> person ${other.id}, ${text.length} characters${reachable ? '' : ' (their device is not asking right now)'}`);
   return { ok: true, id, reachable, line: spokenLine(sender.first, kind, text) };
@@ -336,12 +342,15 @@ export function takeMessagesFor({ key = '', linkDevice = '', person = null } = {
     const first = names.get(Number(r.from_user)) || 'Someone';
     run(`UPDATE person_messages SET delivered_at = :n WHERE id = :i AND delivered_at IS NULL`, { ':n': now, ':i': r.id });
     // In a call both have joined, the words alone are read out, as on a phone. Otherwise who said them comes first.
-    const both = r.how === 'talk' && talkOf(me, now)?.with === Number(r.from_user);
+    const both = (r.how === 'talk' || r.how === 'pan') && talkOf(me, now)?.with === Number(r.from_user);
     if (both) heardInCall(me, r.body, now);
+    // Their voice itself is reaching this person (call-voice.js): they heard the line, so it is
+    // only shown, and the device makes nothing of it. Not ΠAN's answer: nobody's voice said that.
+    const live = both && r.how === 'talk' && voiceLive(Number(r.from_user), me, now);
     // 'speak' is read out and shown; 'message' is shown only (this person's choice, or the owner's for them).
-    out.push({ id: nextNoteId(), type: quiet ? 'message' : 'speak', title: both ? first : `${first} ${r.kind === 'asks' ? 'asks' : 'says'}`,
+    out.push({ id: nextNoteId(), type: quiet || live ? 'message' : 'speak', title: both ? first : `${first} ${r.kind === 'asks' ? 'asks' : 'says'}`,
       body: both ? (/[.!?]$/.test(r.body) ? r.body : `${r.body}.`) : spokenLine(first, r.kind, r.body),
-      data: { kind: 'message', from_user: Number(r.from_user), message_id: Number(r.id), talk: r.how === 'talk' }, from: null });
+      data: { kind: 'message', from_user: Number(r.from_user), message_id: Number(r.id), talk: both, live: live || undefined }, from: null });
   }
   return out;
 }
@@ -553,7 +562,13 @@ export function talkLine(text, { person = null, wearer } = {}, now = Date.now())
   t.sent = { words, at: now };
   if (!letters(body)) return { to: t.with, sent: false, reason: 'again' };
   const sent = sendMessage({ from: person, to: { id: t.with }, kind: 'says', body, how: 'talk' }, now);
-  if (sent.ok) { t.last = now; console.log(`[call] person ${me} to person ${t.with}: a line passed on`); }
+  if (sent.ok) {
+    t.last = now;
+    // With the voice itself going through, the other device's microphone may hear these words
+    // from its own loudspeaker before the written line reaches it: they are marked as heard now.
+    heardInCall(t.with, body, now);
+    console.log(`[call] person ${me} to person ${t.with}: a line passed on`);
+  }
   return { to: t.with, sent: !!sent.ok, reason: sent.ok ? undefined : sent.reason };
 }
 

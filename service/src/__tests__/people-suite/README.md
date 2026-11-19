@@ -25,6 +25,7 @@ change to `people.js`, `routes/link.js`, the person branch of `server.js`, `rout
 | unit | `../met-people.test.js` | A meeting is kept and the same key is the same person; each person's own list; a stranger's name as plain text; a bad code; forgetting only one's own; 500 at most. |
 | unit | `../people-groups.test.js` | A group is a name; a person is in one group or none; renaming; deleting leaves the people; thirty at most. |
 | unit | `../group-calls.test.js` | A call with a whole group: what is said to start, join and leave one; who is rung and who is not; nothing passed on before a person comes on; who hears a line and who can read it later; how it ends; one call at a time; the limit; ΠAN's answer shared. |
+| unit | `../call-voice.test.js` | The voice itself in a call: sound reaches only people who have joined; ringing sends none; one device per person; a group call; a line is only shown to someone the voice is reaching and read out otherwise; ΠAN's answer is always read out. |
 | unit | `../person-voices.test.js` | A person's voice is learned from their own turns; the owner's, another known person's and a stranger's voice are dropped on their device; a device that mostly hears someone else never learns them. |
 | unit | `../same-line.test.js` | The same words at the same moment on two people's devices are one line: the voice's, else the louder device's; waiting ends by itself; different words or one word are never compared. |
 | unit | `../thread-people.test.js` | Whose a relay host is; which threads the owner and each person can reach; the owner's own thread first; what one person heard or asked never reaches another; a job is taken only by the computer that holds its host; handing over, taking back, removing. |
@@ -90,6 +91,9 @@ The hub part, by group:
   hanging up and the call ending when one is left; nobody calls a group they are not in; a call
   with one person ends when a group is called; everyone rung saying no; a child calling
   everyone; someone who takes no calls from the caller is not rung.
+- **call voice**: no call, no sound, and ringing sends none; both joined, each device is told
+  to send and play and his sound reaches her open stream; his line is then only shown on her
+  device; the child and his own second device can send nothing into it; hanging up ends it.
 - **met**: an adult adds someone she met and only her list has it; a child cannot unless the
   owner opens it; the owner's record of the same person is his own; a code with no name or a
   bad key is refused; nobody forgets another person's record.

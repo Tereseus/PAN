@@ -766,7 +766,7 @@ class PanForegroundService : Service() {
                         runCatching { audioManager.abandonAudioFocusRequest(carFocus) }
                         carFocusHeld = false
                     }
-                    audioManager.mode = AudioManager.MODE_NORMAL
+                    if (!dev.pan.app.audio.CallAudio.active) audioManager.mode = AudioManager.MODE_NORMAL
                     lastTtsDoneTime = System.currentTimeMillis()
                     panStoppedAt = lastTtsDoneTime
                     if (sttEngine.enabled && !sttEngine.isListening) {
@@ -782,7 +782,7 @@ class PanForegroundService : Service() {
                     panLog("Barge-in — stopping TTS, resuming STT")
                     tts.stop()
                     bargeInMonitor.stop()
-                    audioManager.mode = AudioManager.MODE_NORMAL
+                    if (!dev.pan.app.audio.CallAudio.active) audioManager.mode = AudioManager.MODE_NORMAL
                     lastTtsDoneTime = System.currentTimeMillis()
                     if (sttEngine.enabled && !sttEngine.isListening) {
                         sttEngine.startListening { text, isFinal ->
@@ -1149,6 +1149,14 @@ class PanForegroundService : Service() {
                     // the app's call strip and People tab look again.
                     if (nowFast != fast) dev.pan.app.ui.people.PeopleSignal.bump()
                     fast = nowFast
+                    // The hub says this device carries a call someone else has joined: the voice
+                    // itself goes both ways from now, until the hub says it is over.
+                    val nowVoice = resp.body()?.voice == true
+                    if (nowVoice != dev.pan.app.audio.CallAudio.active) {
+                        val am = getSystemService(AUDIO_SERVICE) as AudioManager
+                        if (nowVoice) dev.pan.app.audio.CallAudio.start(serviceScope, serverClient, am) { panLog(it) }
+                        else dev.pan.app.audio.CallAudio.stop(am, pan_is_speaking = tts.isSpeaking)
+                    }
                     val notes = resp.body()?.notifications ?: continue
                     for (note in notes) {
                         if (note.id <= lastSlackId) continue
@@ -1168,8 +1176,10 @@ class PanForegroundService : Service() {
                             if (callNote(note) == "ring") showCallNotification(note) else showAlertNotification(note)
                         } else {
                             // Everything else is shown and not read out: a meeting, or a message
-                            // from someone here when this person chose "show only".
-                            showAlertNotification(note)
+                            // from someone here when this person chose "show only". A line of a
+                            // call whose voice this person is hearing (live) is not even that: it
+                            // only appears in the conversation.
+                            if (note.data?.get("live") != true) showAlertNotification(note)
                         }
                         // The call was answered, ended, declined or given up: stop ringing.
                         callNote(note)?.let { if (it != "ring") notificationManager?.cancel(CALL_NOTIF_ID) }
@@ -3049,6 +3059,13 @@ class PanForegroundService : Service() {
         //
         // TEST_RESET starts a fresh conversation between scenarios. TEST_AUDIO_END
         // gives back the microphone and his real conversation history.
+        // TEST_CALL_QUIET -> a call's sound is received and counted but not played (--ez on true|false),
+        //                    so the path can be tested with no device making a sound.
+        if (dev.pan.app.BuildConfig.DEBUG && intent?.action == "TEST_CALL_QUIET") {
+            dev.pan.app.audio.CallAudio.quiet = intent.getBooleanExtra("on", true)
+            val (sent, got) = dev.pan.app.audio.CallAudio.counts()
+            panLog("Call voice: quiet=${dev.pan.app.audio.CallAudio.quiet} active=${dev.pan.app.audio.CallAudio.active} sent=$sent got=$got")
+        }
         if (dev.pan.app.BuildConfig.DEBUG && intent?.action == "TEST_AUDIO") {
             val name = intent.getStringExtra("file") ?: ""
             try {
@@ -3326,6 +3343,7 @@ class PanForegroundService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        dev.pan.app.audio.CallAudio.stop(getSystemService(AUDIO_SERVICE) as? AudioManager)
         serviceScope.cancel()
         voiceCollector.stop()
         sttEngine.destroy()

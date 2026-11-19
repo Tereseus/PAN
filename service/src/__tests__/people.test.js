@@ -74,6 +74,17 @@ test('what a child, an adult and the owner may do', () => {
   eq(people.may(null, 'fly_the_house'), false, 'not even for the owner');
 });
 
+test('the list of what a person may reach fits pan-link, which takes 32 rules and refuses a longer list whole', () => {
+  eq(people.PERSON_ALLOW.length <= 32, true, `${people.PERSON_ALLOW.length} rules`);
+  for (const r of people.PERSON_ALLOW) {
+    const [m, p] = r.split(' ');
+    const base = p.endsWith('/*') ? p.slice(0, -2) : p;
+    eq(['*', 'GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(m) && base.startsWith('/') && !/[ *?#%\\]/.test(base) && r.length <= 200, true, `a pan-link rule: ${r}`);
+  }
+  eq(people.personMaySend('POST', '/api/v1/people/voice'), true, 'the voice of a call');
+  eq(people.personMaySend('GET', '/api/v1/people/voice') || people.personMaySend('POST', '/api/v1/people/voice/x'), false, 'that path and method only');
+});
+
 test('every role by every action: allowed exactly when the role\'s power reaches the limit', () => {
   const powers = { removed: 0, child: 5, guest: 15, user: 25, manager: 50, admin: 75 };
   const need = { talk: 0, camera: 5, own_memory: 5, home: 15, messages: 5, group_calls: 5, meet: 25, lend_device: 50, approve_device: 75,

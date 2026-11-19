@@ -188,7 +188,9 @@ data class SlackPendingResponse(
     val ok: Boolean = true,
     val notifications: List<SlackNotify> = emptyList(),
     // The hub says to ask again in a second: this person is in a call or being called.
-    val fast: Boolean = false
+    val fast: Boolean = false,
+    // This device carries its person's call and someone else is on: send and play the sound (CallAudio).
+    val voice: Boolean = false
 )
 
 // Tolerant of BOTH queue shapes. Slack items fill channelId/sender/text/…;

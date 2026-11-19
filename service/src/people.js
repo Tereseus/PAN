@@ -42,6 +42,9 @@ export const LIMITS = Object.freeze({
 // What a device that belongs to a person other than the owner may reach, as pan-link allow rules
 // (pan-link/allow.go). pan-link refuses everything else before PAN sees it, WebSockets and
 // pages included; PAN checks the same list again for /api. A path nobody listed is closed.
+// pan-link takes at most 32 rules for a device (allow.go, maxAllowRules) and refuses a longer
+// list whole, so a device would keep its old one. The list is at 32 now (people.test.js counts
+// them): the next path needs that limit raised in pan-link first.
 // Short on purpose: a path joins this list when what it answers is that person's own, not the
 // owner's. Talking is on it since a person's turn has its own path (router.js personTurn): the
 // handlers behind these paths each check req.user.person and keep nothing of the owner's in reach.
@@ -71,6 +74,10 @@ export const PERSON_ALLOW = Object.freeze([
   'POST /api/v1/people/room/decline',
   'POST /api/v1/people/room/say',
   'GET /api/v1/people/room/lines',
+  // The voice itself in a call they are on (call-voice.js): their own sound out, the others' in.
+  // One path and one method for both ways (the sound out, and with ?listen=1 the stream in),
+  // because the list below is at pan-link's limit.
+  'POST /api/v1/people/voice',
   'PUT /api/v1/people/mode',       // read out or shown only, for themselves, unless the owner locked it
   'PUT /api/v1/people/names',      // other names they go by, their own only
   // The people with their own ΠAN that this person has met (met-people.js): their own list only.

@@ -219,7 +219,7 @@ private fun PeopleList(viewModel: PeopleViewModel, snackbar: SnackbarHostState, 
                 micContext.startService(android.content.Intent(micContext, PanForegroundService::class.java).apply { action = "TOGGLE_MIC" })
             })
         }
-        if (!micOn && (talkWith != 0 || callingMe != 0 || roomOn != null || roomsRinging.isNotEmpty())) Text("Muted: ΠAN cannot hear you, and nothing is read out. Tap the microphone to unmute.",
+        if (!micOn && (talkWith != 0 || callingMe != 0 || roomOn != null || roomsRinging.isNotEmpty())) Text("Muted: nobody on a call can hear you, and ΠAN cannot either. Tap the microphone to unmute.",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 20.dp, vertical = 2.dp))
         val rows = people
@@ -891,9 +891,9 @@ private fun RoomTalk(viewModel: PeopleViewModel, key: String, name: String) {
         Text(when {
             here == null && going != null -> "${namesOn(going, myId).ifBlank { "Someone" }} on a call now. Tap Join to come on."
             here == null -> "Tap Call to ring everyone in $name. Then just talk: what you say goes to whoever comes on. Or say \"ΠAN, call $name\"."
-            !micOn -> "Muted: nobody can hear you. What the others say shows here. Tap the microphone below to talk."
+            !micOn -> "Muted: nobody can hear you. You still hear the others. Tap the microphone below to talk."
             others.isBlank() -> "Ringing. What you say is passed on once someone comes on. Start with \"ΠAN\" to ask ΠAN something."
-            else -> "On with $others. What you say goes to all of them. Start with \"ΠAN\" to ask ΠAN something."
+            else -> "On with $others. They hear you, and you hear them. Start with \"ΠAN\" to ask ΠAN something."
         }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp))
         if (here == null && going != null && roomsRinging.any { it.key == key }) {
@@ -1072,9 +1072,9 @@ private fun Conversation(viewModel: PeopleViewModel, person: PersonLine, actions
         }
         // Where this person's voice is going right now, in words: nobody should have to guess.
         if (readingFor == null) Text(when {
-            !micOn && onCall -> "Muted: $first cannot hear you. What $first says shows here. Tap the microphone below to talk."
+            !micOn && onCall -> "Muted: $first cannot hear you. You still hear $first. Tap the microphone below to talk."
             !micOn -> "Muted. What $first sends shows here, not read out."
-            onCall && talkJoined -> "What you say goes to $first. Start with \"ΠAN\" to ask ΠAN something."
+            onCall && talkJoined -> "$first hears you, and you hear $first. Start with \"ΠAN\" to ask ΠAN something."
             onCall -> "What you say is passed on to $first once they answer. Start with \"ΠAN\" to ask ΠAN something."
             else -> "ΠAN is listening, and what you say goes to ΠAN, not to $first. To talk to $first, tap Call."
         }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,

@@ -23,6 +23,8 @@
 //     when one person is left with nobody still being rung, or after five quiet minutes.
 //   - A person is in one call at a time: coming on here ends their call with one person, and
 //     calling one person leaves this.
+//   - The voice itself goes through call-voice.js, as in a call between two. Someone the voice
+//     is reaching is only shown the written line; the others have it read out.
 //   - Calls are kept in memory: a restart ends them. The lines are kept in the hub's own
 //     database (group_lines).
 
@@ -31,6 +33,7 @@ import { addNote, userAsking } from './phone-notes.js';
 import { may } from './people.js';
 import { groupsHere } from './people-groups.js';
 import { peopleHere, talkOf, endTalk, callsBlocked, saysHangUp, messageMode } from './person-messages.js';
+import { voiceLive } from './call-voice.js';
 
 const OWNER_ID = 1;
 const IDLE_MS = 5 * 60_000;
@@ -237,9 +240,11 @@ function pass(r, me, body, how, now) {
     const e = r.on.get(to);
     e.heard = [...e.heard.filter((h) => now - h.at < 20_000), { k: letters(text), at: now }].slice(-8);
     // With two on it is as a call between two: the words alone. With more, who said them comes first.
-    noteTo(to, { type: messageMode(to).mode === 'show' ? 'message' : 'speak', title: mine,
+    // Their voice itself is reaching this one (call-voice.js): the line is only shown.
+    const live = how === 'talk' && voiceLive(me, to, now);
+    noteTo(to, { type: live || messageMode(to).mode === 'show' ? 'message' : 'speak', title: mine,
       body: others.length > 1 ? `${mine}: ${text}${stop}` : `${text}${stop}`,
-      data: { kind: 'message', room: r.key, room_name: r.name, from_user: me, line_id: id, talk: true } }, now);
+      data: { kind: 'message', room: r.key, room_name: r.name, from_user: me, line_id: id, talk: true, live: live || undefined } }, now);
   }
   r.last = now;
   return { ok: true, id, to: others };

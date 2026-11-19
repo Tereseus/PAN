@@ -848,6 +848,84 @@ def main():
         for g_ in (crew, office):
             call("DELETE", "/api/v1/people/groups/%s" % g_, device=OWNER, headers=PHONE)
 
+        # ── the voice itself in a call ───────────────────────────────────────────
+        def voice_headers(device, headers=None, kind="application/octet-stream"):
+            h = {"Content-Type": kind, "Connection": "close", "x-pan-link-secret": SECRET, "x-pan-device": device, "x-pan-device-name": "suite"}
+            h.update(headers or {})
+            return h
+
+        def voice_post(device, data, headers=None):
+            req = urllib.request.Request(DEV + "/api/v1/people/voice", data=data, headers=voice_headers(device, headers), method="POST")
+            try:
+                with urllib.request.urlopen(req, timeout=10) as r:
+                    return r.status, json.loads(r.read() or b"{}")
+            except urllib.error.HTTPError as e:
+                return e.code, json.loads(e.read() or b"{}")
+
+        def voice_listen(device, got, seconds=3.0, headers=None):
+            req = urllib.request.Request(DEV + "/api/v1/people/voice?listen=1", data=b"", headers=voice_headers(device, headers), method="POST")
+            try:
+                with urllib.request.urlopen(req, timeout=2) as r:
+                    got["status"] = r.status
+                    end = time.time() + seconds
+                    while time.time() < end:
+                        try:
+                            piece = r.read1(4096)
+                        except Exception:
+                            continue                      # nothing came for a moment
+                        if not piece:
+                            break
+                        got["bytes"] += piece
+            except urllib.error.HTTPError as e:
+                got["status"] = e.code
+            except Exception as e:
+                got["error"] = "%s: %s" % (type(e).__name__, e)
+
+        def pieces(raw):
+            out, i = [], 0
+            while i + 6 <= len(raw):
+                who, n = int.from_bytes(raw[i:i + 4], "little"), int.from_bytes(raw[i + 4:i + 6], "little")
+                if n:
+                    out.append((who, raw[i + 6:i + 6 + n].hex()))
+                i += 6 + n
+            return out
+
+        def says_voice(device, headers=None):
+            return call("GET", "/api/v1/slack/pending", device=device, headers=headers)[1].get("voice")
+
+        for dev_ in (zora["device"], quill["device"]):
+            pending(dev_)
+        pending(OWNER, PHONE)
+        none = {"status": 0, "bytes": b""}
+        voice_listen(zora["device"], none, 0.5)
+        before = {"her sound": voice_post(zora["device"], bytes([1, 2]))[0], "her stream": none["status"], "told to": says_voice(zora["device"])}
+        call("POST", "/api/v1/people/talk", {"with": zora["id"]}, device=OWNER, headers=PHONE)
+        ringing = {"his sound": voice_post(OWNER, bytes([1, 2]), PHONE)[0], "he is told to": says_voice(OWNER, PHONE), "she is told to": says_voice(zora["device"])}
+        check("call voice", "no call, no sound; and ringing someone sends them none", before == {"her sound": 409, "her stream": 409, "told to": False}
+              and ringing == {"his sound": 409, "he is told to": False, "she is told to": False}, (before, ringing))
+        call("POST", "/api/v1/people/talk", {"with": 1}, device=zora["device"])
+        told = {"he": says_voice(OWNER, PHONE), "she": says_voice(zora["device"]), "the child": says_voice(quill["device"]), "his other device": says_voice(own2)}
+        hers = {"status": 0, "bytes": b""}
+        listener = threading.Thread(target=voice_listen, args=(zora["device"], hers, 6.0))
+        listener.start()
+        time.sleep(0.6)
+        s, j = voice_post(OWNER, bytes([10, 11, 12]), PHONE)
+        s2, done, said = turn("Bring the keys when you come", OWNER, headers=PHONE)
+        s3, raw = call("GET", "/api/v1/slack/pending", device=zora["device"])
+        line = [(n.get("type"), n.get("body"), (n.get("data") or {}).get("live")) for n in raw.get("notifications", [])]
+        outside = {"the child's sound": voice_post(quill["device"], bytes([1]))[0], "his other device's sound": voice_post(own2, bytes([1]))[0]}
+        listener.join()
+        check("call voice", "both joined: each device is told to send and play, his sound reaches her stream, and nobody else's device is told to", told == {"he": True, "she": True, "the child": False, "his other device": False}
+              and s == 200 and j.get("to") == 1 and hers["status"] == 200 and pieces(hers["bytes"]) == [(1, "0a0b0c")], (told, s, j, hers.get("status"), pieces(hers["bytes"]), hers.get("error")))
+        check("call voice", "while his voice reaches her, his line is only shown on her device, not read out", (done or {}).get("sent") is True and line == [("message", "Bring the keys when you come.", True)], (done, line))
+        check("call voice", "someone not on the call, and his own second device, can send no sound into it", outside == {"the child's sound": 409, "his other device's sound": 409}, outside)
+        call("DELETE", "/api/v1/people/talk", device=OWNER, headers=PHONE)
+        after = {"his sound": voice_post(OWNER, bytes([1]), PHONE)[0], "he is told to": says_voice(OWNER, PHONE), "she is told to": says_voice(zora["device"])}
+        check("call voice", "hanging up ends the sound for both", after == {"his sound": 409, "he is told to": False, "she is told to": False}, after)
+        for dev_ in (zora["device"], quill["device"]):
+            pending(dev_)
+        pending(OWNER, PHONE)
+
         # ── people met: someone with their own ΠAN whose code was scanned ────────
         key_a, key_b = "A" * 120, "B" * 120
         s, j = call("POST", "/api/v1/people/met", {"name": "Rin Okafor", "key": key_a}, device=zora["device"])

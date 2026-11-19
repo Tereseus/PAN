@@ -933,6 +933,8 @@ class SherpaStreamingStt @Inject constructor(
                     if (BuildConfig.DEBUG) TestAudio.fill(shorts, n)
                     // The pendant's mic takes over from the phone's at the same point.
                     if (dev.pan.app.ble.PendantMic.live) dev.pan.app.ble.PendantMic.fill(shorts, n)
+                    // In a call with someone on this ΠAN the same sound goes to them (CallAudio).
+                    dev.pan.app.audio.CallAudio.feed(shorts, n)
                     for (i in 0 until n) {
                         if (carried < carry.size) carry[carried++] = shorts[i] / 32768.0f
                     }
