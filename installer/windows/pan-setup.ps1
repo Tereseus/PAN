@@ -239,9 +239,10 @@ try {
         linkPort = $LinkPort; linkAdmin = $LinkAdmin; tag = $Tag
         installed = (Get-Date).ToUniversalTime().ToString("s") + "Z"
         firewallRule = $null; autostart = $false; dev = [bool]$Dev
-        ollamaInstalledBySetup = $false; modelsAdded = @()
+        ollamaInstalledBySetup = $false; modelsAdded = @(); ollama = $null
     }
     if ($oldConfig) {
+        if ($oldConfig.ollama -and (Test-Path ([string]$oldConfig.ollama))) { $config.ollama = [string]$oldConfig.ollama }
         if ($oldConfig.ollamaInstalledBySetup) { $config.ollamaInstalledBySetup = $true }
         if ($oldConfig.modelsAdded) { $config.modelsAdded = @($oldConfig.modelsAdded) }
     }
@@ -413,6 +414,9 @@ try {
             if ($null -eq $have) { Stop-Setup "Ollama is installed but does not answer." }
         }
         Say "  Ollama is running."
+        # From now on PAN's launcher starts Ollama at sign in when nothing else has.
+        $config.ollama = (Ollama-Exe)
+        WriteText $configPath ($config | ConvertTo-Json)
 
         $ownDir = Join-Path $InstallDir "models"
         foreach ($m in $wanted) {

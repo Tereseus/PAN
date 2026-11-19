@@ -57,6 +57,16 @@ test('a program that keeps dying is started again more slowly', () => {
   assert.equal(restartDelayMs(50), 300000);
 });
 
+test('Ollama is started only when voice was installed, and only if nothing answers already', () => {
+  assert.equal(launchPlan(config, 'X', {}).ollama, null);
+  const o = launchPlan({ ...config, ollama: 'C:\\Users\\sam\\AppData\\Local\\Programs\\Ollama\\ollama.exe' }, 'X', { PATH: 'x' }).ollama;
+  assert.equal(o.exe, 'C:\\Users\\sam\\AppData\\Local\\Programs\\Ollama\\ollama.exe');
+  assert.deepEqual(o.args, ['serve']);
+  assert.equal(o.onlyIfDown, 'http://127.0.0.1:11434/api/version');
+  assert.equal(o.restartOnCleanExit, true);
+  assert.equal(o.log, 'C:\\Users\\sam\\AppData\\Local\\PAN\\data\\ollama.log');
+});
+
 test('test mode comes from install.json only', () => {
   assert.equal(launchPlan({ ...config, dev: true }, 'X', {}).pan.env.PAN_DEV, '1');
   assert.equal('PAN_DEV' in launchPlan({ ...config, dev: 'yes' }, 'X', {}).pan.env, false);

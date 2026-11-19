@@ -127,8 +127,12 @@ switch ($Action) {
         Out-Json @{ killed = @($pan | ForEach-Object { $_.ProcessId }) }
     }
     "stop-all" {
-        # What signing out of Windows does to it.
+        # What signing out of Windows does to it, the model runner included.
         $n = 0
+        $cfgPath = Join-Path $InstallDir "install.json"
+        if ((Test-Path $cfgPath) -and (Get-Content $cfgPath -Raw | ConvertFrom-Json).ollama) {
+            Get-Process | Where-Object { $_.ProcessName -match '^(ollama|ollama app|llama-server)$' } | ForEach-Object { try { & taskkill.exe /F /PID $_.Id 2>$null | Out-Null; $n++ } catch {} }
+        }
         for ($round = 0; $round -lt 4; $round++) {
             $mine = Mine
             if ($mine.Count -eq 0) { break }

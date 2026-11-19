@@ -1,9 +1,12 @@
 // What PAN's launcher starts on an installed computer, worked out from install.json.
 // A pure rule (no files, no processes), so it is tested: launch-plan.test.cjs.
 //
-// Two programs run for as long as the person is logged in:
+// These run for as long as the person is logged in:
 //   pan-link  the way in for the person's phone and other computers
 //   PAN       the service itself, on this computer's own address only
+//   Ollama    the program that runs the models, when PAN Setup installed voice
+//             (install.json "ollama"). Only when nothing answers on its port already:
+//             a person's own Ollama, or Ollama's own tray app, is left to do the job.
 //
 // install.json is written by pan-setup.ps1.
 
@@ -96,6 +99,16 @@ function launchPlan(config, hostname, baseEnv = {}) {
       env: baseEnv,
       restartOnCleanExit: true,
     },
+    ollama: config.ollama ? {
+      name: 'Ollama',
+      exe: String(config.ollama),
+      args: ['serve'],
+      cwd: path.win32.dirname(String(config.ollama)),
+      log: path.win32.join(dataDir, 'ollama.log'),
+      env: baseEnv,
+      restartOnCleanExit: true,
+      onlyIfDown: 'http://127.0.0.1:11434/api/version',
+    } : null,
     healthUrl: `http://127.0.0.1:${panPort}/health`,
     pairUrl: `http://127.0.0.1:${panPort}/pair/`,
   };

@@ -43,8 +43,24 @@ fs.writeFileSync(pidPath, String(process.pid));
 let stopping = false;
 const children = new Map();
 
-function start(prog, quickDeaths = 0) {
+async function answers(url) {
+  try {
+    const r = await fetch(url, { signal: AbortSignal.timeout(3000) });
+    return r.ok;
+  } catch { return false; }
+}
+
+async function start(prog, quickDeaths = 0) {
   if (stopping) return;
+  // A program someone else already runs (onlyIfDown) is left alone, and looked at again
+  // later in case it goes away.
+  if (prog.onlyIfDown && await answers(prog.onlyIfDown)) {
+    if (!prog.seenUp) log(`${prog.name}: already running here, not starting another`);
+    prog.seenUp = true;
+    setTimeout(() => start(prog, 0), 60000);
+    return;
+  }
+  prog.seenUp = false;
   const out = fs.openSync(prog.log, 'a');
   const startedAt = Date.now();
   let child;
@@ -93,5 +109,6 @@ process.on('SIGINT', () => shutdown(0));
 process.on('SIGTERM', () => shutdown(0));
 
 log(`launcher ${process.pid} for ${installDir}, version ${config.version}`);
+if (plan.ollama) start(plan.ollama);
 start(plan.link);
 start(plan.pan);

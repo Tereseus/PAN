@@ -311,13 +311,14 @@ def main():
         stage("7. Sign out, sign in")
         box.helper("stop-all")
         p = box.probe()
-        check("signed out: nothing is running", len(p["processes"]) == 0 and not p["health"], [x["name"] for x in p["processes"]])
+        check("signed out: nothing is running", len(p["processes"]) == 0 and not p["health"] and p["listen"]["ollama"] == [] and p["listen"]["reader"] == [],
+              {"processes": [x["name"] for x in p["processes"]], "ollama": p["listen"]["ollama"], "reader": p["listen"]["reader"]})
         r = box.helper("run-autostart")
         back = box.wait_health(True, 180)
         check(f"signed in: PAN is back ({back} s)", r.get("ok") and back is not None, r)
         if args.voice:
             v = talk(box)
-            check(f"signed in: PAN still talks (first word {v.get('firstMs', 0) / 1000:.1f} s)", v.get("ok"), v)
+            check(f"signed in: the model runner is back and PAN still talks (first word {v.get('firstMs', 0) / 1000:.1f} s)", v.get("ok"), v)
 
         stage("8. Run PAN Setup again (an update)")
         rc, out = box.setup(source, flags)
@@ -397,7 +398,6 @@ def voice_stage(box, source, flags, args):
     p = box.probe()
     check("Ollama and the voice reader listen on this computer only", only_local(p["listen"]["ollama"]) and only_local(p["listen"]["reader"]),
           {"ollama": p["listen"]["ollama"], "reader": p["listen"]["reader"]})
-    check("Ollama starts at sign in", p["ollamaAtSignIn"])
     v = talk(box)
     check(f"PAN answers a spoken line (first word {v.get('firstMs', 0) / 1000:.1f} s)", v.get("ok"), v)
     if v.get("ok"):
