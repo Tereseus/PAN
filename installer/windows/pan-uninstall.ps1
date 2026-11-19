@@ -66,24 +66,38 @@ if ($added.Count -gt 0 -and -not $KeepModels) {
     }
     $ollama = Join-Path $env:LOCALAPPDATA "Programs\Ollama\ollama.exe"
     if (Test-Path $ollama) {
-        foreach ($m in $added) {
-            try { Start-Process -FilePath $ollama -ArgumentList @("rm", [string]$m) -Wait -NoNewWindow -RedirectStandardOutput (Join-Path $env:TEMP "pan-ollama-rm.out") -RedirectStandardError (Join-Path $env:TEMP "pan-ollama-rm.err") | Out-Null } catch {}
+        function Ollama-Left {
+            # $null when Ollama does not answer; else the models it still holds (maybe none).
+            try { $m = @(((Invoke-WebRequest -Uri "http://127.0.0.1:11434/api/tags" -UseBasicParsing -TimeoutSec 8).Content | ConvertFrom-Json).models) }
+            catch { return $null }
+            return ,$m
         }
-        Say ("  Removed {0} models." -f $added.Count)
-        if ($config.ollamaInstalledBySetup) {
-            $rest = $null
-            try { $rest = @(((Invoke-WebRequest -Uri "http://127.0.0.1:11434/api/tags" -UseBasicParsing -TimeoutSec 8).Content | ConvertFrom-Json).models) } catch {}
-            if ($null -ne $rest -and $rest.Count -eq 0) {
+        # Ollama has to be running to delete a model. PAN's launcher ran it and step 1 just
+        # stopped it, so start it for the cleanup and stop it again after.
+        $mine = $null
+        if ($null -eq (Ollama-Left)) {
+            $mine = Start-Process -FilePath $ollama -ArgumentList "serve" -WindowStyle Hidden -PassThru
+            for ($i = 0; $i -lt 60 -and $null -eq (Ollama-Left); $i++) { Start-Sleep -Seconds 2 }
+        }
+        if ($null -eq (Ollama-Left)) {
+            $left += "the models and Ollama (Ollama did not start, so they were left alone)"
+        } else {
+            foreach ($m in $added) {
+                try { Start-Process -FilePath $ollama -ArgumentList @("rm", [string]$m) -Wait -NoNewWindow -RedirectStandardOutput (Join-Path $env:TEMP "pan-ollama-rm.out") -RedirectStandardError (Join-Path $env:TEMP "pan-ollama-rm.err") | Out-Null } catch {}
+            }
+            Say ("  Removed {0} models." -f $added.Count)
+            $rest = Ollama-Left
+            if ($config.ollamaInstalledBySetup -and $null -ne $rest -and $rest.Count -eq 0) {
                 Get-Process | Where-Object { $_.ProcessName -match '^(ollama|ollama app|llama-server)$' } | ForEach-Object { try { & taskkill.exe /F /PID $_.Id 2>$null | Out-Null } catch {} }
+                Start-Sleep -Seconds 2
                 $un = Join-Path $env:LOCALAPPDATA "Programs\Ollama\unins000.exe"
                 if (Test-Path $un) { Start-Process -FilePath $un -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART" -Wait | Out-Null }
                 $store = Join-Path $env:USERPROFILE ".ollama"
                 if (Test-Path $store) { Remove-Item $store -Recurse -Force -ErrorAction SilentlyContinue }
                 Say "  Removed Ollama (PAN Setup had installed it)."
-            } elseif ($null -ne $rest) {
-                Say "  Ollama stays: it holds models that are not PAN's."
             } else {
-                $left += "Ollama (it did not answer, so it was left alone)"
+                if ($config.ollamaInstalledBySetup) { Say "  Ollama stays: it holds models that are not PAN's." }
+                if ($mine) { try { & taskkill.exe /F /T /PID $mine.Id 2>$null | Out-Null } catch {} }
             }
         }
     }
