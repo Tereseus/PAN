@@ -73,7 +73,8 @@ class Box:
 
     def helper(self, action, *more, timeout=120):
         rc, out = self.sh(f'bash {self.work}/test-helper.sh {action} "{self.dir}" {self.port} {self.admin} {self.link_port} ' + " ".join(more), timeout)
-        line = out.splitlines()[-1] if out else ""
+        # The helper's answer is its last line of JSON; anything a tool printed around it is not.
+        line = next((x for x in reversed(out.splitlines()) if x.startswith("{")), "")
         try:
             return json.loads(line)
         except ValueError:
@@ -128,10 +129,17 @@ def models_stage(box, source, args):
         check("Setup heard PAN answer a spoken line", "PAN answers a spoken line." in out, out[-500:])
         names = [x.get("name") for x in ((m.get("tags") or {}).get("json") or {}).get("models") or []]
         check(f"the models are here ({len(names)})", len(names) >= 4, names)
-        check("the model runner and the voice reader listen on this computer only", only_local(m["listen"]["ollama"]) and only_local(m["listen"]["reader"]), m["listen"])
+        check("the model runner listens on this computer only", only_local(m["listen"]["ollama"]), m["listen"])
+        if args.own_models:
+            check("PAN's own talking model is in", any(n.startswith("syrinx") for n in names), names)
+            check("the voice reader runs, on this computer only", only_local(m["listen"]["reader"]), m["listen"])
         v = box.helper("voice", timeout=400)
         check(f"PAN answers a spoken line (first word {v.get('firstMs', 0) / 1000:.1f} s)", v.get("ok"), v)
         print(f"      said: {v.get('said')!r}  PAN: {v.get('reply')!r}  model: {v.get('model')}")
+        if args.own_models:
+            v2 = box.helper("voice", timeout=400)
+            check(f"the second line is quick (first word {v2.get('firstMs', 0) / 1000:.1f} s)", v2.get("ok") and v2.get("firstMs", 99999) < 8000, v2)
+            check("it was the voice reader that answered", str(v2.get("model") or "").startswith("reader:"), v2.get("model"))
         check("the model runner's port is closed from another computer", closed_from_here(box.host, 11434), 11434)
         check("the voice reader's port is closed from another computer", closed_from_here(box.host, 7786), 7786)
     if args.translator:
@@ -175,7 +183,8 @@ def main():
     ap.add_argument("--real", action="store_true", help="default folder and ports, all of PAN. Only for a clean test computer.")
     ap.add_argument("--keep", action="store_true", help="leave PAN installed at the end")
     ap.add_argument("--voice", action="store_true", help="also install what PAN talks with (Ollama and the models, several GB) and check a spoken line. With --real only.")
-    ap.add_argument("--own-models", default="", help="with --voice: a folder ON THE TARGET holding PAN's own two models as .gguf files")
+    ap.add_argument("--own-models", default="", help="with --voice: a folder ON THE TARGET holding PAN's own two models as .gguf files. "
+                    "From Git Bash on Windows set MSYS_NO_PATHCONV=1, or the path is rewritten on the way in.")
     ap.add_argument("--translator", action="store_true", help="also install the computer's own translator and check it translates. With --real only.")
     ap.add_argument("--ssh-opt", action="append", default=[], help="one more word for the ssh command line (repeat it)")
     ap.add_argument("--check-host", help="the address to try PAN's ports on from here, when it is not the ssh host")
@@ -185,6 +194,8 @@ def main():
     version = release["version"]
     source = f"$HOME/pan-build/{version}"
     print(f"PAN {version} on {args.target}, {'the real way' if args.real else 'test mode (side folder, spare ports)'}")
+    if args.own_models and (":" in args.own_models or "\\" in args.own_models):
+        sys.exit(f"--own-models is a path on the Linux target, but this looks like a Windows path: {args.own_models}")
     for f in ("installer/linux/pan-setup.sh", "installer/linux/test-helper.sh"):
         box.put(f)
     rc, out = box.sh(f'test -f "{source}/{release["file"]}" && sha256sum "{source}/{release["file"]}" | cut -d" " -f1')

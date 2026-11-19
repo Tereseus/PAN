@@ -179,7 +179,12 @@ if [ -n "$NEEDS_GLIBC" ] && [ "$(printf '%s\n%s\n' "$NEEDS_GLIBC" "$GLIBC" | sor
     stop_setup "This Linux is too old for this PAN (it has glibc $GLIBC, PAN was built for $NEEDS_GLIBC or newer)."
 fi
 PKG="$DL/$FILE"
-if [ ! -f "$PKG" ] || [ "$(sha256sum "$PKG" | cut -d' ' -f1)" != "$SHA" ]; then
+# This very version is here and whole already (Setup run again to add voice, say): nothing to fetch.
+HAVE_IT=0
+if [ "$OLD_VERSION" = "$VERSION" ] && [ -x "$APP_ROOT/$VERSION/node/bin/node" ] && [ -f "$APP_ROOT/$VERSION/VERSION.json" ]; then HAVE_IT=1; fi
+if [ "$HAVE_IT" = 1 ]; then
+    say "  This version is already here."
+elif [ ! -f "$PKG" ] || [ "$(sha256sum "$PKG" | cut -d' ' -f1)" != "$SHA" ]; then
     if [ "$WEB" = 1 ]; then
         fetch_to "${SOURCE%/}/$FILE" "$PKG" || stop_setup "The download did not finish. Run PAN Setup again to carry on."
     else
@@ -189,7 +194,7 @@ if [ ! -f "$PKG" ] || [ "$(sha256sum "$PKG" | cut -d' ' -f1)" != "$SHA" ]; then
         rm -f "$PKG"; stop_setup "The download does not match what was published, so it was thrown away. Run PAN Setup again."
     fi
 fi
-say "  Downloaded and checked."
+[ "$HAVE_IT" = 1 ] || say "  Downloaded and checked."
 
 # ---- 3. unpack -------------------------------------------------------------------------
 step "unpack" "Unpacking"

@@ -77,7 +77,7 @@ case "$ACTION" in
         printf '{"ok":%s,"leftAfterStop":%s}\n' "$(bool systemctl --user is-active "$UNIT")" "$left"
         ;;
     models)
-        tags="$(http GET http://127.0.0.1:11434/api/tags)"
+        tags=null; [ -x "$NODE" ] && tags="$(http GET http://127.0.0.1:11434/api/tags)"
         printf '{"listen":{"ollama":%s,"reader":%s,"translator":%s},"tags":%s,"homeOllama":%s}\n' \
             "$(jlist $(tcp 11434))" "$(jlist $(tcp 7786))" "$(jlist $(tcp 7784))" "${tags:-null}" "$(bool test -d "$HOME/.ollama")"
         ;;

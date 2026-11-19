@@ -36,7 +36,9 @@ fs.mkdirSync(dl, { recursive: true });
 
 function say(text) {
   console.log(text);
-  try { fs.appendFileSync(path.join(installDir, 'setup.log'), `${new Date().toISOString().slice(0, 19)} ${text}\n`); } catch {}
+  // Local time, like pan-setup.sh writes into the same file.
+  const d = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 19);
+  try { fs.appendFileSync(path.join(installDir, 'setup.log'), `${d} ${text}\n`); } catch {}
 }
 function saveConfig() { fs.writeFileSync(configPath, JSON.stringify(config, null, 2)); }
 function saveResult() { try { fs.writeFileSync(path.join(installDir, 'setup-models.json'), JSON.stringify(result, null, 2)); } catch {} }
