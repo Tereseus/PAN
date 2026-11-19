@@ -57,6 +57,17 @@ function Http($method, $url, $bodyB64) {
     }
 }
 
+function Start-Detached($file, $argLine) {
+    # Over ssh, Windows ends everything a session started when the session closes. A process
+    # made through WMI is not part of the session, so PAN outlives a remote install.
+    if ($env:SSH_CONNECTION -or $env:SSH_CLIENT) {
+        $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = ('"{0}" {1}' -f $file, $argLine) }
+        if ($r.ReturnValue -ne 0) { throw ("could not start {0} (WMI {1})" -f $file, $r.ReturnValue) }
+    } else {
+        Start-Process -FilePath $file -ArgumentList $argLine -WindowStyle Hidden
+    }
+}
+
 switch ($Action) {
     "probe" {
         $tag = Tag
@@ -120,7 +131,7 @@ switch ($Action) {
         $tag = Tag
         $line = (Get-ItemProperty -Path $RunKey -Name $tag -ErrorAction Stop).$tag
         if ($line -notmatch '^"([^"]+)"\s+(.*)$') { Out-Json @{ ok = $false; error = "unreadable Run line"; line = $line }; break }
-        Start-Process -FilePath $Matches[1] -ArgumentList $Matches[2] -WindowStyle Hidden
+        Start-Detached $Matches[1] $Matches[2]
         Out-Json @{ ok = $true; line = $line }
     }
     "pair" {
@@ -136,7 +147,7 @@ switch ($Action) {
         $paired = ($LASTEXITCODE -eq 0)
         $me = $null
         if ($paired) {
-            Start-Process -FilePath $link -ArgumentList ('client --data "{0}" --listen {1}' -f $client, $Listen) -WindowStyle Hidden
+            Start-Detached $link ('client --data "{0}" --listen {1}' -f $client, $Listen)
             for ($i = 0; $i -lt 10 -and -not $me; $i++) {
                 Start-Sleep -Seconds 2
                 $r = Http "GET" ("http://{0}/api/v1/auth/me" -f $Listen) ""

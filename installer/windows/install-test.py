@@ -52,10 +52,18 @@ class Box:
             local = os.environ["LOCALAPPDATA"]
         self.install_dir = install_dir or (local + ("\\PAN" if target else "\\PAN-InstallTest"))
 
+    def _run_ssh(self, command, timeout):
+        """ssh, tried again when the connection itself fails (255): a computer on Wi-Fi drops some."""
+        for attempt in range(5):
+            p = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=25", self.target, command],
+                               capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+            if p.returncode != 255:
+                return p
+            time.sleep(3)
+        return p
+
     def _ssh(self, command, timeout=120):
-        p = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", self.target, command],
-                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
-        return p.stdout
+        return self._run_ssh(command, timeout).stdout
 
     def put(self, source_dir, release):
         """Copy the scripts, and the bundle when the source is a folder, to the target."""
@@ -70,7 +78,12 @@ class Box:
             if release["sha256"].lower() not in have:
                 print(f"  copying the bundle to the target ({release['size'] >> 20} MB)")
                 files.append(os.path.join(source_dir, release["file"]))
-        subprocess.run(["scp", "-q", "-o", "BatchMode=yes"] + files + [dest], check=True, timeout=3600)
+        for attempt in range(5):
+            if subprocess.run(["scp", "-q", "-o", "BatchMode=yes", "-o", "ConnectTimeout=25"] + files + [dest], timeout=3600).returncode == 0:
+                break
+            time.sleep(3)
+        else:
+            sys.exit("could not copy the files to the target")
         return source_dir if source_dir.startswith("http") else self.work
 
     def ps(self, script, args, timeout=600):
@@ -82,8 +95,7 @@ class Box:
             flat.append(a if a.startswith("-") and " " not in a else '"' + a + '"')
         if self.target:
             command = f'powershell -NoProfile -ExecutionPolicy Bypass -File "{path}" ' + " ".join(flat)
-            p = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", self.target, command],
-                               capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+            p = self._run_ssh(command, timeout)
         else:
             p = subprocess.run(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path] + [str(a) for a in args],
                                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)

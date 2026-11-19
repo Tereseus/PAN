@@ -102,7 +102,7 @@ import { networkInterfaces as osNetworkInterfaces } from 'os';
 import { PROFILE, featureEnabled, profileSummary } from './profiles.js';
 import { redactSettings, getSecret } from './secrets.js';
 import { withoutWords } from './log-words.js';
-import { listenHost } from './listen-host.js';
+import { listenHost, answersDiscovery, addsOwnFirewallRule } from './listen-host.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -6152,7 +6152,9 @@ function start() {
 
         // UDP discovery responder — lets the installer find this hub on LAN/Tailscale
         // without manual IP entry. Installer broadcasts "PAN_DISCOVER", we reply.
-        if (featureEnabled('lan_discovery')) startDiscovery(PORT, '0.3.1');
+        // Only a PAN that is open to the network: one on this computer only would answer
+        // with a port that refuses the caller (listen-host.js).
+        if (featureEnabled('lan_discovery') && answersDiscovery()) startDiscovery(PORT, '0.3.1');
 
         // Ensure Windows Firewall allows inbound on PORT so LAN discovery works.
         // Was execFileSync — netsh under heavy CPU load can block 3-8 seconds,
@@ -6160,7 +6162,10 @@ function start() {
         // It's idempotent (returns "rule already exists" for re-adds), so we
         // fire-and-forget. The rule exists after the first successful boot
         // anyway; this is mostly a no-op on subsequent boots.
-        if (featureEnabled('firewall_rule')) {
+        // Never for a PAN on this computer only, and never in a Craft, whose port is an
+        // inner one that changes at every swap: netsh adds a second rule rather than
+        // saying "exists", so a rule per Craft piled up (listen-host.js).
+        if (featureEnabled('firewall_rule') && addsOwnFirewallRule()) {
           try {
             execFile('netsh', [
               'advfirewall', 'firewall', 'add', 'rule',

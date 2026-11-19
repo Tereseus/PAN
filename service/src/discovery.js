@@ -22,6 +22,12 @@ let _sock = null;
 // Runs once at startup; silently ignored if already exists or no admin rights.
 function ensureFirewallRule() {
   if (process.platform !== 'win32') return;
+  // netsh adds a second rule with the same name rather than refusing, so look first.
+  try {
+    execFileSync('netsh', ['advfirewall', 'firewall', 'show', 'rule', 'name=PAN Discovery UDP'],
+      { timeout: 5000, windowsHide: true, stdio: 'pipe' });
+    return; // already there
+  } catch { /* not there (netsh exits 1), or netsh is unavailable: try to add it */ }
   try {
     execFileSync('netsh', [
       'advfirewall', 'firewall', 'add', 'rule',

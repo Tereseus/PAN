@@ -22,3 +22,28 @@ export function listenWords(host) {
     ? 'this computer only (other devices come in through PAN Link)'
     : `the network, on ${host}: anyone who reaches it is treated as the owner`;
 }
+
+/** True when PAN's ports are open to the network: PAN_HOST names something other than this computer. */
+export function openToNetwork(env = process.env) {
+  const host = listenHost(env);
+  return !(host === THIS_COMPUTER || host === '::1' || host === 'localhost');
+}
+
+/**
+ * May this process answer "is there a PAN here?" on the home network (discovery.js)?
+ * Only a PAN that devices can then reach. One that listens on this computer only would
+ * send them to a port that refuses them.
+ */
+export function answersDiscovery(env = process.env) {
+  return openToNetwork(env);
+}
+
+/**
+ * May this process add a Windows firewall rule for its own TCP port? Only a PAN that is
+ * open to the network, and never a Craft: a Craft's port is an inner one behind the
+ * Carrier, and it changes at every swap, so a rule per Craft piled up for good.
+ * PAN Setup adds the one rule an installed PAN needs (PAN Link's UDP port).
+ */
+export function addsOwnFirewallRule(env = process.env) {
+  return openToNetwork(env) && env.PAN_CRAFT !== '1';
+}

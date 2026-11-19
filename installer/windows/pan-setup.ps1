@@ -82,6 +82,16 @@ function Health($port) {
         return ($r.StatusCode -eq 200)
     } catch { return $false }
 }
+function Start-Detached($file, $argLine) {
+    # Over ssh, Windows ends everything a session started when the session closes. A process
+    # made through WMI is not part of the session, so PAN outlives a remote install.
+    if ($env:SSH_CONNECTION -or $env:SSH_CLIENT) {
+        $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = ('"{0}" {1}' -f $file, $argLine) }
+        if ($r.ReturnValue -ne 0) { throw ("could not start {0} (WMI {1})" -f $file, $r.ReturnValue) }
+    } else {
+        Start-Process -FilePath $file -ArgumentList $argLine -WindowStyle Hidden
+    }
+}
 function Stop-Tree($dir) {
     # Everything running out of this install folder: the launcher, PAN, pan-link and what they started.
     $prefix = $dir.TrimEnd('\') + '\'
@@ -279,7 +289,7 @@ try {
         Say ""; Say "Installed. Not started (asked not to)."
     } else {
         Step "start" "Starting PAN (the first start takes a minute)"
-        Start-Process -FilePath $conhost -ArgumentList ('--headless "{0}" "{1}" "{2}"' -f $nodeExe, $launcher, $InstallDir) -WindowStyle Hidden
+        Start-Detached $conhost ('--headless "{0}" "{1}" "{2}"' -f $nodeExe, $launcher, $InstallDir)
         $deadline = (Get-Date).AddSeconds($StartTimeoutSec)
         $up = $false
         while ((Get-Date) -lt $deadline) {
