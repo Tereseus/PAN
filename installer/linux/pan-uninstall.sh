@@ -74,8 +74,8 @@ if [ -x "$NODE" ]; then
 fi
 
 # 1c. An Ollama that PAN Setup installed keeps a key of its own in ~/.ollama. It goes too,
-#     unless that folder holds models, which would mean somebody else's Ollama used it.
-if grep -q '"ollamaInstalledBySetup": *true' "$CONFIG" && [ -d "$HOME/.ollama" ] && [ ! -d "$HOME/.ollama/models" ]; then
+#     unless that folder holds model files, which would mean somebody else's Ollama used it.
+if grep -q '"ollamaInstalledBySetup": *true' "$CONFIG" && [ -d "$HOME/.ollama" ] && [ -z "$(find "$HOME/.ollama/models" -type f 2>/dev/null | head -1)" ]; then
     rm -rf "$HOME/.ollama"
 fi
 
