@@ -263,7 +263,7 @@
 
 		// ===== VOICE PIPELINE (r=380, 45°–125°, right/lower-right) =====
 		// The complete voice loop: Phone Mic → Google STT (cloud) → PAN Server →
-		// Voice Router → Cerebras LLM → Android TTS → back to user.
+		// Voice Router → the hub's own models → Android TTS → back to user.
 		// NOTE: Whisper (port 7782) is speaker *identification* only — NOT the live STT.
 		//       Google Streaming STT is the actual hot-path engine.
 		//       AHK is the desktop entry point (hotkey → voice router).
@@ -274,8 +274,8 @@
 		const voiceItems = [
 			['phone-mic',    'Phone Mic',    'up',                       'Always listening',       'Android always-on audio capture. No wake word — raw PCM stream straight into Google STT.'],
 			['google-stt',   'Google STT',   'up',                       'Cloud · 300-500ms',      'Google Streaming Speech-to-Text. The actual live STT engine. Cloud round-trip is the primary latency bottleneck — NOT the network.'],
-			['voice-router', 'Voice Router', svcStatus(am, 'router'),    'router.js',              'Classifies + dispatches voice commands in a single Cerebras call. Routes local (time/timer/nav/media) vs server queries.'],
-			['cerebras-llm', 'Cerebras LLM', svcStatus(am, 'cerebras'),  'qwen-3-235b · ~150ms',   'LLM backbone for all voice queries. Cerebras free tier. ~150ms inference. Falls back to Claude Haiku if needed.'],
+			['voice-router', 'Voice Router', svcStatus(am, 'router'),    'router.js',              'Classifies + dispatches voice commands in a single model call. Routes local (time/timer/nav/media) vs server queries.'],
+			['hub-models',   'Hub Models',   svcStatus(am, 'ollama'),    'Syrinx · pan-phi-r1',    "The hub's own models through Ollama, no cloud. Syrinx (PAN's fine-tune) answers the lines meant for PAN. Real questions, search results and tools go to pan-phi-r1."],
 			['android-tts',  'Android TTS',  'up',                       'On-device · 100-300ms',  'Android TextToSpeech. Speaks LLM response back to user. Echo-cancel prevents STT re-capture of own output.'],
 		];
 		const voicePos = arc(CX, CY, r_voice, 45, 125, voiceItems.length);
@@ -287,8 +287,8 @@
 		edges.push({ from: 'phone-mic',    to: 'google-stt',   color: voiceColor });
 		edges.push({ from: 'google-stt',   to: 'pan-server',   color: voiceColor, label: 'transcript' });
 		edges.push({ from: 'pan-server',   to: 'voice-router', color: voiceColor });
-		edges.push({ from: 'voice-router', to: 'cerebras-llm', color: voiceColor });
-		edges.push({ from: 'cerebras-llm', to: 'android-tts',  color: voiceColor, label: 'response' });
+		edges.push({ from: 'voice-router', to: 'hub-models',   color: voiceColor });
+		edges.push({ from: 'hub-models',   to: 'android-tts',  color: voiceColor, label: 'response' });
 		// Side paths (not hot path)
 		edges.push({ from: 'voice-router', to: 'whisper',      color: voiceColor + '60', label: 'speaker ID' });
 		edges.push({ from: 'ahk',          to: 'voice-router', color: voiceColor + '60', label: 'hotkey' });

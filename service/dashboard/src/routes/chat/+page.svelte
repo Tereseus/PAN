@@ -335,8 +335,8 @@
 	}
 
 	// Cancel the current in-flight stream. Fires both client-side (AbortController
-	// → fetch unwind, generator finally) and server-side (POST /cancel → Cerebras
-	// fetch aborts, no further tokens billed). Idempotent.
+	// → fetch unwind, generator finally) and server-side (POST /cancel → the model
+	// fetch aborts, no further tokens are generated). Idempotent.
 	async function cancelStream() {
 		if (!currentController) return;
 		const sid = currentStreamId;

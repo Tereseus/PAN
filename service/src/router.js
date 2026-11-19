@@ -573,8 +573,7 @@ function buildRecentMindBlock() {
 
 // ─── #986 batch 1: deeper context builders ──────────────────────────────────
 // All defensive — return '' on any error so a missing table never breaks the
-// router. Goal: ~5k tokens of grounded context per turn for ~250ms prefill
-// cost on Cerebras Qwen 3 235B. See epic #986.
+// router. Goal: ~5k tokens of grounded context per turn. See epic #986.
 
 // Last 15 dialog turns from events table. Pulls UserPromptSubmit + Stop
 // (assistant reply) pairs. Falls back silently if events schema differs.
@@ -1328,8 +1327,8 @@ async function handleUnified(text, context) {
   const recentMindBlock = buildRecentMindBlock();
   const convStateBlock  = buildConvStateBlock(context.org_id);
   // #986 batch 1: deeper context — dialog history, active tasks, surfaces,
-  // dismissal feedback, memory facts, episodic hits. ~5k tokens total, ~250ms
-  // prefill on Cerebras. All defensive: missing table → empty block.
+  // dismissal feedback, memory facts, episodic hits. ~5k tokens total.
+  // All defensive: missing table → empty block.
   // Dialog-state key: use session_id when present (voice/PTY), thread_id when
   // the call comes through /api/v1/chat (dashboard), or a fixed 'global' key
   // so the in-memory Map still works for ad-hoc calls without continuity loss.
@@ -1435,7 +1434,7 @@ async function handleUnified(text, context) {
       ? `\nOVERRIDE: Server pattern matched — your response MUST use {"intent":"${context.intent_hint}",...}. Do not use a different intent.\n`
       : '';
     dbg.ai_started_at = Date.now();
-    // #996: route through fallback chain (cerebras → claude → ollama by default).
+    // #996: route through the fallback chain (ai_fallback_chain_*).
     // Honors `ai_fallback_enabled=false` for users who want single-backend semantics.
     const _fallbackMeta = {};
     let weatherBlock = '';
@@ -1840,7 +1839,7 @@ async function processUnifiedResult(action, text, context) {
 
     case 'task': {
       // Phone → headless Claude session delegate (task #453).
-      // Cerebras decided this needs full capability (code, files, multi-step).
+      // The router model decided this needs full capability (code, files, multi-step).
       // Fire-and-forget into a live PTY adapter; return immediate TTS ack.
       //
       // Benchmark/test sources must NEVER touch a real user session — they would
@@ -2794,7 +2793,7 @@ function releasableEnd(held) {
 }
 
 // De-dupe latch for voice/router-turn failure alerts. When every AI backend
-// cascade-fails (Cerebras → Claude → local Ollama all error), routeStream still
+// cascade-fails (every model in the fallback chain errors), routeStream still
 // yields a canned reply so the phone isn't silent — but that failure was
 // previously invisible. Raise ONE alert, suppressing duplicates within a
 // 5-minute window; a turn that streams output clears the latch so the next
@@ -2814,7 +2813,7 @@ async function _raiseVoiceAlert(reason, source) {
       alert_type: 'voice_failed',
       severity: 'warning',
       title: 'Voice turn failed — all AI backends errored',
-      detail: `A ${source || 'voice'} turn could not be answered: every configured backend (Cerebras → Claude → local Ollama) failed to produce a response. Error: ${reason}. PAN replied with a fallback message.`,
+      detail: `A ${source || 'voice'} turn could not be answered: every model in the fallback chain failed to produce a response. Error: ${reason}. PAN replied with a fallback message.`,
     });
   } catch (e) {
     console.warn('[routeStream] Could not raise voice_failed alert:', e.message);
@@ -3588,7 +3587,7 @@ answer an earlier question, and do not narrate what the context blocks mention.`
   return prompt;
   };
 
-  const model = getConfiguredModel ? getConfiguredModel() : 'cerebras:qwen-3-235b';
+  const model = getConfiguredModel();
 
   // OmniΠ: a small model fine-tuned on this exact prompt's behaviour (plus who a line is for,
   // turn type and camera need), so it gets only the live context - ~30 tokens instead of the
@@ -4077,7 +4076,7 @@ answer an earlier question, and do not narrate what the context blocks mention.`
 
   try {
     // #996: streaming fallback wrapper. Connect-time failures cascade through
-    // chain (cerebras → claude → ollama); mid-stream failures propagate as
+    // the chain (ai_fallback_chain_*); mid-stream failures propagate as
     // truncation (no mid-stream switching — would corrupt the chunk sequence).
     // The language an interpreted reply is in, when the direction is known. The device picked its
     // voice's language from the letters of the line, so a language in Latin letters went to the

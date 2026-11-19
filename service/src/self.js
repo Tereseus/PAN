@@ -34,14 +34,13 @@ const readSetting = (k) => {
 };
 
 /** cloud model ids carry a provider prefix; bare ids are local ollama models. */
-const isCloud = (id) => /^(gemini|claude|cerebras|openai|anthropic|groq|gpt)[:-]/i.test(String(id || ''));
+const isCloud = (id) => /^(gemini|claude|openai|anthropic|groq|gpt)[:-]/i.test(String(id || ''));
 
 function describeModel(id) {
   if (!id) return 'unknown';
   if (isCloud(id)) {
     const vendor = /^gemini/i.test(id) ? 'Google'
       : /^(claude|anthropic)/i.test(id) ? 'Anthropic'
-      : /^cerebras/i.test(id) ? 'Cerebras'
       : /^(openai|gpt)/i.test(id) ? 'OpenAI' : 'a cloud provider';
     return `${id} — runs in the CLOUD, on ${vendor}'s servers. Turns using it leave the house.`;
   }

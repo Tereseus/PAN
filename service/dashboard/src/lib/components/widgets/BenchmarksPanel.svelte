@@ -30,7 +30,8 @@
 		benchmarkRunning = true;
 		benchmarkRunningSuite = suite;
 		try {
-			const model = voiceSettings.terminal_ai_model || voiceSettings.ai_model || 'cerebras:qwen-3-235b';
+			// No model set: send none, the server benchmarks its configured model.
+			const model = voiceSettings.terminal_ai_model || voiceSettings.ai_model || undefined;
 			await api('/api/v1/ai/benchmark', { method: 'POST', body: JSON.stringify({ suite, model }) });
 			await loadBenchmarks();
 		} catch (e) { console.error('[Benchmarks] run failed', e); }
@@ -41,7 +42,8 @@
 		benchmarkRunning = true;
 		benchmarkRunningSuite = 'all';
 		try {
-			const model = voiceSettings.terminal_ai_model || voiceSettings.ai_model || 'cerebras:qwen-3-235b';
+			// No model set: send none, the server benchmarks its configured model.
+			const model = voiceSettings.terminal_ai_model || voiceSettings.ai_model || undefined;
 			await api('/api/v1/ai/benchmark/all', { method: 'POST', body: JSON.stringify({ model }) });
 			await loadBenchmarks();
 		} catch (e) { console.error('[Benchmarks] run-all failed', e); }

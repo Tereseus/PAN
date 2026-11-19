@@ -246,7 +246,6 @@ body:not(.dev-tabs) .tab.dev-tab { display:none; }
       <button class="model-sheet-item" onclick="selectModel('claude-sonnet-4-6')">Sonnet 4.6</button>
       <button class="model-sheet-item" onclick="selectModel('claude-opus-4-6')">Opus 4.6</button>
       <button class="model-sheet-item" onclick="selectModel('claude-haiku-4-5-20251001')">Haiku 4.5</button>
-      <button class="model-sheet-item" onclick="selectModel('cerebras:qwen-3-235b')">Qwen 235B (fast)</button>
     </div>
     <button class="model-sheet-close" onclick="hideModelPicker()">Cancel</button>
   </div>
@@ -425,7 +424,7 @@ function updateModelButton(modelId) {
   const btn = document.getElementById('model-btn');
   if (!btn || !modelId) return;
   btn.dataset.modelId = modelId;
-  const short = modelId.replace(/^claude-/, '').replace(/-\d{8}$/, '').replace(/^cerebras:/, '');
+  const short = modelId.replace(/^claude-/, '').replace(/-\d{8}$/, '').replace(/^ollama:/, '');
   btn.textContent = short;
 }
 
@@ -993,7 +992,7 @@ async function stopChat() {
   } catch(e) { panToast('Stop failed: ' + e.message); }
 }
 
-// Direct DB queries — don't waste Cerebras tokens on simple lookups
+// Direct DB queries — no model call for simple lookups
 function tryDirectQuery(text) {
   const lower = text.toLowerCase();
   if (lower.match(/how many (events|sessions|projects|devices|memories)/)) {
@@ -1925,11 +1924,11 @@ async function loadSettings() {
     const settings = await settingsRes.json();
     const mode = (auth.auth_mode || 'none').charAt(0).toUpperCase() + (auth.auth_mode || 'none').slice(1);
     html += '<div class="setting-row"><span class="setting-label">Auth Mode</span><span class="setting-val">' + mode + '</span></div>';
-    // Parse the ai_model setting (format: "cerebras:qwen-3-235b" or "claude-sonnet-4-20250514")
-    const aiModel = settings.ai_model || 'cerebras:qwen-3-235b';
+    // Parse the ai_model setting (format: "ollama:gemma4:e2b" or "claude-sonnet-4-20250514")
+    const aiModel = settings.ai_model || '';
     const parts = aiModel.split(':');
-    const backend = parts.length > 1 ? parts[0].charAt(0).toUpperCase() + parts[0].slice(1) : 'Claude';
-    const modelName = (parts.length > 1 ? parts[1] : parts[0]).replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+    const backend = !aiModel ? 'Not set' : parts.length > 1 ? parts[0].charAt(0).toUpperCase() + parts[0].slice(1) : 'Claude';
+    const modelName = !aiModel ? 'Not set' : parts.length > 1 ? parts.slice(1).join(':') : parts[0].replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
     html += '<div class="setting-row"><span class="setting-label">Backend</span><span class="setting-val">' + esc(backend) + '</span></div>';
     html += '<div class="setting-row"><span class="setting-label">Model</span><span class="setting-val">' + esc(modelName) + '</span></div>';
   } catch {

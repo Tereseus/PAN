@@ -197,13 +197,10 @@
 	<!-- LLM Routing — where do PAN's internal LLM calls actually go.
 	     Distinct from the Claude/Gemini sections above which show YOUR CLI
 	     subscription burn. This shows the SERVER-side calls:
-	     scout/router/intuition-classifier/etc → Cerebras vs Ollama (local). -->
+	     scout/router/intuition-classifier/etc → a cloud model vs Ollama (local). -->
 	{#if usage.data.llmRouting}
 		{@const r = usage.data.llmRouting}
-		{@const cap = r.cerebras_personal_tier}
 		{@const t = r.totals}
-		{@const tpdPct = cap.tpd_cap > 0 ? (t.cloud_tokens_per_day / cap.tpd_cap * 100) : 0}
-		{@const rpdPct = cap.rpd_cap > 0 ? (t.cloud_calls_per_day / cap.rpd_cap * 100) : 0}
 		<div class="usage-section" style="background:rgba(116,199,236,0.06);border:1px solid rgba(116,199,236,0.18)">
 			<div class="usage-heading" style="color:#74c7ec">PAN LLM Routing (7d)</div>
 			<div class="usage-row" style="opacity:0.6; font-size:10px;">
@@ -212,8 +209,7 @@
 			</div>
 
 			<!-- Cloud vs local split — the headline split the user actually
-			     cares about. Vision/screen-watcher are LOCAL and don't burn
-			     Cerebras quota. -->
+			     cares about. Vision/screen-watcher are LOCAL. -->
 			<div class="usage-subhead">Cloud vs Local</div>
 			<div class="usage-row">
 				<span class="usage-label" style="color:#74c7ec">Cloud / day</span>
@@ -224,30 +220,10 @@
 				<span class="usage-val">{t.local_calls_per_day} calls · free</span>
 			</div>
 
-			<!-- Cerebras personal-tier daily caps. % bar shows how close to
-			     the wall you are; daily token cap (1M) is the real ceiling
-			     for most users — RPM is rarely the binding constraint. -->
-			<div class="usage-subhead">Cerebras Free Tier Caps</div>
-			<div class="usage-bar-wrap">
-				<div class="usage-bar" style="width:{Math.min(tpdPct, 100)}%; background:{tpdPct >= 80 ? '#f38ba8' : tpdPct >= 50 ? '#f9e2af' : '#a6e3a1'}"></div>
-			</div>
-			<div class="usage-row">
-				<span class="usage-label" style="color:{tpdPct >= 80 ? '#f38ba8' : tpdPct >= 50 ? '#f9e2af' : '#a6e3a1'}">{tpdPct.toFixed(0)}% of {formatTokens(cap.tpd_cap)} tok/day</span>
-				<span class="usage-val">{formatTokens(t.cloud_tokens_per_day)} avg</span>
-			</div>
-			<div class="usage-bar-wrap">
-				<div class="usage-bar" style="width:{Math.min(rpdPct, 100)}%; background:{rpdPct >= 80 ? '#f38ba8' : rpdPct >= 50 ? '#f9e2af' : '#a6e3a1'}"></div>
-			</div>
-			<div class="usage-row">
-				<span class="usage-label" style="color:{rpdPct >= 80 ? '#f38ba8' : rpdPct >= 50 ? '#f9e2af' : '#a6e3a1'}">{rpdPct.toFixed(0)}% of {cap.rpd_cap.toLocaleString()} req/day</span>
-				<span class="usage-val">{t.cloud_calls_per_day} avg</span>
-			</div>
-
 			<!-- Per-caller table. Sorted by token usage so the biggest
 			     budget burner is on top. Each row shows: caller name,
 			     configured destination (the model it WILL hit next),
-			     and 7d cloud spend so you know what's safe to keep on
-			     Cerebras vs what should be moved to local if quota gets tight. -->
+			     and its 7d cloud tokens. -->
 			<div class="usage-subhead">Top Callers (by 7d cloud tokens)</div>
 			{#each r.callers.slice(0, 12) as c}
 				{@const tok = c.cloud_tokens_7d}
@@ -263,12 +239,12 @@
 				</div>
 				<div class="usage-row" style="font-size:9px; opacity:0.5; margin-top:-4px;">
 					<span class="usage-label" style="padding-left:14px">→ {c.provider_primary || 'unknown'}</span>
-					<span class="usage-val">{(c.configured_model || '').replace(/^cerebras:|^ollama:/, '')}</span>
+					<span class="usage-val">{(c.configured_model || '').replace(/^ollama:/, '')}</span>
 				</div>
 			{/each}
 
 			<div style="margin-top:6px;font-size:9px;opacity:0.4;text-align:right">
-				● cloud (Cerebras/Anthropic) · ● local (Ollama) · see docs/LLM-CALLERS.md
+				● cloud · ● local (Ollama) · see docs/LLM-CALLERS.md
 			</div>
 		</div>
 	{/if}

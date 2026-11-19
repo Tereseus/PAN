@@ -131,11 +131,6 @@
         <input type="password" id="apiKey" placeholder="sk-ant-...">
         <div class="hint">Get one at console.anthropic.com</div>
       </div>
-      <div class="input-row">
-        <label>Option C: Cerebras (free, fast — for voice/router commands)</label>
-        <input type="password" id="cerebrasKey" placeholder="csk-...">
-        <div class="hint">Free at cerebras.ai — 580ms responses</div>
-      </div>
       <div class="btn-row">
         <button onclick="saveAI()">Continue</button>
         <button class="secondary" onclick="skipStep(2)">Skip for now</button>
@@ -246,7 +241,6 @@ async function checkClaude() {
 
 async function saveAI() {
   const apiKey = document.getElementById('apiKey').value.trim();
-  const cerebrasKey = document.getElementById('cerebrasKey').value.trim();
 
   try {
     if (apiKey) {
@@ -255,17 +249,11 @@ async function saveAI() {
         body: JSON.stringify({ key: 'anthropic_api_key', value: apiKey }),
       });
     }
-    if (cerebrasKey) {
-      await api('/api/v1/settings', {
-        method: 'PUT',
-        body: JSON.stringify({ key: 'cerebras_api_key', value: cerebrasKey }),
-      });
-    }
-    // If neither key provided, check if CLI is available
-    if (!apiKey && !cerebrasKey) {
+    // If no key provided, check if CLI is available
+    if (!apiKey) {
       const r = await api('/api/setup-status');
       if (!r.configured) {
-        document.getElementById('err2').textContent = 'Please provide at least one API key, or install Claude CLI.';
+        document.getElementById('err2').textContent = 'Please provide an API key, or install Claude CLI.';
         return;
       }
     }

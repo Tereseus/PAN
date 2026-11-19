@@ -21,8 +21,8 @@ export async function loadUsageData() {
 		const provider = (voice.settings?.terminal_ai_provider || '').toLowerCase();
 		const isGemini = provider === 'gemini';
 		// llmRouting is a separate fetch — it answers "where do PAN's internal
-		// LLM calls go" (router/scout/intuition-classifier/etc → Cerebras vs
-		// Ollama). Different question from claude-usage which is just the
+		// LLM calls go" (router/scout/intuition-classifier/etc → a cloud model
+		// vs Ollama). Different question from claude-usage which is just the
 		// user's CLI subscription. Both shown side-by-side in UsagePanel.
 		const [u, stats, llmRouting] = await Promise.all([
 			api(isGemini ? '/api/v1/gemini-usage' : '/api/v1/claude-usage'),

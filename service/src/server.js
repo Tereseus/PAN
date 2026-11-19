@@ -2691,12 +2691,13 @@ app.get('/api/v1/gemini-usage', async (req, res) => {
 // GET /api/v1/usage/llm-routing — per-caller LLM routing snapshot.
 //
 // Answers: who's calling the LLM, which model is each caller configured to use,
-// where does each call actually go (cloud / local), and how much budget is each
-// caller burning on the cloud tier (Cerebras free quota).
+// where does each call actually go (cloud / local), and how many calls and
+// tokens each caller sends to the cloud.
 //
 // The dashboard's UsagePanel renders this in an "LLM Routing" section so the
-// user can see — at a glance — what's pinned to Cerebras vs running locally
-// on minipc, and decide whether to repoint things if quota gets tight.
+// user can see — at a glance — what goes to a cloud model vs what runs locally
+// on the hub. No provider caps here: the Cerebras free tier caps this used to
+// report went with Cerebras (2026-11-18).
 //
 // Routing config sources, in priority order:
 //   1. job_models[caller]   — per-caller override (highest priority)
@@ -2713,7 +2714,6 @@ app.get('/api/v1/usage/llm-routing', (req, res) => {
     // doesn't have to duplicate them.
     const classify = (model) => {
       if (!model) return 'unknown';
-      if (model.startsWith('cerebras:')) return 'cloud';
       if (model.startsWith('groq:') || model.startsWith('gemini:') || model.startsWith('openai:')) return 'cloud';
       if (model.startsWith('sdk:') || model.startsWith('claude-') || model.startsWith('anthropic:')) return 'cloud';
       if (model.startsWith('ollama:')) return 'local';
@@ -2724,10 +2724,9 @@ app.get('/api/v1/usage/llm-routing', (req, res) => {
       return 'unknown';
     };
 
-    // Provider label for the UI (so we can show "Cerebras" / "Ollama" tags).
+    // Provider label for the UI (so we can show "Anthropic" / "Ollama" tags).
     const provider = (model) => {
       if (!model) return null;
-      if (model.startsWith('cerebras:')) return 'Cerebras';
       if (model.startsWith('groq:'))     return 'Groq';
       if (model.startsWith('gemini:'))   return 'Gemini';
       if (model.startsWith('openai:'))   return 'OpenAI';
@@ -2754,8 +2753,8 @@ app.get('/api/v1/usage/llm-routing', (req, res) => {
     `, { ':cutoff': cutoff7d });
 
     // Aggregate per-caller (a single caller can hit multiple models — e.g.
-    // router falls back to claude-haiku when Cerebras 429s — so we sum
-    // both rows under one caller).
+    // router falls back to the next model in its chain when one fails — so
+    // we sum both rows under one caller).
     const byCaller = new Map();
     for (const r of rows) {
       if (!byCaller.has(r.caller)) {
@@ -2810,9 +2809,7 @@ app.get('/api/v1/usage/llm-routing', (req, res) => {
       c.provider_primary = provider(c.configured_model);
     }
 
-    // Cloud totals (the only thing that burns Cerebras quota). Local calls
-    // are 100% free and don't count toward the daily caps shown on
-    // cloud.cerebras.ai/platform/.../limits.
+    // Cloud totals. Local calls are free and are only counted.
     let cloud_calls = 0, cloud_tokens_in = 0, cloud_tokens_out = 0;
     let local_calls = 0;
     for (const r of rows) {
@@ -2825,18 +2822,6 @@ app.get('/api/v1/usage/llm-routing', (req, res) => {
         local_calls += r.n;
       }
     }
-
-    // Cerebras personal tier — the binding caps the user is actually subject
-    // to. Hard-coded from cloud.cerebras.ai (no API exposes them). These are
-    // the caps we measure usage against in the dashboard.
-    const cerebrasPersonalTier = {
-      rpm_cap:     5,
-      rph_cap:     150,
-      rpd_cap:     2400,
-      tpm_cap:     30_000,
-      tph_cap:     1_000_000,
-      tpd_cap:     1_000_000,
-    };
 
     const callers = Array.from(byCaller.values()).sort((a, b) => b.tokens_7d - a.tokens_7d);
 
@@ -2857,15 +2842,6 @@ app.get('/api/v1/usage/llm-routing', (req, res) => {
         cloud_tokens_per_day: Math.round((cloud_tokens_in + cloud_tokens_out) / 7),
         local_calls_7d:      local_calls,
         local_calls_per_day: Math.round(local_calls / 7),
-      },
-      cerebras_personal_tier: cerebrasPersonalTier,
-      headroom: {
-        // Headroom multipliers vs personal-tier caps. >1 means you're under
-        // the cap; <1 means you'd be rate-limited if traffic stayed flat.
-        rpd_headroom: cloud_calls > 0 ? +(cerebrasPersonalTier.rpd_cap * 7 / cloud_calls).toFixed(2) : null,
-        tpd_headroom: (cloud_tokens_in + cloud_tokens_out) > 0
-          ? +(cerebrasPersonalTier.tpd_cap * 7 / (cloud_tokens_in + cloud_tokens_out)).toFixed(2)
-          : null,
       },
       callers,
     });
@@ -6170,12 +6146,13 @@ function start() {
             try {
               const { runBenchmark, BENCHMARK_SUITES, benchmarkLogPath } = await import('./benchmark.js');
               const modelRow = get("SELECT value FROM settings WHERE key = 'ai_model'");
-              const model = modelRow ? modelRow.value.replace(/^"|"$/g, '') : 'cerebras:qwen-3-235b';
+              // No ai_model row: undefined, so runBenchmark uses getConfiguredModel().
+              const model = modelRow ? modelRow.value.replace(/^"|"$/g, '') : undefined;
               // Lazy import of bmLog via the module's file-logger
               const fs = await import('fs');
               const ts = () => new Date().toISOString();
               const logLine = (lvl, msg) => { try { fs.appendFileSync(benchmarkLogPath(), `${ts()} ${lvl} ${msg}\n`, 'utf8'); } catch {} };
-              logLine('INFO ', `[PAN Benchmark] Daily 3am — running all ${BENCHMARK_SUITES.length} suites on model: ${model}`);
+              logLine('INFO ', `[PAN Benchmark] Daily 3am — running all ${BENCHMARK_SUITES.length} suites on model: ${model || 'the configured model'}`);
               for (const suite of BENCHMARK_SUITES) {
                 try {
                   await runBenchmark(suite, model);
@@ -6221,7 +6198,7 @@ function start() {
         // for problems Steward's fast-path can't fix on its own (e.g. a
         // remote service down for hours, a watchdog failing in a loop, a
         // service requiring human-decisioned action). 5-minute tick, uses
-        // Claude (not Cerebras) for careful reasoning. See smart-steward.js
+        // Claude for careful reasoning. See smart-steward.js
         // header for the full design + safety model.
         if (featureEnabled('smart_steward')) {
           import('./smart-steward.js').then(({ startSmartSteward }) => {

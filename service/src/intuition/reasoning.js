@@ -27,7 +27,7 @@
 // Cycle flow:
 //   1. Gather inputs: last 10 thoughts, current snapshot, last 20 steps,
 //      pressing motives, recent events.
-//   2. Ask LLM (cerebras default) to emit a JSON array of 3-6 new steps.
+//   2. Ask the LLM (askAI, caller 'pan-reasoning') to emit a JSON array of 3-6 new steps.
 //      Each step references inputs by id where applicable.
 //   3. Validate + normalize the JSON, assign step ids, insert.
 //   4. Render the cycle into a paragraph (rule-based template — no
@@ -450,7 +450,7 @@ export async function runCycle({ userId = null, trigger = 'manual' } = {}) {
         conf: clamp01(p.conf, 0.5),
         refs,
         parents: parentIds && parentIds.length ? parentIds : null,
-        source: 'cerebras',
+        source: 'llm', // written by the model call above; nothing reads this column back
         importance: clamp01(p.importance, 0.5),
       });
       if (id) {
