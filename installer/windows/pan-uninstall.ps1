@@ -73,14 +73,14 @@ if ($added.Count -gt 0 -and -not $KeepModels) {
         if ($config.ollamaInstalledBySetup) {
             $rest = $null
             try { $rest = @(((Invoke-WebRequest -Uri "http://127.0.0.1:11434/api/tags" -UseBasicParsing -TimeoutSec 8).Content | ConvertFrom-Json).models) } catch {}
-            if ($rest -ne $null -and $rest.Count -eq 0) {
+            if ($null -ne $rest -and $rest.Count -eq 0) {
                 Get-Process | Where-Object { $_.ProcessName -match '^(ollama|ollama app|llama-server)$' } | ForEach-Object { try { & taskkill.exe /F /PID $_.Id 2>$null | Out-Null } catch {} }
                 $un = Join-Path $env:LOCALAPPDATA "Programs\Ollama\unins000.exe"
                 if (Test-Path $un) { Start-Process -FilePath $un -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART" -Wait | Out-Null }
                 $store = Join-Path $env:USERPROFILE ".ollama"
                 if (Test-Path $store) { Remove-Item $store -Recurse -Force -ErrorAction SilentlyContinue }
                 Say "  Removed Ollama (PAN Setup had installed it)."
-            } elseif ($rest -ne $null) {
+            } elseif ($null -ne $rest) {
                 Say "  Ollama stays: it holds models that are not PAN's."
             } else {
                 $left += "Ollama (it did not answer, so it was left alone)"

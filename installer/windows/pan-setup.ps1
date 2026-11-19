@@ -360,8 +360,11 @@ try {
             return $null
         }
         function Ollama-Models {
-            try { return @(((Invoke-WebRequest -Uri ($ollamaUrl + "/api/tags") -UseBasicParsing -TimeoutSec 8).Content | ConvertFrom-Json).models | ForEach-Object { [string]$_.name }) }
+            # $null when Ollama does not answer; a list, empty when it holds no models yet.
+            # The comma keeps an empty list a list: PowerShell would hand back nothing.
+            try { $names = @(((Invoke-WebRequest -Uri ($ollamaUrl + "/api/tags") -UseBasicParsing -TimeoutSec 8).Content | ConvertFrom-Json).models | ForEach-Object { [string]$_.name }) }
             catch { return $null }
+            return ,$names
         }
         function Has-Model($list, $name) {
             $n = $name.ToLower(); if ($n -notmatch ':') { $n += ":latest" }
@@ -404,10 +407,10 @@ try {
             Remove-Item $setupExe -Force -ErrorAction SilentlyContinue
         }
         $have = Ollama-Models
-        if ($have -eq $null) {
+        if ($null -eq $have) {
             Start-Detached (Ollama-Exe) "serve"
-            for ($i = 0; $i -lt 90 -and $have -eq $null; $i++) { Start-Sleep -Seconds 2; $have = Ollama-Models }   # its first start is slow
-            if ($have -eq $null) { Stop-Setup "Ollama is installed but does not answer." }
+            for ($i = 0; $i -lt 90 -and $null -eq $have; $i++) { Start-Sleep -Seconds 2; $have = Ollama-Models }   # its first start is slow
+            if ($null -eq $have) { Stop-Setup "Ollama is installed but does not answer." }
         }
         Say "  Ollama is running."
 
