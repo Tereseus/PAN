@@ -17,6 +17,7 @@ import * as browser from './playwright-bridge.js';
 import { spawn } from 'child_process';
 import { askAI } from './llm.js';
 import { get } from './db.js';
+import { moneyAsk, moneyBlock, CODES as MONEY_CODES } from './money.js';
 import { sunTimes } from './intuition/place.js';
 import { hisTimeZone } from './intuition/time.js';
 
@@ -72,24 +73,31 @@ async function wikipedia(text) {
     extract.slice(0, 700) + '\n';
 }
 
-// --- Currency: USD/EUR conversions come up often ---------------------------
-const CURRENCY_RE = /\b(exchange rate|conversion rate|convert|how much is|worth in|in (?:usd|eur|dollars|euros|pounds|gbp))\b|\b(usd|eur|gbp|dollars?|euros?|pounds?)\b.*\bto\b.*\b(usd|eur|gbp|dollars?|euros?|pounds?)\b/i;
-const CODE = { dollar: 'USD', dollars: 'USD', usd: 'USD', euro: 'EUR', euros: 'EUR', eur: 'EUR', pound: 'GBP', pounds: 'GBP', gbp: 'GBP' };
+// --- Currency ---------------------------------------------------------------
+// Which sum the line asks for is worked out in money.js (tested rules), with the talk before
+// it, and the sum is done here. The model gets finished figures: left to multiply a rate
+// itself it gave 1,800 yen and 3,000 yen the same number of dollars (2026-11-19).
+function homeCurrency() {
+  try {
+    const v = String(get("SELECT value FROM settings WHERE key = 'home_currency'")?.value || '').replace(/^"|"$/g, '').trim().toUpperCase();
+    if (MONEY_CODES.includes(v)) return v;
+  } catch {}
+  return 'USD';
+}
+const moneyAsks = (text, opts) => moneyAsk(text, (opts && opts.recent) || [], homeCurrency());
 
-async function currency(text) {
-  const found = [];
-  for (const m of String(text).toLowerCase().matchAll(/\b(usd|eur|gbp|dollars?|euros?|pounds?)\b/g)) {
-    const c = CODE[m[1]];
-    if (c && !found.includes(c)) found.push(c);
+async function currency(text, opts) {
+  const asks = moneyAsks(text, opts);
+  if (!asks.length) return '';
+  const rates = {};
+  let date = '';
+  for (const from of [...new Set(asks.map((a) => a.from))]) {
+    const to = [...new Set(asks.filter((a) => a.from === from).map((a) => a.to))];
+    const j = await getJson(`https://api.frankfurter.dev/v1/latest?from=${from}&to=${to.join(',')}`);
+    for (const c of to) if (j?.rates?.[c] != null) rates[`${from}>${c}`] = j.rates[c];
+    date = j?.date || date;
   }
-  const from = found[0] || 'USD';
-  const to = found[1] || (from === 'EUR' ? 'USD' : 'EUR');
-  if (from === to) return '';
-  const j = await getJson(`https://api.frankfurter.app/latest?from=${from}&to=${to}`);
-  const rate = j?.rates?.[to];
-  if (rate == null) return '';
-  return `\nEXCHANGE RATE (European Central Bank, ${j.date}) - real data:\n` +
-    `- 1 ${from} = ${rate} ${to}\n- 1 ${to} = ${(1 / rate).toFixed(4)} ${from}\n`;
+  return moneyBlock(asks, rates, date);
 }
 
 // --- Crypto: relevant to Dream Fights and the data-staking work ------------
@@ -524,7 +532,7 @@ const SEARCH_ASK = /\b(search (?:for|the web|online)|look (?:it|that|this) up|lo
 const TOOLS = [
   { name: 'weather',  live: (t) => WEATHER_ASK.test(t), match: (t) => looksLikeWeather(t), run: (t, s) => buildWeatherBlock(t, s) },
   { name: 'wikipedia',match: (t) => WIKI_RE.test(t) && !looksLikeWeather(t), run: (t) => wikipedia(t) },
-  { name: 'currency', live: true, match: (t) => CURRENCY_RE.test(t), run: (t) => currency(t) },
+  { name: 'currency', live: true, match: (t, o) => moneyAsks(t, o).length > 0, run: (t, s, o) => currency(t, o) },
   { name: 'crypto',   live: true, match: (t) => CRYPTO_RE.test(t),   run: (t) => crypto(t) },
   { name: 'air',      live: true, match: (t) => AIR_RE.test(t),      run: (t, s) => airQuality(t, s) },
   { name: 'search',   live: (t) => SEARCH_ASK.test(t) || CURRENT_RE.test(t), match: (t) => SEARCH_RE.test(t) || CURRENT_RE.test(t), run: (t) => webSearch(t) },
@@ -540,7 +548,9 @@ const TOOLS = [
 
 /** All matching tool outputs, fetched in parallel. '' when nothing matches.
  *  With { detail: true }: { text, live }, live when any block came from a live tool.
- *  With { liveOnly: true }: only the live tools run. */
+ *  With { liveOnly: true }: only the live tools run.
+ *  With { recent: [lines] }: the talk before this line, oldest first, for a tool that needs it
+ *  (currency: "what about fifty thousand yen" only means something after the line before). */
 // A tool gets this long to answer, total. Nothing here is worth making the
 // user wait: buildToolBlocks is awaited before the prompt is even built, and
 // Promise.allSettled waits for the SLOWEST tool with no ceiling - so one
@@ -566,13 +576,13 @@ export async function buildToolBlocks(text, sensors, opts = {}) {
   const isLive = (tool) => (typeof tool.live === 'function' ? tool.live(t) : !!tool.live);
   const hits = TOOLS.filter((tool) => {
     if (tool.slow) return false;
-    try { return tool.match(t) && (!opts.liveOnly || isLive(tool)); } catch { return false; }
+    try { return tool.match(t, opts) && (!opts.liveOnly || isLive(tool)); } catch { return false; }
   });
   if (!hits.length) return none;
 
   const started = Date.now();
   const settled = await Promise.allSettled(
-    hits.map((tool) => withDeadline(Promise.resolve().then(() => tool.run(t, sensors)),
+    hits.map((tool) => withDeadline(Promise.resolve().then(() => tool.run(t, sensors, opts)),
                                     TOOL_DEADLINE_MS, tool.name)));
   const blocks = [];
   let live = false;

@@ -29,6 +29,15 @@ import { loadModes, saveMode, dropMode } from './intuition/world.js';
 import { hisTimeZone, utcOffsetHours } from './intuition/time.js';
 import { notePhoneGps, placeLine, daylightLine, weatherLine } from './intuition/place.js';
 import { followUpOf, followUpLine, historyLines } from './intuition/conversation.js';
+
+// The talk before this line, oldest first, for a tool that needs it (tools.js: the currency
+// tool reads "what about fifty thousand yen" by the line before it).
+function talkBefore(context, text) {
+  const lines = historyLines(context?.conversation_history).map((l) => l.text).filter(Boolean);
+  const same = (a, b) => String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
+  if (lines.length && same(lines[lines.length - 1], text)) lines.pop();
+  return lines.slice(-8);
+}
 import { asksTheWorld, asksForSomething, lostBy } from './intuition/reader.js';
 import { participationOf, shapeOf, panAskedLast } from './intuition/participation.js';
 import { currentParams as situationParams } from './intuition/situation-learn.js';
@@ -1438,7 +1447,7 @@ async function handleUnified(text, context) {
     // Honors `ai_fallback_enabled=false` for users who want single-backend semantics.
     const _fallbackMeta = {};
     let weatherBlock = '';
-    try { weatherBlock = await buildToolBlocks(text, sensors); } catch {}
+    try { weatherBlock = await buildToolBlocks(text, sensors, { recent: talkBefore(context, text) }); } catch {}
     let selfBlock = '';
     try { selfBlock = buildSelfBlock(); } catch {}
     raw = await askAIWithFallback(
@@ -2978,7 +2987,7 @@ async function* personTurn(text, context, withProsody) {
   // Live data for the question, from this turn's own sensors only (tools.js reads no stored place).
   let liveBlock = '';
   try {
-    const b = await buildToolBlocks(text, context.sensors || null, { detail: true, liveOnly: true });
+    const b = await buildToolBlocks(text, context.sensors || null, { detail: true, liveOnly: true, recent: talkBefore(context, text) });
     if (b.live) liveBlock = b.text;
   } catch {}
 
@@ -3384,7 +3393,7 @@ export async function* routeStream(text, context = {}) {
   const [studentModel, studentBackup] = studentModels();
   let weatherBlock = '';
   let liveData = false;   // a block holds data that changes (weather, prices, news, a clock)
-  if (!interpreting) try { ({ text: weatherBlock, live: liveData } = await buildToolBlocks(text, sensors, { detail: true, liveOnly: !!studentModel })); } catch {}
+  if (!interpreting) try { ({ text: weatherBlock, live: liveData } = await buildToolBlocks(text, sensors, { detail: true, liveOnly: !!studentModel, recent: talkBefore(context, text) })); } catch {}
   // selfBlock is 1030 chars describing which model is running, what is
   // local, what leaves the house. It is the right answer to "how do you
   // work" / "is this private" and dead weight on every other turn, which
