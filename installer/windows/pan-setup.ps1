@@ -19,6 +19,10 @@
 #   -Voice      also install what PAN talks with: Ollama (its own signed installer, from
 #               ollama.com) and the models in service\model-set.json, straight from their
 #               publishers. Several GB. Then one real voice turn to see it answers.
+#   -Translator also install the computer's own translator: a Python of its own inside the
+#               install folder (fetched with uv) and the translation models, from Hugging
+#               Face by plain download, each checked against its SHA-256.
+#   -All        -Voice and -Translator
 #   -OwnModels  a folder or an http(s) address holding PAN's own two models as .gguf files
 #               (see model-set.json). Without it they are skipped and the stock ones stand in.
 #   -ModelSet   light or full, instead of choosing by this computer's memory
@@ -42,6 +46,8 @@ param(
     [switch]$NoStart,
     [switch]$Dev,
     [switch]$Voice,
+    [switch]$Translator,
+    [switch]$All,
     [string]$OwnModels = "",
     [string]$ModelSet = "",
     [int]$StartTimeoutSec = 240
@@ -49,6 +55,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
+if ($All) { $Voice = $true; $Translator = $true }
 $RunKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
 $UninstallKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall"
 
@@ -487,6 +494,110 @@ try {
         }
     } elseif ($Voice) {
         Warn "The models were not installed because PAN was not started."
+    }
+
+    # ---- 7. the translator -----------------------------------------------------------
+    if ($Translator -and -not $NoStart) {
+        Step "translator" "Getting the translator"
+        $catalog = Get-Content (Join-Path $target "service\model-set.json") -Raw | ConvertFrom-Json
+        $tr = $catalog.translator
+        $setName = if ($ModelSet) { $ModelSet } elseif ($ramGB -ge 24) { "full" } else { "light" }
+        $trModels = @($tr.models | Where-Object { $_.sets -contains $setName } | Sort-Object gb)
+        $trDir = Join-Path $InstallDir "translate"
+        $venv = Join-Path $trDir "venv"
+        $py = Join-Path $venv "Scripts\python.exe"
+        $curl = Join-Path $env:SystemRoot "System32\curl.exe"
+        New-Item -ItemType Directory -Path $trDir -Force | Out-Null
+
+        # Its own Python, inside the install folder, so nothing is left behind and nothing
+        # on the computer is touched. uv is one small program that fetches Python and the
+        # two packages; it is checked against its published SHA-256 before it runs.
+        $pyOk = $false
+        if (Test-Path $py) {
+            $ErrorActionPreference = "Continue"
+            & $py -c "import ctranslate2, sentencepiece" 2>$null
+            $pyOk = ($LASTEXITCODE -eq 0)
+            $ErrorActionPreference = "Stop"
+        }
+        if (-not $pyOk) {
+            Say "  Setting up Python for the translator."
+            $uvZip = Join-Path $dl "uv.zip"
+            & $curl -L --fail --retry 5 -sS -o $uvZip ([string]$tr.uv.windows.url)
+            if ($LASTEXITCODE -ne 0) { Stop-Setup ("The translator's installer did not download (curl {0})." -f $LASTEXITCODE) }
+            if ((Get-FileHash $uvZip -Algorithm SHA256).Hash -ine [string]$tr.uv.windows.sha256) {
+                Remove-Item $uvZip -Force -ErrorAction SilentlyContinue
+                Stop-Setup "The translator's installer does not match what its makers published, so it was thrown away."
+            }
+            $uvDir = Join-Path $trDir "uv"
+            if (Test-Path $uvDir) { Remove-Item $uvDir -Recurse -Force }
+            New-Item -ItemType Directory -Path $uvDir -Force | Out-Null
+            & (Join-Path $env:SystemRoot "System32\tar.exe") -xf $uvZip -C $uvDir
+            $uv = Join-Path $uvDir "uv.exe"
+            if (-not (Test-Path $uv)) { Stop-Setup "The translator's installer is missing parts." }
+            $env:UV_PYTHON_INSTALL_DIR = Join-Path $trDir "python"
+            $env:UV_CACHE_DIR = Join-Path $trDir "cache"
+            $env:UV_NO_PROGRESS = "1"
+            if (Test-Path $venv) { Remove-Item $venv -Recurse -Force }
+            foreach ($step in @(
+                @("venv", "--python", [string]$tr.python, $venv),
+                (@("pip", "install", "--python", $py) + @($tr.packages | ForEach-Object { [string]$_ }))
+            )) {
+                $p = Start-Process -FilePath $uv -ArgumentList $step -Wait -PassThru -NoNewWindow -RedirectStandardOutput (Join-Path $dl "uv.out.log") -RedirectStandardError (Join-Path $dl "uv.err.log")
+                if ($p.ExitCode -ne 0) { Stop-Setup ("Python for the translator did not install (uv {0}, code {1}). See {2}" -f $step[0], $p.ExitCode, (Join-Path $dl "uv.err.log")) }
+            }
+            Remove-Item (Join-Path $trDir "cache") -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-Item $uvDir -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-Item $uvZip -Force -ErrorAction SilentlyContinue
+        }
+        Say "  Python is ready."
+
+        foreach ($m in $trModels) {
+            $mdir = Join-Path $InstallDir ("models\" + [string]$m.name)
+            New-Item -ItemType Directory -Path $mdir -Force | Out-Null
+            $todo = @($m.files | Where-Object { $f = Join-Path $mdir ([string]$_.name); -not ((Test-Path $f) -and ((Get-Item $f).Length -eq [int64]$_.size)) })
+            if ($todo.Count -eq 0) { Say ("  have    {0}" -f $m.name); continue }
+            Say ("  getting {0} ({1} GB): {2}" -f $m.name, $m.gb, $m.what)
+            foreach ($f in $todo) {
+                $name = [string]$f.name
+                if ($name -notmatch '^[0-9A-Za-z._-]+$') { Stop-Setup "The translator's list names a file that is not allowed." }
+                $dest = Join-Path $mdir $name
+                # Downloaded beside its final name, so a half file is never taken for a whole one.
+                $part = $dest + ".download"
+                $url = "https://huggingface.co/{0}/resolve/{1}/{2}" -f $m.repo, $m.rev, $name
+                # A whole file left by a run that stopped just before the rename is not fetched again.
+                if (-not ((Test-Path $part) -and ((Get-Item $part).Length -eq [int64]$f.size))) {
+                    & $curl -L --fail --retry 5 --retry-delay 3 -C - -sS -o $part $url
+                } else { $global:LASTEXITCODE = 0 }
+                if ($LASTEXITCODE -ne 0) { Stop-Setup ("{0} did not download (curl {1}). Run PAN Setup again to carry on." -f $name, $LASTEXITCODE) }
+                if ((Get-Item $part).Length -ne [int64]$f.size) { Remove-Item $part -Force; Stop-Setup ("{0} came down the wrong size." -f $name) }
+                if ($f.sha256 -and ((Get-FileHash $part -Algorithm SHA256).Hash -ine [string]$f.sha256)) {
+                    Remove-Item $part -Force
+                    Stop-Setup ("{0} does not match what was published, so it was thrown away." -f $name)
+                }
+                Move-Item $part $dest -Force
+            }
+        }
+        New-Item -ItemType Directory -Path (Join-Path $InstallDir "logs") -Force | Out-Null
+
+        Say "  Restarting PAN with its translator."
+        Stop-Tree $InstallDir
+        Start-Detached $conhost ('--headless "{0}" "{1}" "{2}"' -f $nodeExe, $launcher, $InstallDir)
+        $deadline = (Get-Date).AddSeconds($StartTimeoutSec); $up = $false
+        while ((Get-Date) -lt $deadline) { if (Health $Port) { $up = $true; break }; Start-Sleep -Seconds 3 }
+        if (-not $up) { Stop-Setup "PAN did not come back after the translator went in." }
+        $said = $null
+        for ($i = 0; $i -lt 40 -and -not $said; $i++) {
+            Start-Sleep -Seconds 3
+            try {
+                $r = Invoke-WebRequest -Uri "http://127.0.0.1:7784/translate" -Method Post -ContentType "application/json" -Body '{"text":"Good morning. Where is the train station?","src":"en","tgt":"es"}' -UseBasicParsing -TimeoutSec 30
+                $said = [string]($r.Content | ConvertFrom-Json).text
+            } catch {}
+        }
+        $script:Result.translator = [ordered]@{ set = $setName; models = @($trModels | ForEach-Object { [string]$_.name }); spanish = $said }
+        if ($said) { Say "  The translator answers (English to Spanish checked)." }
+        else { Warn ("The translator is installed but did not answer. Its log is " + (Join-Path $InstallDir "logs\translate.log")) }
+    } elseif ($Translator) {
+        Warn "The translator was not installed because PAN was not started."
     }
 
     # Older versions go once the new one is up. The one before this stays, to go back to.

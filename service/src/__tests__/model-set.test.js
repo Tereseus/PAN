@@ -1,7 +1,7 @@
 // node --test service/src/__tests__/model-set.test.js
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { loadModelSet, pickSet, wanted, settingsForModels } from '../model-set.js';
+import { loadModelSet, pickSet, wanted, settingsForModels, translatorModels, translatorFileUrl } from '../model-set.js';
 
 const set = loadModelSet();
 const ALL = set.models.map((m) => m.name);
@@ -86,4 +86,22 @@ test('the stand in gives way when PAN own Phi arrives, a person own choice does 
   assert.equal(settingsForModels(set, ALL, { voice_world_model: 'ollama:phi4-mini:3.8b' }).set.voice_world_model, 'ollama:pan-phi-r1:latest');
   assert.equal('voice_world_model' in settingsForModels(set, ALL, { voice_world_model: 'ollama:their-own:1b' }).set, false);
   assert.equal('voice_world_model' in settingsForModels(set, ['phi4-mini:3.8b'], { voice_world_model: 'ollama:phi4-mini:3.8b' }).set, false);
+});
+
+test('the translator: one small model on a light computer, both on a full one, every file pinned', () => {
+  assert.deepEqual(translatorModels(set, 'light').map((m) => m.name), ['m2m100-418m-ct2-int8']);
+  assert.deepEqual(translatorModels(set, 'full').map((m) => m.name), ['m2m100-418m-ct2-int8', 'madlad400-3b-mt-ct2-int8']);
+  for (const m of set.translator.models) {
+    assert.match(m.rev, /^[0-9a-f]{40}$/, m.name);
+    assert.doesNotMatch(m.licence, /non.?commercial|research only/i, m.name);
+    const bin = m.files.find((f) => f.name === 'model.bin');
+    assert.match(bin.sha256, /^[0-9a-f]{64}$/, m.name);
+    assert.equal(translatorFileUrl(m, bin), `https://huggingface.co/${m.repo}/resolve/${m.rev}/model.bin`);
+    for (const f of m.files) assert.ok(f.size > 0 && !f.name.includes('/') && !f.name.includes('..'), f.name);
+  }
+  for (const os of ['windows', 'linux']) {
+    assert.ok(set.translator.uv[os].url.startsWith('https://github.com/astral-sh/uv/releases/download/'));
+    assert.match(set.translator.uv[os].sha256, /^[0-9a-f]{64}$/);
+  }
+  for (const pkg of set.translator.packages) assert.match(pkg, /^[a-z0-9]+==[0-9.]+$/);
 });

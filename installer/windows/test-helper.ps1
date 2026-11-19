@@ -68,6 +68,13 @@ function Start-Detached($file, $argLine) {
     }
 }
 
+function Kill-Pid([int]$Id, [switch]$Tree) {
+    # taskkill writes to stderr when a child has already gone; under "Stop" that would end
+    # the helper with no JSON. A process that is already dead is what we wanted.
+    $ErrorActionPreference = "Continue"
+    try { if ($Tree) { & taskkill.exe /F /T /PID $Id 2>$null | Out-Null } else { & taskkill.exe /F /PID $Id 2>$null | Out-Null } } catch {}
+}
+
 switch ($Action) {
     "probe" {
         $tag = Tag
@@ -98,7 +105,7 @@ switch ($Action) {
             uninstallEntry = $un
             startMenu = (Test-Path (Join-Path ([Environment]::GetFolderPath("Programs")) "PAN.url"))
             processes = @(Mine | ForEach-Object { @{ pid = $_.ProcessId; name = $_.Name; cmd = [string]$_.CommandLine } })
-            listen = @{ pan = @(Listen-Addresses $Port); carrier = @(Listen-Addresses $CarrierPort); craft = $craft; linkAdmin = @(Listen-Addresses ([int]($LinkAdmin.Split(':')[-1]))); ollama = @(Listen-Addresses 11434); reader = @(Listen-Addresses 7786) }
+            listen = @{ pan = @(Listen-Addresses $Port); carrier = @(Listen-Addresses $CarrierPort); craft = $craft; linkAdmin = @(Listen-Addresses ([int]($LinkAdmin.Split(':')[-1]))); ollama = @(Listen-Addresses 11434); reader = @(Listen-Addresses 7786); translator = @(Listen-Addresses 7784) }
             ollamaExe = (Test-Path (Join-Path $env:LOCALAPPDATA "Programs\Ollama\ollama.exe"))
             ollamaStore = (Test-Path (Join-Path $env:USERPROFILE ".ollama\models"))
             ollamaAtSignIn = (Test-Path (Join-Path ([Environment]::GetFolderPath("Startup")) "Ollama.lnk"))
@@ -112,6 +119,10 @@ switch ($Action) {
         })
     }
     "http" { Out-Json (Http $Method $Url $BodyB64) }
+    "translate" {
+        # One line through the computer's own translator. -BodyB64 is {"text","src","tgt"}.
+        Out-Json (Http "POST" "http://127.0.0.1:7784/translate" $BodyB64)
+    }
     "voice" {
         # One real voice turn, the way the phone sends it. Prints voice-check.cjs's own JSON.
         $cfg = Get-Content (Join-Path $InstallDir "install.json") -Raw | ConvertFrom-Json
@@ -123,7 +134,7 @@ switch ($Action) {
     "kill-pan" {
         # PAN itself, not its launcher: the launcher has to bring it back.
         $pan = @(Mine | Where-Object { $_.Name -ieq "node.exe" -and $_.CommandLine -match 'pan\.js"?\s+start' })
-        foreach ($p in $pan) { & taskkill.exe /F /T /PID $p.ProcessId 2>$null | Out-Null }
+        foreach ($p in $pan) { Kill-Pid $p.ProcessId -Tree }
         Out-Json @{ killed = @($pan | ForEach-Object { $_.ProcessId }) }
     }
     "stop-all" {
@@ -131,12 +142,12 @@ switch ($Action) {
         $n = 0
         $cfgPath = Join-Path $InstallDir "install.json"
         if ((Test-Path $cfgPath) -and (Get-Content $cfgPath -Raw | ConvertFrom-Json).ollama) {
-            Get-Process | Where-Object { $_.ProcessName -match '^(ollama|ollama app|llama-server)$' } | ForEach-Object { try { & taskkill.exe /F /PID $_.Id 2>$null | Out-Null; $n++ } catch {} }
+            Get-Process | Where-Object { $_.ProcessName -match '^(ollama|ollama app|llama-server)$' } | ForEach-Object { Kill-Pid $_.Id; $n++ }
         }
         for ($round = 0; $round -lt 4; $round++) {
             $mine = Mine
             if ($mine.Count -eq 0) { break }
-            foreach ($p in $mine) { try { & taskkill.exe /F /T /PID $p.ProcessId 2>$null | Out-Null; $n++ } catch {} }
+            foreach ($p in $mine) { Kill-Pid $p.ProcessId -Tree; $n++ }
             Start-Sleep -Seconds 2
         }
         Out-Json @{ stopped = $n; left = (Mine).Count }

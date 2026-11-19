@@ -200,6 +200,7 @@ def main():
     ap.add_argument("--wipe-existing", action="store_true", help="remove a PAN on the target that this test did not install. Deletes its data.")
     ap.add_argument("--spare-ports", action="store_true", help="use spare ports on a target too")
     ap.add_argument("--voice", action="store_true", help="also install Ollama and the models (several GB) and check PAN talks. Target only.")
+    ap.add_argument("--translator", action="store_true", help="also install the computer's own translator and check it translates. Target only.")
     ap.add_argument("--own-models", default="", help="folder ON THE TARGET, or an address, holding PAN's own models as .gguf files")
     args = ap.parse_args()
 
@@ -302,6 +303,9 @@ def main():
         if args.voice:
             voice_stage(box, source, flags, args)
 
+        if args.translator:
+            translator_stage(box, source, flags)
+
         stage("6. PAN crashes")
         killed = box.helper("kill-pan").get("killed")
         down = box.wait_health(False, 20)
@@ -364,6 +368,36 @@ def main():
 
 
 voice_state = {}
+
+
+def translate(box, text, src, tgt):
+    body = base64.b64encode(json.dumps({"text": text, "src": src, "tgt": tgt}).encode()).decode()
+    for attempt in range(20):
+        r = box.helper("translate", ["-BodyB64", body], timeout=120)
+        if r.get("status") == 200:
+            try:
+                return json.loads(r.get("body") or "{}")
+            except ValueError:
+                return {}
+        time.sleep(6)
+    return {}
+
+
+def translator_stage(box, source, flags):
+    stage("5c. The translator")
+    t = time.time()
+    rc, out = box.ps("pan-setup.ps1", ["-Source", source, "-InstallDir", box.install_dir, "-Quiet"] + box.port_args() + flags + ["-Translator"], 3 * 3600)
+    took = round((time.time() - t) / 60, 1)
+    check(f"PAN Setup with the translator finished ({took} min)", rc == 0 and "PAN is installed." in out and "The translator answers" in out, out[-900:])
+    p = box.probe()
+    check("the translator listens on this computer only", only_local(p["listen"]["translator"]), p["listen"]["translator"])
+    es = translate(box, "Good morning. Where is the train station?", "en", "es")
+    check("English to Spanish", any(w in (es.get("text") or "").lower() for w in ("buenos", "estaci")), es)
+    en = translate(box, "Je voudrais un cafe, s'il vous plait.", "fr", "en")
+    check("French to English", "coffee" in (en.get("text") or "").lower(), en)
+    print(f"      {es.get('text')!r} in {es.get('ms')} ms;  {en.get('text')!r} in {en.get('ms')} ms")
+    if box.target:
+        check("the translator port is closed from another computer", closed_from_here(box.host, 7784), 7784)
 
 
 def talk(box):

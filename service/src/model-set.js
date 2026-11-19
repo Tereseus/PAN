@@ -92,3 +92,13 @@ export function settingsForModels(modelSet, have, current = {}) {
   }
   return { set, missing, voice: !!talk };
 }
+
+/** The translator's model folders for a set, small first. */
+export function translatorModels(modelSet, set) {
+  return (modelSet.translator?.models || []).filter((m) => m.sets.includes(set)).sort((a, b) => a.gb - b.gb);
+}
+
+/** Where one file of a translator model is downloaded from: the publisher's repo, at a fixed revision. */
+export function translatorFileUrl(model, file) {
+  return `https://huggingface.co/${model.repo}/resolve/${model.rev}/${file.name}`;
+}

@@ -17,7 +17,10 @@
       "from": "own",
       "file": "syrinx-lfm-r15.gguf",
       "gb": 1.3,
-      "sets": ["light", "full"],
+      "sets": [
+        "light",
+        "full"
+      ],
       "licence": "LFM Open License v1.0 (Liquid AI)"
     },
     {
@@ -27,7 +30,10 @@
       "from": "own",
       "file": "pan-phi-r1.gguf",
       "gb": 2.5,
-      "sets": ["light", "full"],
+      "sets": [
+        "light",
+        "full"
+      ],
       "standIn": "phi4-mini:3.8b",
       "licence": "MIT (Microsoft Phi-4 mini, tuned by PAN)"
     },
@@ -37,7 +43,10 @@
       "what": "Background jobs, and the backup when the talking model hands a turn back.",
       "from": "ollama",
       "gb": 7.2,
-      "sets": ["light", "full"],
+      "sets": [
+        "light",
+        "full"
+      ],
       "licence": "Gemma Terms of Use (Google)"
     },
     {
@@ -46,7 +55,9 @@
       "what": "Sorts requests and runs the safety checks.",
       "from": "ollama",
       "gb": 9.6,
-      "sets": ["full"],
+      "sets": [
+        "full"
+      ],
       "licence": "Gemma Terms of Use (Google)"
     },
     {
@@ -55,7 +66,10 @@
       "what": "Memory search.",
       "from": "ollama",
       "gb": 0.7,
-      "sets": ["light", "full"],
+      "sets": [
+        "light",
+        "full"
+      ],
       "licence": "Apache 2.0 (Alibaba)"
     },
     {
@@ -64,8 +78,116 @@
       "what": "Says what is in a photo the phone could not read.",
       "from": "ollama",
       "gb": 1.7,
-      "sets": ["light", "full"],
+      "sets": [
+        "light",
+        "full"
+      ],
       "licence": "Apache 2.0 (Moondream)"
     }
-  ]
+  ],
+  "translator": {
+    "about": "The computer's own translator (src/translate-server.py, steward service \"translate\"): for a language the phone has no models for. CTranslate2 on the CPU, in its own Python that PAN Setup installs with uv inside the install folder. Model files come from Hugging Face by plain download, pinned to a revision and checked against their SHA-256.",
+    "python": "3.13",
+    "packages": [
+      "ctranslate2==4.8.5",
+      "sentencepiece==0.2.2"
+    ],
+    "uv": {
+      "version": "0.13.9",
+      "windows": {
+        "url": "https://github.com/astral-sh/uv/releases/download/0.13.9/uv-x86_64-pc-windows-msvc.zip",
+        "sha256": "edd61f7f5728a56cc62455386661860bdfc7bab65872f39b0c25bdcc1d8e1beb"
+      },
+      "linux": {
+        "url": "https://github.com/astral-sh/uv/releases/download/0.13.9/uv-x86_64-unknown-linux-gnu.tar.gz",
+        "sha256": "a7fbaff2b9a271d85c1bdb540941090fd1ce011797b4abeb48e4dcd39c2471d5"
+      }
+    },
+    "models": [
+      {
+        "name": "m2m100-418m-ct2-int8",
+        "what": "Translates between 100 languages. Small and quick; beside MADLAD it checks MADLAD's lines for invented words.",
+        "repo": "JustFrederik/m2m_100_418m_ct2_int8",
+        "rev": "1aeed44db4dd61a486bba44acf54c76507082a2c",
+        "gb": 0.5,
+        "sets": [
+          "light",
+          "full"
+        ],
+        "licence": "MIT (Meta M2M-100)",
+        "files": [
+          {
+            "name": "config.json",
+            "size": 158
+          },
+          {
+            "name": "model.bin",
+            "size": 490667638,
+            "sha256": "6c8ef4e814a02d5947ab80710f93f3d4e776bf4b668ab3bb7996ff050b69d111"
+          },
+          {
+            "name": "shared_vocabulary.txt",
+            "size": 1159930
+          },
+          {
+            "name": "spm.128k.model",
+            "size": 2423393,
+            "sha256": "d8f7c76ed2a5e0822be39f0a4f95a55eb19c78f4593ce609e2edbc2aea4d380a"
+          }
+        ]
+      },
+      {
+        "name": "madlad400-3b-mt-ct2-int8",
+        "what": "The better translator, 400 languages. Needs 3 GB of memory, so only on a computer with 24 GB or more.",
+        "repo": "Nextcloud-AI/madlad400-3b-mt-ct2-int8",
+        "rev": "aa32bbdeba7880eff2096ec044cb155a340a9400",
+        "gb": 3.0,
+        "sets": [
+          "full"
+        ],
+        "licence": "Apache 2.0 (Google MADLAD-400, int8 build by Nextcloud)",
+        "files": [
+          {
+            "name": "added_tokens.json",
+            "size": 4
+          },
+          {
+            "name": "config.json",
+            "size": 224
+          },
+          {
+            "name": "generation_config.json",
+            "size": 142
+          },
+          {
+            "name": "model.bin",
+            "size": 2950208329,
+            "sha256": "77b9fd9ab97c1259d07089b5f854393dad81bc5fb5647d3f9a5d101c94f40daa"
+          },
+          {
+            "name": "shared_vocabulary.json",
+            "size": 5477099
+          },
+          {
+            "name": "special_tokens_map.json",
+            "size": 414
+          },
+          {
+            "name": "spiece.model",
+            "size": 4427844,
+            "sha256": "ef11ac9a22c7503492f56d48dce53be20e339b63605983e9f27d2cd0e0f3922c"
+          },
+          {
+            "name": "tokenizer.json",
+            "size": 16629031,
+            "sha256": "a2799ccc696b752ba00c34f58726bfe253a04921ceb6cfc620400f560474790b"
+          },
+          {
+            "name": "tokenizer_config.json",
+            "size": 830
+          }
+        ]
+      }
+    ]
+  }
 }
