@@ -1,0 +1,71 @@
+{
+  "about": "The models a PAN on someone's own computer runs. PAN Setup reads this to know what to download; PAN reads it to point its settings at what arrived (src/model-set.js). Everything comes straight from the publisher to the person's computer: Ollama's library, or Hugging Face for PAN's own two. Nothing is hosted by PAN and none of it needs an account.",
+  "ollama": {
+    "installer": "https://ollama.com/download/OllamaSetup.exe",
+    "signer": "Ollama Inc.",
+    "url": "http://127.0.0.1:11434"
+  },
+  "sets": {
+    "light": "a computer with less than 24 GB of memory: one stock model does the sorting too",
+    "full": "24 GB or more"
+  },
+  "models": [
+    {
+      "role": "talk",
+      "name": "syrinx-lfm-r15:latest",
+      "what": "Talks to you. PAN's own tuned model, small enough to answer in a fifth of a second with no graphics card.",
+      "from": "own",
+      "file": "syrinx-lfm-r15.gguf",
+      "gb": 1.3,
+      "sets": ["light", "full"],
+      "licence": "LFM Open License v1.0 (Liquid AI)"
+    },
+    {
+      "role": "questions",
+      "name": "pan-phi-r1:latest",
+      "what": "Answers real questions: facts, how things work, search results.",
+      "from": "own",
+      "file": "pan-phi-r1.gguf",
+      "gb": 2.5,
+      "sets": ["light", "full"],
+      "standIn": "phi4-mini:3.8b",
+      "licence": "MIT (Microsoft Phi-4 mini, tuned by PAN)"
+    },
+    {
+      "role": "backup",
+      "name": "gemma4:e2b",
+      "what": "Background jobs, and the backup when the talking model hands a turn back.",
+      "from": "ollama",
+      "gb": 7.2,
+      "sets": ["light", "full"],
+      "licence": "Gemma Terms of Use (Google)"
+    },
+    {
+      "role": "sorting",
+      "name": "gemma4:e4b",
+      "what": "Sorts requests and runs the safety checks.",
+      "from": "ollama",
+      "gb": 9.6,
+      "sets": ["full"],
+      "licence": "Gemma Terms of Use (Google)"
+    },
+    {
+      "role": "memory",
+      "name": "qwen3-embedding:0.6b",
+      "what": "Memory search.",
+      "from": "ollama",
+      "gb": 0.7,
+      "sets": ["light", "full"],
+      "licence": "Apache 2.0 (Alibaba)"
+    },
+    {
+      "role": "photos",
+      "name": "moondream:latest",
+      "what": "Says what is in a photo the phone could not read.",
+      "from": "ollama",
+      "gb": 1.7,
+      "sets": ["light", "full"],
+      "licence": "Apache 2.0 (Moondream)"
+    }
+  ]
+}

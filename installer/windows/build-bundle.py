@@ -87,7 +87,7 @@ def main():
                 continue
             if m.name.startswith("service/"):
                 dest = os.path.join(app, *m.name.split("/"))
-            elif m.name in ("installer/windows/pan-launcher.cjs", "installer/windows/launch-plan.cjs"):
+            elif m.name in ("installer/windows/pan-launcher.cjs", "installer/windows/launch-plan.cjs", "installer/windows/voice-check.cjs"):
                 dest = os.path.join(app, "launcher", os.path.basename(m.name))
             elif m.name in ("installer/windows/pan-setup.ps1", "installer/windows/pan-uninstall.ps1"):
                 dest = os.path.join(app, "setup", os.path.basename(m.name))
@@ -99,7 +99,8 @@ def main():
             count += 1
     print(f"  {count} files")
     for must in ("launcher/pan-launcher.cjs", "launcher/launch-plan.cjs", "setup/pan-setup.ps1",
-                 "setup/pan-uninstall.ps1", "service/pan.js", "service/package-lock.json"):
+                 "setup/pan-uninstall.ps1", "service/pan.js", "service/package-lock.json", "launcher/voice-check.cjs",
+                 "service/model-set.json", "service/model-files/syrinx-lfm-r15.Modelfile"):
         if not os.path.exists(os.path.join(app, must)):
             sys.exit(f"{must} is not committed at {args.ref}: commit it first")
 

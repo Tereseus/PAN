@@ -1,0 +1,10 @@
+# syrinx-lfm-r15: how Ollama runs this model. PAN Setup puts this beside syrinx-lfm-r15.gguf and runs
+#   ollama create syrinx-lfm-r15 -f syrinx-lfm-r15.Modelfile
+FROM ./syrinx-lfm-r15.gguf
+TEMPLATE "<|startoftext|>{{- range .Messages }}<|im_start|>{{ .Role }}
+{{ .Content }}<|im_end|>
+{{ end }}<|im_start|>assistant
+<think></think>"
+PARAMETER num_ctx 4096
+PARAMETER stop <|im_end|>
+PARAMETER temperature 0

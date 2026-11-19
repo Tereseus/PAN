@@ -16,6 +16,12 @@
 #
 #   -Source     a folder or an http(s) address holding release.json and the zip
 #   -Quiet      no questions, no browser, no administrator prompt (for tests)
+#   -Voice      also install what PAN talks with: Ollama (its own signed installer, from
+#               ollama.com) and the models in service\model-set.json, straight from their
+#               publishers. Several GB. Then one real voice turn to see it answers.
+#   -OwnModels  a folder or an http(s) address holding PAN's own two models as .gguf files
+#               (see model-set.json). Without it they are skipped and the stock ones stand in.
+#   -ModelSet   light or full, instead of choosing by this computer's memory
 #   -Dev        test mode: PAN skips the parts that act on the whole computer (its steward,
 #               the orphan reaper, the device heartbeat). For an install test on a computer
 #               that already runs a real PAN.
@@ -35,6 +41,9 @@ param(
     [switch]$NoFirewall,
     [switch]$NoStart,
     [switch]$Dev,
+    [switch]$Voice,
+    [string]$OwnModels = "",
+    [string]$ModelSet = "",
     [int]$StartTimeoutSec = 240
 )
 
@@ -230,6 +239,11 @@ try {
         linkPort = $LinkPort; linkAdmin = $LinkAdmin; tag = $Tag
         installed = (Get-Date).ToUniversalTime().ToString("s") + "Z"
         firewallRule = $null; autostart = $false; dev = [bool]$Dev
+        ollamaInstalledBySetup = $false; modelsAdded = @()
+    }
+    if ($oldConfig) {
+        if ($oldConfig.ollamaInstalledBySetup) { $config.ollamaInstalledBySetup = $true }
+        if ($oldConfig.modelsAdded) { $config.modelsAdded = @($oldConfig.modelsAdded) }
     }
     Copy-Item (Join-Path $target "setup\pan-uninstall.ps1") (Join-Path $InstallDir "uninstall.ps1") -Force
 
@@ -323,6 +337,148 @@ try {
         }
         $script:Result.link = $linkUp
         if ($linkUp) { Say "  PAN Link is ready for your phone." } else { Warn ("PAN Link did not start. Its log is " + (Join-Path $DataDir "pan-link.log")) }
+    }
+
+    # ---- 6. what PAN talks with ------------------------------------------------------
+    if ($Voice -and -not $NoStart) {
+        Step "voice" "Getting what PAN talks with"
+        $modelSet = Get-Content (Join-Path $target "service\model-set.json") -Raw | ConvertFrom-Json
+        $ollamaUrl = [string]$modelSet.ollama.url
+        $setName = if ($ModelSet) { $ModelSet } elseif ($ramGB -ge 24) { "full" } else { "light" }
+        $order = @("memory", "talk", "questions", "backup", "photos", "sorting")
+        $wanted = @($modelSet.models | Where-Object { $_.sets -contains $setName } | Sort-Object { $order.IndexOf($_.role) })
+        $needGB = [Math]::Round((($wanted | Measure-Object -Property gb -Sum).Sum), 1)
+        Say ("  {0} models, {1} GB, for a computer with {2} GB of memory" -f $wanted.Count, $needGB, $ramGB)
+        $freeNow = [Math]::Round((Get-PSDrive -Name $drive.Name).Free / 1GB, 1)
+        if ($freeNow -lt ($needGB + 6)) { Stop-Setup ("The models need {0} GB of free disk space. This drive has {1} GB." -f ($needGB + 6), $freeNow) }
+
+        function Ollama-Exe {
+            $p = Join-Path $env:LOCALAPPDATA "Programs\Ollama\ollama.exe"
+            if (Test-Path $p) { return $p }
+            $c = Get-Command ollama.exe -ErrorAction SilentlyContinue
+            if ($c) { return $c.Source }
+            return $null
+        }
+        function Ollama-Models {
+            try { return @(((Invoke-WebRequest -Uri ($ollamaUrl + "/api/tags") -UseBasicParsing -TimeoutSec 8).Content | ConvertFrom-Json).models | ForEach-Object { [string]$_.name }) }
+            catch { return $null }
+        }
+        function Has-Model($list, $name) {
+            $n = $name.ToLower(); if ($n -notmatch ':') { $n += ":latest" }
+            foreach ($h in $list) { $x = $h.ToLower(); if ($x -notmatch ':') { $x += ":latest" }; if ($x -eq $n) { return $true } }
+            return $false
+        }
+        function Run-Ollama($ollamaArgs, $workDir) {
+            # Through Start-Process: Ollama writes its progress to the error stream, which
+            # Windows PowerShell would turn into a failure.
+            $a = @{ FilePath = (Ollama-Exe); ArgumentList = $ollamaArgs; Wait = $true; PassThru = $true; NoNewWindow = $true }
+            if ($workDir) { $a.WorkingDirectory = $workDir }
+            if ($Quiet) { $a.RedirectStandardOutput = (Join-Path $dl "ollama.out.log"); $a.RedirectStandardError = (Join-Path $dl "ollama.err.log") }
+            return (Start-Process @a).ExitCode
+        }
+
+        # Ollama itself: its own installer, checked for Ollama's signature before it runs.
+        if (-not (Ollama-Exe)) {
+            Say "  Downloading Ollama, the program that runs the models."
+            $setupExe = Join-Path $dl "OllamaSetup.exe"
+            $curl = Join-Path $env:SystemRoot "System32\curl.exe"
+            $curlArgs = @("-L", "--fail", "--retry", "5", "--retry-delay", "3", "-C", "-", "-o", $setupExe, [string]$modelSet.ollama.installer)
+            if ($Quiet) { $curlArgs = @("-sS") + $curlArgs }
+            # A whole, signed copy from an earlier run is used as it is.
+            $whole = $false
+            if (Test-Path $setupExe) { $s0 = Get-AuthenticodeSignature $setupExe; $whole = ($s0.Status -eq "Valid") }
+            if (-not $whole) {
+                & $curl @curlArgs
+                if ($LASTEXITCODE -ne 0) { Stop-Setup ("Ollama did not download (curl {0}). Run PAN Setup again to carry on." -f $LASTEXITCODE) }
+            }
+            $sig = Get-AuthenticodeSignature $setupExe
+            if ($sig.Status -ne "Valid" -or $sig.SignerCertificate.Subject -notmatch [regex]::Escape([string]$modelSet.ollama.signer)) {
+                Remove-Item $setupExe -Force -ErrorAction SilentlyContinue
+                Stop-Setup "The Ollama download is not signed by Ollama, so it was thrown away."
+            }
+            Say "  Installing Ollama."
+            $p = Start-Process -FilePath $setupExe -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART" -Wait -PassThru
+            if ($p.ExitCode -ne 0 -or -not (Ollama-Exe)) { Stop-Setup ("Ollama did not install (code {0})." -f $p.ExitCode) }
+            $config.ollamaInstalledBySetup = $true
+            WriteText $configPath ($config | ConvertTo-Json)
+            Remove-Item $setupExe -Force -ErrorAction SilentlyContinue
+        }
+        $have = Ollama-Models
+        if ($have -eq $null) {
+            Start-Detached (Ollama-Exe) "serve"
+            for ($i = 0; $i -lt 30 -and $have -eq $null; $i++) { Start-Sleep -Seconds 2; $have = Ollama-Models }
+            if ($have -eq $null) { Stop-Setup "Ollama is installed but does not answer." }
+        }
+        Say "  Ollama is running."
+
+        $ownDir = Join-Path $InstallDir "models"
+        foreach ($m in $wanted) {
+            $name = [string]$m.name
+            if (Has-Model $have $name) { Say ("  have    {0}" -f $name); continue }
+            if ($m.from -eq "ollama") {
+                Say ("  getting {0} ({1} GB): {2}" -f $name, $m.gb, $m.what)
+                if ((Run-Ollama @("pull", $name) $null) -ne 0) { Stop-Setup ("{0} did not download. Run PAN Setup again to carry on." -f $name) }
+            } else {
+                if (-not $OwnModels) {
+                    Warn ("{0} is PAN's own model and has no public download yet. Skipped." -f $name)
+                    if ($m.standIn -and -not (Has-Model $have ([string]$m.standIn))) {
+                        Say ("  getting {0} in its place" -f $m.standIn)
+                        if ((Run-Ollama @("pull", [string]$m.standIn) $null) -eq 0) { $config.modelsAdded = @($config.modelsAdded) + [string]$m.standIn }
+                    }
+                    continue
+                }
+                Say ("  getting {0} ({1} GB): {2}" -f $name, $m.gb, $m.what)
+                New-Item -ItemType Directory -Path $ownDir -Force | Out-Null
+                $gguf = Join-Path $ownDir ([string]$m.file)
+                if ($OwnModels -match '^https?://') {
+                    & (Join-Path $env:SystemRoot "System32\curl.exe") -L --fail --retry 5 -C - -sS -o $gguf ($OwnModels.TrimEnd('/') + "/" + $m.file)
+                    if ($LASTEXITCODE -ne 0) { Stop-Setup ("{0} did not download." -f $name) }
+                } else {
+                    $src = Join-Path $OwnModels ([string]$m.file)
+                    if (-not (Test-Path $src)) { Warn ("{0} is not in {1}. Skipped." -f $m.file, $OwnModels); continue }
+                    Copy-Item $src $gguf -Force
+                }
+                $short = ($name -split ':')[0]
+                Copy-Item (Join-Path $target ("service\model-files\{0}.Modelfile" -f $short)) (Join-Path $ownDir ($short + ".Modelfile")) -Force
+                if ((Run-Ollama @("create", $name, "-f", ($short + ".Modelfile")) $ownDir) -ne 0) { Stop-Setup ("Ollama could not take {0}." -f $name) }
+                Remove-Item $gguf -Force -ErrorAction SilentlyContinue   # Ollama keeps its own copy
+            }
+            $config.modelsAdded = @($config.modelsAdded) + $name
+            WriteText $configPath ($config | ConvertTo-Json)
+        }
+        if (Test-Path $ownDir) { Remove-Item $ownDir -Recurse -Force -ErrorAction SilentlyContinue }
+
+        # Point PAN at what is here, and start it again so it picks its talking model up.
+        try {
+            $applied = (Invoke-WebRequest -Uri ("http://127.0.0.1:{0}/api/v1/setup/models/apply" -f $Port) -Method Post -UseBasicParsing -TimeoutSec 30).Content | ConvertFrom-Json
+        } catch { Stop-Setup ("PAN did not take the model settings: " + $_.Exception.Message) }
+        $script:Result.voice = [ordered]@{ set = $setName; canTalk = [bool]$applied.voice; missing = @($applied.missing); models = @($config.modelsAdded) }
+        if ($applied.restart) {
+            Say "  Restarting PAN with its models."
+            Stop-Tree $InstallDir
+            Start-Detached $conhost ('--headless "{0}" "{1}" "{2}"' -f $nodeExe, $launcher, $InstallDir)
+            $deadline = (Get-Date).AddSeconds($StartTimeoutSec); $up = $false
+            while ((Get-Date) -lt $deadline) { if (Health $Port) { $up = $true; break }; Start-Sleep -Seconds 3 }
+            if (-not $up) { Stop-Setup "PAN did not come back after the models went in." }
+        }
+        if ($applied.voice) {
+            Say "  Asking PAN to say hello (the first answer loads the model, so it is the slow one)."
+            $reply = $null
+            for ($try = 0; $try -lt 4 -and -not ($reply -and $reply.ok); $try++) {
+                if ($try -gt 0) { Start-Sleep -Seconds 15 }
+                $ErrorActionPreference = "Continue"
+                $line = (& $nodeExe (Join-Path $target "launcher\voice-check.cjs") $Port 2>$null | Select-Object -Last 1)
+                $ErrorActionPreference = "Stop"
+                try { $reply = $line | ConvertFrom-Json } catch { $reply = $null }
+            }
+            $script:Result.voice.reply = $reply
+            if ($reply -and $reply.ok) { Say ("  PAN said: ""{0}"" (first word after {1} s)" -f $reply.reply, [Math]::Round($reply.firstMs / 1000, 1)) }
+            else { Warn "The models are in, but PAN did not answer a spoken line." }
+        } else {
+            Warn "PAN has no talking model here, so voice will be slow or silent."
+        }
+    } elseif ($Voice) {
+        Warn "The models were not installed because PAN was not started."
     }
 
     # Older versions go once the new one is up. The one before this stays, to go back to.

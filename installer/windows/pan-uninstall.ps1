@@ -11,6 +11,7 @@
 param(
     [string]$InstallDir = (Join-Path $env:LOCALAPPDATA "PAN"),
     [switch]$RemoveData,
+    [switch]$KeepModels,
     [switch]$Quiet
 )
 
@@ -51,6 +52,42 @@ for ($round = 0; $round -lt 4; $round++) {
     Start-Sleep -Seconds 2
 }
 Say "  Stopped."
+
+# 1b. The models PAN Setup downloaded, and Ollama if PAN Setup installed it and nothing else
+#     is left in it. A person's own models, and an Ollama they had before, are not touched.
+$added = @($config.modelsAdded | Where-Object { $_ })
+if ($added.Count -gt 0 -and -not $KeepModels) {
+    foreach ($port in 7786, 7787) {
+        # PAN's own two readers run Ollama's llama-server from outside this folder.
+        try {
+            $owner = (Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction Stop | Select-Object -First 1).OwningProcess
+            if ((Get-Process -Id $owner).ProcessName -ieq "llama-server") { & taskkill.exe /F /PID $owner 2>$null | Out-Null }
+        } catch {}
+    }
+    $ollama = Join-Path $env:LOCALAPPDATA "Programs\Ollama\ollama.exe"
+    if (Test-Path $ollama) {
+        foreach ($m in $added) {
+            try { Start-Process -FilePath $ollama -ArgumentList @("rm", [string]$m) -Wait -NoNewWindow -RedirectStandardOutput (Join-Path $env:TEMP "pan-ollama-rm.out") -RedirectStandardError (Join-Path $env:TEMP "pan-ollama-rm.err") | Out-Null } catch {}
+        }
+        Say ("  Removed {0} models." -f $added.Count)
+        if ($config.ollamaInstalledBySetup) {
+            $rest = $null
+            try { $rest = @(((Invoke-WebRequest -Uri "http://127.0.0.1:11434/api/tags" -UseBasicParsing -TimeoutSec 8).Content | ConvertFrom-Json).models) } catch {}
+            if ($rest -ne $null -and $rest.Count -eq 0) {
+                Get-Process | Where-Object { $_.ProcessName -match '^(ollama|ollama app|llama-server)$' } | ForEach-Object { try { & taskkill.exe /F /PID $_.Id 2>$null | Out-Null } catch {} }
+                $un = Join-Path $env:LOCALAPPDATA "Programs\Ollama\unins000.exe"
+                if (Test-Path $un) { Start-Process -FilePath $un -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART" -Wait | Out-Null }
+                $store = Join-Path $env:USERPROFILE ".ollama"
+                if (Test-Path $store) { Remove-Item $store -Recurse -Force -ErrorAction SilentlyContinue }
+                Say "  Removed Ollama (PAN Setup had installed it)."
+            } elseif ($rest -ne $null) {
+                Say "  Ollama stays: it holds models that are not PAN's."
+            } else {
+                $left += "Ollama (it did not answer, so it was left alone)"
+            }
+        }
+    }
+}
 
 # 2. Start at logon, the Apps entry, the Start menu link.
 try { Remove-ItemProperty -Path $RunKey -Name $tag -ErrorAction Stop } catch {}
