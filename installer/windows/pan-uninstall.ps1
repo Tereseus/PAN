@@ -1,0 +1,112 @@
+# Removes PAN from this computer, for this Windows user.
+#
+# Stops PAN, takes away the start at logon, the Apps entry, the Start menu link, the
+# firewall rule and the program files. The data folder (memory, settings, pairings) stays
+# unless -RemoveData is given, or the person says yes when asked.
+#
+# It only ever touches a folder that holds PAN's own install.json.
+#
+# Plain ASCII on purpose: Windows PowerShell 5.1 misreads UTF-8 files that have no BOM.
+
+param(
+    [string]$InstallDir = (Join-Path $env:LOCALAPPDATA "PAN"),
+    [switch]$RemoveData,
+    [switch]$Quiet
+)
+
+$ErrorActionPreference = "Stop"
+$RunKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+$UninstallKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall"
+$InstallDir = [IO.Path]::GetFullPath($InstallDir)
+$left = @()
+
+function Say($text) { Write-Host $text }
+function Is-Admin {
+    $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+    return (New-Object Security.Principal.WindowsPrincipal($id)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+$configPath = Join-Path $InstallDir "install.json"
+if (-not (Test-Path $configPath)) {
+    Say ("PAN is not installed in " + $InstallDir + " (no install.json). Nothing was changed.")
+    exit 2
+}
+if ($InstallDir.Length -lt 8 -or $InstallDir -ieq $env:USERPROFILE -or $InstallDir -ieq $env:LOCALAPPDATA) {
+    Say ("Refusing to remove " + $InstallDir)
+    exit 3
+}
+$config = Get-Content $configPath -Raw | ConvertFrom-Json
+$tag = if ($config.tag) { [string]$config.tag } else { "PAN" }
+$dataDir = if ($config.dataDir) { [string]$config.dataDir } else { Join-Path $InstallDir "data" }
+Say ("Removing PAN {0} from {1}" -f $config.version, $InstallDir)
+
+# 1. Stop everything that runs out of this folder.
+$prefix = $InstallDir.TrimEnd('\') + '\'
+for ($round = 0; $round -lt 4; $round++) {
+    $mine = @(Get-CimInstance Win32_Process | Where-Object {
+        $_.ExecutablePath -and $_.ExecutablePath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) -and $_.ProcessId -ne $PID
+    })
+    if ($mine.Count -eq 0) { break }
+    foreach ($p in $mine) { try { & taskkill.exe /F /T /PID $p.ProcessId 2>$null | Out-Null } catch {} }
+    Start-Sleep -Seconds 2
+}
+Say "  Stopped."
+
+# 2. Start at logon, the Apps entry, the Start menu link.
+try { Remove-ItemProperty -Path $RunKey -Name $tag -ErrorAction Stop } catch {}
+try { Remove-Item -Path (Join-Path $UninstallKey $tag) -Recurse -Force -ErrorAction Stop } catch {}
+if ($tag -eq "PAN") {
+    $link = Join-Path ([Environment]::GetFolderPath("Programs")) "PAN.url"
+    if (Test-Path $link) { Remove-Item $link -Force -ErrorAction SilentlyContinue }
+}
+
+# 3. The firewall rule, if PAN Setup added one.
+if ($config.firewallRule) {
+    $rule = [string]$config.firewallRule
+    $fw = 'advfirewall firewall delete rule name="{0}"' -f $rule
+    if (Is-Admin) {
+        & netsh.exe advfirewall firewall delete rule ("name=" + $rule) | Out-Null
+        Say "  Firewall rule removed."
+    } elseif ($Quiet) {
+        $left += ('the firewall rule "{0}" (needs an administrator)' -f $rule)
+    } else {
+        try {
+            Say "  Windows will ask once for permission to remove PAN's firewall rule."
+            Start-Process netsh.exe -ArgumentList $fw -Verb RunAs -Wait -WindowStyle Hidden
+        } catch { $left += ('the firewall rule "{0}"' -f $rule) }
+    }
+}
+
+# 4. The data: only when asked.
+$dropData = [bool]$RemoveData
+if (-not $dropData -and -not $Quiet -and (Test-Path $dataDir)) {
+    $answer = Read-Host "Also delete PAN's memory and settings on this computer? This cannot be undone. Type YES to delete"
+    $dropData = ($answer -ceq "YES")
+}
+
+# 5. The files.
+$dataInside = $dataDir.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)
+foreach ($item in Get-ChildItem $InstallDir -Force) {
+    if ($dataInside -and ($item.FullName -ieq $dataDir) -and -not $dropData) { continue }
+    try { Remove-Item $item.FullName -Recurse -Force -ErrorAction Stop }
+    catch {
+        Start-Sleep -Seconds 2
+        try { Remove-Item $item.FullName -Recurse -Force -ErrorAction Stop } catch { $left += $item.FullName }
+    }
+}
+if ($dropData -and -not $dataInside -and (Test-Path $dataDir)) {
+    try { Remove-Item $dataDir -Recurse -Force } catch { $left += $dataDir }
+}
+if (@(Get-ChildItem $InstallDir -Force -ErrorAction SilentlyContinue).Count -eq 0) {
+    Set-Location $env:TEMP
+    Remove-Item $InstallDir -Force -ErrorAction SilentlyContinue
+}
+
+if (-not $dropData -and (Test-Path $dataDir)) { Say ("  Your memory and settings were kept in " + $dataDir) }
+if ($left.Count -gt 0) {
+    Say "PAN was removed, except for:"
+    $left | ForEach-Object { Say ("  " + $_) }
+    exit 1
+}
+Say "PAN was removed."
+exit 0

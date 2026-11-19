@@ -4,13 +4,19 @@ Written 2026-11-08 from a full read of the code (network, installers, phone app,
 
 ## The goal
 
-Out of the box to working, with nothing technical:
+Out of the box to working, with nothing technical. The owner set this order on 2026-11-19; it starts on the phone, so it also works for someone with no Medallion.
 
-1. Plug the Medallion into your computer. A drive called PAN opens with "PAN Setup" on it. The Medallion's screen says what to do and shows a QR code for the phone app.
-2. Double click PAN Setup. It checks the computer, downloads the current PAN, installs it, and plays short videos about what PAN does while it works.
-3. Install the phone app from the QR, open it, and scan the QR on the computer screen. The phone is paired.
-4. The Medallion pairs with the phone: both screens show the same 6 digits, tap OK on each.
-5. Sign in to Claude once, with the person's own account. PAN Setup adds PAN to Claude.
+1. **Get the app.** The Medallion's screen (or the box, or the website) shows a QR code. The phone scans it and installs the app.
+2. **The app sends you to your computer.** It says PAN lives on your own computer, explains the hub in two lines, and gives a short address to type there, with a "send me the link" button.
+3. **Download PAN Setup on the computer.** The address is one plain page with one Download button. The file sits on GitHub Releases, but nobody sees GitHub. Windows first, Linux after.
+4. **Run PAN Setup.** It checks the computer, downloads the current PAN, installs it, and plays short videos about what PAN does while it works. While the phone waits, it shows "waiting for your computer" and plays the same videos.
+5. **Pair the phone.** Setup ends with a QR on the computer's screen. The phone scans it. The computer never scans anything, so no webcam is needed.
+6. **Pair the Medallion with the phone:** both screens show the same 6 digits, tap OK on each.
+7. **Sign in to Claude once**, with the person's own account. PAN Setup adds PAN to Claude.
+
+Shortcut: plugged into a computer, the Medallion is also a small USB drive holding PAN Setup (a few hundred KB; it downloads the rest), so there is no address to type.
+
+The videos also live in the app for good: About, next to Credits, "What PAN can do".
 
 No PAN account, no API keys, no Tailscale login. Everything runs on the person's own computer. We run no server that holds or controls anything.
 
@@ -114,7 +120,7 @@ Firmware, built on a dev board until the 5 units arrive.
 | 3 | Phone first run and cleanup, Play Store test track | Medium | Play account |
 | 4 | Medallion setup mode: screens in the LVGL simulator, USB drive and pairing on the owner's ESP32 | Medium | Which computer the ESP32 is on |
 | 5 | Updates for hub, phone and Medallion | Medium | |
-| 6 | Full test on a fresh Windows machine | Medium | OK for a test VM |
+| 6 | Full test on a fresh Windows machine: the owner's spare HP ProDesk 1 (named 2026-11-19), run by a script that uninstalls, installs and checks, with the Pixel 6 or the OnePlus Pad as the phone | Medium | ProDesk 1 reachable (its Tailscale sign in expired 2026-09-02) |
 
 Later: macOS and Linux hubs, the iPhone app.
 
@@ -154,14 +160,14 @@ First test inside step 1: Pkarr lookup speed and relay availability from the hub
   - phone on mobile data behind a CGNAT home, which must use the Tailscale path;
   - router port opening turned off, which must fall back cleanly;
   - the hub on a phone hotspot, where carriers share addresses, so the fallback must trigger.
-- **Fresh machine.** A clean Windows 11 VM runs PAN Setup from the bootstrap, start to finish, then pairs a phone emulator.
+- **Fresh machine.** The owner's spare ProDesk 1 runs PAN Setup from the bootstrap, start to finish, then pairs a test phone. All of it by script (`installer/test/`): remove PAN, check nothing is left, install, check, pair, remove again.
 - **Machine rules.** No heavy jobs on the owner's laptop. Nothing scheduled 8 AM to 2 PM ET on weekdays.
 
 ## The owner's hands
 
 - Sign ups and payments (the signing service, the Play account).
 - The router setting test, and any firewall change on their real machines.
-- Approving a test VM on the hub.
+- Signing ProDesk 1 back in to Tailscale, so the install test can reach it.
 
 ## Found while reading (fix soon)
 

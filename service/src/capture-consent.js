@@ -8,14 +8,15 @@
 // Each capture feature resolves on/off in this order:
 //   1. env PAN_ENABLE_<NAME>=1/0  — hard override for headless/server config
 //   2. DB setting capture_<name>  — the user's consent toggle (persisted, live)
-//   3. profile default            — identity OFF everywhere; screen + activity
-//                                   ON in full, OFF in core
+//   3. the default                — OFF, everywhere (profiles.js captureDefault).
+//                                   Screen and activity used to start by themselves
+//                                   in the full profile.
 //
 // Toggling writes the setting AND starts/stops the watcher live, so the
 // consent page takes effect without a restart.
 
 import { get, run } from './db.js';
-import { PROFILE } from './profiles.js';
+import { PROFILE, captureDefault } from './profiles.js';
 import { startWebcamWatcher, stopWebcamWatcher, getWebcamStatus } from './webcam-watcher.js';
 import { startScreenWatcher, stopScreenWatcher, getScreenWatcherStatus } from './screen-watcher.js';
 import { startActivityTracker, stopActivityTracker, getActivityTrackerStatus } from './activity-tracker.js';
@@ -23,24 +24,21 @@ import { startActivityTracker, stopActivityTracker, getActivityTrackerStatus } f
 const FEATURES = {
   identity: {
     label: 'Camera & Face ID',
-    blurb: 'Uses the webcam to sense presence and recognise who is at the desk. Off by default — turn on only if you want it.',
-    defaultFull: false,            // OFF even in full — must be opted in
+    blurb: 'Uses the webcam to sense presence and recognise who is at the desk. Off until you turn it on.',
     start: startWebcamWatcher,
     stop:  stopWebcamWatcher,
     status: () => !!getWebcamStatus()?.running,
   },
   screen: {
     label: 'Screen watching',
-    blurb: 'Periodically captures a screenshot and describes what you are working on, so PAN has context.',
-    defaultFull: true,
+    blurb: 'Periodically captures a screenshot and describes what you are working on, so PAN has context. Off until you turn it on.',
     start: startScreenWatcher,
     stop:  stopScreenWatcher,
     status: () => !!getScreenWatcherStatus()?.running,
   },
   activity: {
     label: 'App activity',
-    blurb: 'Tracks which application is in the foreground (app name + window title — no screenshots).',
-    defaultFull: true,
+    blurb: 'Tracks which application is in the foreground (app name and window title, no screenshots). Off until you turn it on.',
     start: startActivityTracker,
     stop:  stopActivityTracker,
     status: () => !!getActivityTrackerStatus()?.running,
@@ -68,9 +66,8 @@ function settingOverride(name) {
 }
 
 function profileDefault(name) {
-  const f = FEATURES[name];
-  if (!f) return false;
-  return PROFILE === 'full' ? f.defaultFull : false; // core: all capture off
+  if (!FEATURES[name]) return false;
+  return captureDefault(name, PROFILE);
 }
 
 export function isCaptureOn(name) {

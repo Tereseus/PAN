@@ -43,11 +43,17 @@ const FEATURES = {
   // The three user-facing capture features (identity/screen/activity) are NOT
   // gated here — they live in capture-consent.js as per-device opt-in toggles
   // (the /privacy page). profiles.js only owns boot-time, non-user-toggled gates.
-  remote_screen:       ['full'],            // polls pan-clients for their screens
-  dashboard_watchdog:  ['full'],            // babysits the dashboard (off in wearable)
-  dashboard_health:    ['full'],            // dashboard render QA
-  vision_verifier:     ['full'],            // vision-vs-DOM bug filing
-  forge_dashboard:     ['full'],            // experimental auto-fix loop
+  //
+  // Off everywhere unless asked for (2026-11-19). On the owner's hub none of these had
+  // produced anything: the remote screen watcher logged nothing past its start line, and
+  // the three dashboard ones watch a browser dashboard a hub with no screen never shows.
+  // A fresh PAN must not start looking at screens by itself. PAN_ENABLE_<NAME>=1 turns
+  // one on.
+  remote_screen:       'optin',             // asks each paired computer for a screenshot every 60 s
+  dashboard_watchdog:  'optin',             // babysits the dashboard
+  dashboard_health:    'optin',             // dashboard render QA
+  vision_verifier:     'optin',             // vision-vs-DOM bug filing
+  forge_dashboard:     'optin',             // experimental auto-fix loop
 
   // ── experiments / autonomous loops (OFF in core AND wearable) ──
   smart_steward:       ['full'],            // plain 60s steward suffices
@@ -108,16 +114,27 @@ const FEATURES = {
 };
 
 // Opt-in features default OFF; set PAN_ENABLE_<NAME>=1 to turn one on.
-function optInEnabled(name) {
-  const v = process.env[`PAN_ENABLE_${name.toUpperCase()}`];
+function optInEnabled(name, env = process.env) {
+  const v = env[`PAN_ENABLE_${name.toUpperCase()}`];
   return v === '1' || v === 'true';
 }
 
-export function featureEnabled(name) {
+/** The rule itself, with the profile and the environment passed in so it can be tested. */
+export function featureOn(name, profile, env = process.env) {
   const spec = FEATURES[name];
   if (spec === undefined) return true;          // unknown feature: fail-open (protects `full`)
-  if (spec === 'optin') return optInEnabled(name);
-  return spec.includes(PROFILE);
+  if (spec === 'optin') return optInEnabled(name, env);
+  return spec.includes(profile);
+}
+
+export function featureEnabled(name) {
+  return featureOn(name, PROFILE);
+}
+
+/** What watches the person (camera, screen, foreground app) is off in every profile until
+ *  they turn it on on the privacy page. capture-consent.js asks here. */
+export function captureDefault(_name, _profile) {
+  return false;
 }
 
 // One-line boot summary so every log makes the active profile + opt-ins obvious.
