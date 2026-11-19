@@ -58,6 +58,9 @@ RUN mkdir -p /data/backups /data/recordings /data/terminal-logs /data/transcript
 ENV PAN_SERVICE=1
 ENV PAN_DATA_DIR=/data
 ENV NODE_ENV=production
+# Inside a container PAN must listen on every address, or the published port is dead.
+# Who can reach it is decided by how the port is published (docker-compose.yml).
+ENV PAN_HOST=0.0.0.0
 
 EXPOSE 7777
 

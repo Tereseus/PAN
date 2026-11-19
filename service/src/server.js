@@ -102,14 +102,14 @@ import { networkInterfaces as osNetworkInterfaces } from 'os';
 import { PROFILE, featureEnabled, profileSummary } from './profiles.js';
 import { redactSettings, getSecret } from './secrets.js';
 import { withoutWords } from './log-words.js';
+import { listenHost } from './listen-host.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const PORT = parseInt(process.env.PAN_PORT) || 7777;
-// Every address by default. PAN_HOST=127.0.0.1 (set for the Super-Carrier, which passes
-// it down) keeps PAN on this computer only, once PAN Link carries every device: then this
-// Craft's own port can't be reached from the network either (pan-link/README.md).
-const HOST = process.env.PAN_HOST || '0.0.0.0';
+// This computer only, unless PAN_HOST says otherwise (listen-host.js). It is set for the
+// Super-Carrier, which passes it down, so this Craft's own port follows the front door's.
+const HOST = listenHost();
 // Dev mode: PAN_DEV=1 runs server on a separate port with no side-effects.
 // Skips steward, device registration, service boots — just
 // Express + API + DB (read-safe via WAL) + test runner. Safe to run alongside prod.

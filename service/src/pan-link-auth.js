@@ -10,8 +10,8 @@
 // headers and strips them, so nothing changes for today's Tailscale and LAN callers.
 // PAN_LINK=0 turns it off even when link.json exists.
 //
-// PAN_HOST=127.0.0.1 (server.js, carrier.js, super-carrier.js) makes the link the only
-// way in from outside: all three of PAN's ports then listen on this computer only.
+// PAN's three ports listen on this computer only unless PAN_HOST opens them
+// (listen-host.js), so the link is the only way in from outside.
 
 import { readFileSync, statSync } from 'fs';
 import { join } from 'path';

@@ -35,6 +35,7 @@ import { createHash } from 'crypto';
 import { killProcessOnPort, getDataDir, raiseProcessPriority } from './platform.js';
 import { stripHopByHop } from './proxy-headers.js';
 import { PerfEngine } from './perf/engine.js';
+import { listenHost } from './listen-host.js';
 import { toMarkdown as perfToMarkdown, SWAP_GATE } from './perf/stages.js';
 import {
   setupCarrierLog,
@@ -115,8 +116,8 @@ const CARRIER_PORT = IS_UNDER_SUPER_CARRIER
 // Derive internal Craft port from Carrier port — prevents multi-instance conflicts.
 // Default: 7777 → 17700, Dev (7781) → 17704, Docker/custom → CARRIER_PORT + 9923
 const CRAFT_PORT_BASE = parseInt(process.env.PAN_CRAFT_PORT_BASE) || (IS_UNDER_SUPER_CARRIER ? 17700 : (CARRIER_PORT + 9923));
-// Same as the Super-Carrier's: PAN_HOST=127.0.0.1 once PAN Link carries every device.
-const HOST = process.env.PAN_HOST || '0.0.0.0';
+// Same as the Super-Carrier's (listen-host.js): this computer only, unless PAN_HOST opens it.
+const HOST = listenHost();
 const ROLLBACK_TIMEOUT_MS = 30_000; // 30s auto-rollback if not confirmed
 
 // ==================== State ====================

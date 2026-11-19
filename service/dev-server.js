@@ -37,6 +37,9 @@ try {
 // Dev config — separate port, database, and dev mode (skips steward/reaper/device registration)
 process.env.PAN_PORT = String(port);
 process.env.PAN_DEV = '1';
+// A dev PAN stays open to the network unless told otherwise: phones on the same Wi-Fi
+// test against it. A real PAN listens on this computer only (src/listen-host.js).
+if (!process.env.PAN_HOST) process.env.PAN_HOST = '0.0.0.0';
 process.env.PAN_DATA_DIR = join(
   process.env.LOCALAPPDATA || require('path').join(require('os').homedir(),'AppData','Local'),
   'PAN', 'data-dev'

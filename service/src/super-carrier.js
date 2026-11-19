@@ -21,6 +21,7 @@ import { fileURLToPath } from 'url';
 import { request as httpRequest } from 'http';
 import { stripHopByHop } from './proxy-headers.js';
 import { raiseProcessPriority } from './platform.js';
+import { listenHost, listenWords } from './listen-host.js';
 import { HEADER_DEVICE, HEADER_DEVICE_NAME, HEADER_SECRET } from './pan-link-auth.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -31,9 +32,9 @@ raiseProcessPriority();
 
 const SC_PORT      = parseInt(process.env.PAN_PORT) || 7777;
 const CARRIER_PORT = parseInt(process.env.PAN_CARRIER_INTERNAL_PORT) || 17760;
-// PAN_HOST=127.0.0.1 keeps PAN on this computer only, once PAN Link carries every
-// device (pan-link/README.md); the Carrier and the Craft inherit it. Unset: every address.
-const HOST         = process.env.PAN_HOST || '0.0.0.0';
+// This computer only, unless PAN_HOST=0.0.0.0 opens it to the network (listen-host.js,
+// pan-link/README.md); the Carrier and the Craft inherit it.
+const HOST         = listenHost();
 
 // ── Carrier readiness gate ───────────────────────────────────────────────────
 // Requests that arrive while Carrier is restarting wait here instead of failing.
@@ -355,7 +356,7 @@ server.on('error', err => {
 
 server.listen(SC_PORT, HOST, () => {
   console.log(`[SuperCarrier] ══════════════════════════════════════════`);
-  console.log(`[SuperCarrier] Listening on :${SC_PORT}  (PID ${process.pid})`);
+  console.log(`[SuperCarrier] Listening on :${SC_PORT}  (PID ${process.pid}), open to ${listenWords(HOST)}`);
   console.log(`[SuperCarrier] Carrier internal port: :${CARRIER_PORT}`);
   console.log(`[SuperCarrier] ══════════════════════════════════════════`);
   launchCarrier();
