@@ -83,8 +83,8 @@ class Box:
         b64 = base64.b64encode(json.dumps(body).encode()).decode() if body is not None else ""
         return self.helper("http", method, f"'{path}'", b64)
 
-    def setup(self, source):
-        return self.sh(f'bash {self.work}/pan-setup.sh --source "{source}" --install-dir "{self.dir}" ' + " ".join(self.flags), 900)
+    def setup(self, source, more=(), timeout=900):
+        return self.sh(f'bash {self.work}/pan-setup.sh --source "{source}" --install-dir "{self.dir}" ' + " ".join([*self.flags, *more]), timeout)
 
     def uninstall(self, remove_data):
         return self.sh(f'bash "{self.dir}/uninstall.sh" --quiet' + (" --remove-data" if remove_data else ""), 300)
@@ -96,6 +96,53 @@ class Box:
                 return round(time.time() - t)
             time.sleep(3)
         return None
+
+
+def translate(box, text, src, tgt):
+    body = base64.b64encode(json.dumps({"text": text, "src": src, "tgt": tgt}).encode()).decode()
+    for _ in range(20):
+        r = box.helper("translate", body, timeout=120)
+        if r.get("status") == 200:
+            return r.get("json") or {}
+        time.sleep(6)
+    return {}
+
+
+def models_stage(box, source, args):
+    stage("2b. Voice and the translator")
+    more = []
+    if args.voice:
+        more += ["--voice"] + (["--own-models", f'"{args.own_models}"'] if args.own_models else [])
+    if args.translator:
+        more += ["--translator"]
+    t = time.time()
+    rc, out = box.setup(source, more, 3 * 3600)
+    took = round((time.time() - t) / 60, 1)
+    check(f"PAN Setup with {' and '.join(w for w, on in (('voice', args.voice), ('the translator', args.translator)) if on)} finished ({took} min)",
+          rc == 0 and "PAN is installed." in out, out[-900:])
+    for line in out.splitlines():
+        if "models," in line or "PAN said:" in line or line.strip().startswith("!"):
+            print("      " + line.strip())
+    m = box.helper("models")
+    if args.voice:
+        check("Setup heard PAN answer a spoken line", "PAN answers a spoken line." in out, out[-500:])
+        names = [x.get("name") for x in ((m.get("tags") or {}).get("json") or {}).get("models") or []]
+        check(f"the models are here ({len(names)})", len(names) >= 4, names)
+        check("the model runner and the voice reader listen on this computer only", only_local(m["listen"]["ollama"]) and only_local(m["listen"]["reader"]), m["listen"])
+        v = box.helper("voice", timeout=400)
+        check(f"PAN answers a spoken line (first word {v.get('firstMs', 0) / 1000:.1f} s)", v.get("ok"), v)
+        print(f"      said: {v.get('said')!r}  PAN: {v.get('reply')!r}  model: {v.get('model')}")
+        check("the model runner's port is closed from another computer", closed_from_here(box.host, 11434), 11434)
+        check("the voice reader's port is closed from another computer", closed_from_here(box.host, 7786), 7786)
+    if args.translator:
+        check("Setup heard the translator answer", "The translator answers" in out, out[-500:])
+        check("the translator listens on this computer only", only_local(m["listen"]["translator"]), m["listen"]["translator"])
+        es = translate(box, "Good morning. Where is the train station?", "en", "es")
+        check("English to Spanish", any(w in (es.get("text") or "").lower() for w in ("buenos", "estaci")), es)
+        en = translate(box, "Je voudrais un cafe, s'il vous plait.", "fr", "en")
+        check("French to English", "coffee" in (en.get("text") or "").lower(), en)
+        print(f"      {es.get('text')!r} in {es.get('ms')} ms;  {en.get('text')!r} in {en.get('ms')} ms")
+        check("the translator's port is closed from another computer", closed_from_here(box.host, 7784), 7784)
 
 
 def closed_from_here(host, port):
@@ -127,6 +174,9 @@ def main():
     ap.add_argument("--target", required=True, help="user@host of the Linux computer under test")
     ap.add_argument("--real", action="store_true", help="default folder and ports, all of PAN. Only for a clean test computer.")
     ap.add_argument("--keep", action="store_true", help="leave PAN installed at the end")
+    ap.add_argument("--voice", action="store_true", help="also install what PAN talks with (Ollama and the models, several GB) and check a spoken line. With --real only.")
+    ap.add_argument("--own-models", default="", help="with --voice: a folder ON THE TARGET holding PAN's own two models as .gguf files")
+    ap.add_argument("--translator", action="store_true", help="also install the computer's own translator and check it translates. With --real only.")
     ap.add_argument("--ssh-opt", action="append", default=[], help="one more word for the ssh command line (repeat it)")
     ap.add_argument("--check-host", help="the address to try PAN's ports on from here, when it is not the ssh host")
     args = ap.parse_args()
@@ -182,6 +232,9 @@ def main():
         me = ((r.get("me") or {}).get("json") or {})
         check("PAN knows the device by name, through the link", (me.get("link_device") or {}).get("name") == "install test device", me.get("link_device"))
 
+        if args.voice or args.translator:
+            models_stage(box, source, args)
+
         stage("3. PAN crashes")
         r = box.helper("kill-pan")
         check("PAN was killed", len(r.get("killed") or []) > 0, r)
@@ -195,6 +248,12 @@ def main():
         check(f"PAN is back ({back} s)", r.get("ok") and back is not None, r)
         devices = box.http("GET", "/api/v1/link/devices").get("json") or []
         check("the paired device is still there", any(d.get("name") == "install test device" for d in devices), [d.get("name") for d in devices])
+        if args.voice:
+            v = box.helper("voice", timeout=400)
+            check(f"after the restart the model runner is back and PAN still talks (first word {v.get('firstMs', 0) / 1000:.1f} s)", v.get("ok"), v)
+        if args.translator:
+            es = translate(box, "Good morning. Where is the train station?", "en", "es")
+            check("after the restart the translator is back", any(w in (es.get("text") or "").lower() for w in ("buenos", "estaci")), es)
 
         stage("5. Run PAN Setup again (an update)")
         rc, out = box.setup(source)
@@ -221,6 +280,10 @@ def main():
                 rc, out = box.uninstall(True)
                 check("uninstall finished", rc == 0 and "PAN is removed." in out, out[-500:])
                 gone(box.helper("probe"), "wiped", True)
+                if args.voice or args.translator:
+                    m = box.helper("models")
+                    check("wiped: the model runner, the voice reader and the translator are gone",
+                          not m["listen"]["ollama"] and not m["listen"]["reader"] and not m["listen"]["translator"] and not m["homeOllama"], m)
             else:
                 print("  (nothing of this test's to remove)")
             box.sh(f"rm -rf {box.work}")

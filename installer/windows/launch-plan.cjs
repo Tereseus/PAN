@@ -110,7 +110,9 @@ function launchPlan(config, hostname, baseEnv = {}, platform = 'win32') {
       args: ['serve'],
       cwd: p.dirname(String(config.ollama)),
       log: p.join(dataDir, 'ollama.log'),
-      env: baseEnv,
+      // Where PAN Setup put the models when it installed Ollama itself (Linux): inside the
+      // install folder, so removing PAN removes them.
+      env: config.ollamaModels ? { ...baseEnv, OLLAMA_MODELS: String(config.ollamaModels) } : baseEnv,
       restartOnCleanExit: true,
       onlyIfDown: 'http://127.0.0.1:11434/api/version',
     } : null,

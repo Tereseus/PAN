@@ -103,7 +103,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // best first by the hub bench. A folder counts once its model.bin is complete (no .part files
 // beside it), so a download in progress is never loaded.
 const PAN_LOCAL = dirname(getDataDir());
-const TRANSLATE_PY = join(PAN_LOCAL, 'translate', 'venv', 'Scripts', 'python.exe');
+const ON_WINDOWS = process.platform === 'win32';
+const TRANSLATE_PY = ON_WINDOWS
+  ? join(PAN_LOCAL, 'translate', 'venv', 'Scripts', 'python.exe')
+  : join(PAN_LOCAL, 'translate', 'venv', 'bin', 'python');
 const TRANSLATE_SERVER = join(__dirname, 'translate-server.py');
 const TRANSLATE_MODELS = ['madlad400-3b-mt-ct2-int8', 'm2m100-418m-ct2-int8'];
 function pickTranslateModel() {
@@ -124,7 +127,12 @@ const TRANSLATE_PORT = 7784;
 // setting, run on this machine's CPU by the llama-server Ollama ships, from the file Ollama holds.
 // --swa-full is why this exists: without it nothing a prompt shares with the last one is reused.
 // A machine with no such setting or no Ollama has no reader service, like the translator above.
-const READER_EXE = join(dirname(PAN_LOCAL), 'Programs', 'Ollama', 'lib', 'ollama', 'llama-server.exe');
+// On Windows Ollama installs per user under Programs. On Linux it is the copy PAN Setup put
+// in the install folder, or the person's own system wide Ollama.
+const READER_EXE = ON_WINDOWS
+  ? join(dirname(PAN_LOCAL), 'Programs', 'Ollama', 'lib', 'ollama', 'llama-server.exe')
+  : ([join(PAN_LOCAL, 'ollama', 'lib', 'ollama', 'llama-server'), '/usr/local/lib/ollama/llama-server', '/usr/lib/ollama/llama-server']
+      .find((f) => existsSync(f)) || join(PAN_LOCAL, 'ollama', 'lib', 'ollama', 'llama-server'));
 function pickReaderModel() {
   for (const key of ['voice_student_model', 'voice_student_backup']) {
     try {
@@ -141,7 +149,7 @@ const READER_READY = !!READER_MODEL && existsSync(READER_EXE);
 // ("moondream:latest" on the hub), run by the same llama-server on this machine's graphics chip
 // through the Vulkan backend Ollama ships beside it. No setting, no service. With no usable chip
 // the backend stays on the CPU: it still answers, just no sooner than Ollama.
-const VULKAN_BACKEND = join(dirname(READER_EXE), 'vulkan', 'ggml-vulkan.dll');
+const VULKAN_BACKEND = join(dirname(READER_EXE), 'vulkan', ON_WINDOWS ? 'ggml-vulkan.dll' : 'libggml-vulkan.so');
 function pickPhotoReaderModel() {
   try {
     return String(get(`SELECT value FROM settings WHERE key = 'photo_reader'`)?.value || '').replace(/^"|"$/g, '').trim() || null;

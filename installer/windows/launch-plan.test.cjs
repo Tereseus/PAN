@@ -83,3 +83,9 @@ test('on Linux the same plan uses the Linux layout of the bundle', () => {
   assert.equal(p.ollama.cwd, '/usr/local/bin');
   assert.equal('PAN_HOST' in p.pan.env, false);
 });
+
+test('Ollama is told where its models are when PAN Setup chose the folder', () => {
+  const linux = { installDir: '/home/sam/pan', version: '1', ollama: '/home/sam/pan/ollama/bin/ollama', ollamaModels: '/home/sam/pan/ollama-models' };
+  assert.equal(launchPlan(linux, 'box', { HOME: '/home/sam' }, 'linux').ollama.env.OLLAMA_MODELS, '/home/sam/pan/ollama-models');
+  assert.equal('OLLAMA_MODELS' in launchPlan({ ...linux, ollamaModels: undefined }, 'box', {}, 'linux').ollama.env, false);
+});

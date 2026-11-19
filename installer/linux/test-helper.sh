@@ -7,6 +7,9 @@
 #     kill-pan                 kill PAN itself (not its launcher), as a crash would
 #     restart-unit             stop and start the unit, as a restart of the computer would
 #     pair CODE_B64 LISTEN     pair a stand-in device here and ask PAN, through the link, who it is
+#     models                   the model runner, the voice reader and the translator: ports, models
+#     voice                    one real voice turn, the way the phone sends it
+#     translate B64            one line through the computer's own translator ({text, src, tgt})
 set -uo pipefail
 ACTION="$1"; DIR="$2"; PORT="$3"; ADMIN="$4"; LINK_PORT="$5"; shift 5
 
@@ -72,6 +75,18 @@ case "$ACTION" in
         systemctl --user stop "$UNIT"; sleep 2; left="$(mine | wc -l)"
         systemctl --user start "$UNIT"
         printf '{"ok":%s,"leftAfterStop":%s}\n' "$(bool systemctl --user is-active "$UNIT")" "$left"
+        ;;
+    models)
+        tags="$(http GET http://127.0.0.1:11434/api/tags)"
+        printf '{"listen":{"ollama":%s,"reader":%s,"translator":%s},"tags":%s,"homeOllama":%s}\n' \
+            "$(jlist $(tcp 11434))" "$(jlist $(tcp 7786))" "$(jlist $(tcp 7784))" "${tags:-null}" "$(bool test -d "$HOME/.ollama")"
+        ;;
+    voice)
+        line="$("$NODE" "$DIR/app/$VERSION/launcher/voice-check.cjs" "$PORT" 2>/dev/null | tail -1)"
+        if [ -n "$line" ]; then printf '%s\n' "$line"; else printf '{"ok":false,"error":"no answer from voice-check"}\n'; fi
+        ;;
+    translate)
+        http POST http://127.0.0.1:7784/translate "$1"
         ;;
     pair)
         code="$(printf '%s' "$1" | base64 -d)"; listen="$2"

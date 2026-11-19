@@ -425,7 +425,8 @@ try {
         $config.ollama = (Ollama-Exe)
         WriteText $configPath ($config | ConvertTo-Json)
 
-        $ownDir = Join-Path $InstallDir "models"
+        # Not <install>\models: the translator keeps its models there, and this folder is deleted below.
+        $ownDir = Join-Path $dl "own-models"
         foreach ($m in $wanted) {
             $name = [string]$m.name
             if (Has-Model $have $name) { Say ("  have    {0}" -f $name); continue }

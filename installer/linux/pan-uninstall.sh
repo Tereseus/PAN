@@ -58,6 +58,27 @@ done
 [ -z "$(mine)" ] || LEFT="$LEFT  some of PAN's programs are still running"$'\n'
 say "  PAN is stopped."
 
+# 1b. Models PAN Setup added to an Ollama that was here before PAN: taken out again, and that
+#     Ollama is left alone. (An Ollama PAN Setup installed lives in this folder with its
+#     models, and goes with the files below.)
+NODE="$INSTALL_DIR/app/$(field version)/node/bin/node"
+if [ -x "$NODE" ]; then
+    added="$("$NODE" -e 'const c=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));if(!c.ollamaInstalledBySetup&&c.ollama)console.log([c.ollama,...(c.modelsAdded||[])].join("\n"))' "$CONFIG" 2>/dev/null)"
+    if [ -n "$added" ]; then
+        own="$(printf '%s\n' "$added" | head -1)"; n=0
+        while IFS= read -r model; do
+            [ -n "$model" ] && "$own" rm "$model" >/dev/null 2>&1 && n=$((n + 1))
+        done <<< "$(printf '%s\n' "$added" | tail -n +2)"
+        say "  Removed $n models from your Ollama."
+    fi
+fi
+
+# 1c. An Ollama that PAN Setup installed keeps a key of its own in ~/.ollama. It goes too,
+#     unless that folder holds models, which would mean somebody else's Ollama used it.
+if grep -q '"ollamaInstalledBySetup": *true' "$CONFIG" && [ -d "$HOME/.ollama" ] && [ ! -d "$HOME/.ollama/models" ]; then
+    rm -rf "$HOME/.ollama"
+fi
+
 # 2. The menu entry.
 [ "$TAG" = "pan" ] && rm -f "${XDG_DATA_HOME:-$HOME/.local/share}/applications/pan.desktop"
 

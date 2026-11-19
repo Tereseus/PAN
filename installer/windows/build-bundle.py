@@ -189,7 +189,7 @@ def build_linux(args, version, commit, out):
     raw = subprocess.run(["git", "-c", "core.autocrlf=false", "-c", "core.eol=lf", "archive", "--format=tar", args.ref,
                           "service", "installer/windows", "installer/linux"], cwd=ROOT, capture_output=True, check=True).stdout
     launcher = ("installer/windows/pan-launcher.cjs", "installer/windows/launch-plan.cjs", "installer/windows/voice-check.cjs")
-    setup = ("installer/linux/pan-setup.sh", "installer/linux/pan-uninstall.sh")
+    setup = ("installer/linux/pan-setup.sh", "installer/linux/pan-uninstall.sh", "installer/linux/setup-models.cjs")
     count = 0
     with tarfile.open(fileobj=io.BytesIO(raw)) as tar:
         for m in tar.getmembers():

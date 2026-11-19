@@ -3,7 +3,11 @@
   "ollama": {
     "installer": "https://ollama.com/download/OllamaSetup.exe",
     "signer": "Ollama Inc.",
-    "url": "http://127.0.0.1:11434"
+    "url": "http://127.0.0.1:11434",
+    "linux": {
+      "url": "https://github.com/ollama/ollama/releases/latest/download/ollama-linux-amd64.tar.zst",
+      "sums": "https://github.com/ollama/ollama/releases/latest/download/sha256sum.txt"
+    }
   },
   "sets": {
     "light": "a computer with less than 24 GB of memory: one stock model does the sorting too",

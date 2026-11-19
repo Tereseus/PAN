@@ -24,7 +24,15 @@
 #   --no-autostart --no-firewall --no-start
 #   --port N --carrier-port N --craft-port-base N --link-port N --link-admin HOST:PORT
 #
-# Not here yet (Windows has them): --voice and --translator.
+#   --voice            also install what PAN talks with: Ollama (its own package, into the
+#                      install folder, unless an Ollama already answers here) and the models
+#                      in service/model-set.json. Several GB. Then one real voice turn.
+#   --translator       also install the computer's own translator: a Python of its own inside
+#                      the install folder and the translation models from Hugging Face.
+#   --all              --voice and --translator
+#   --own-models DIR|URL  where PAN's own two models are, as .gguf files. Without it they
+#                      are skipped and the stock ones stand in.
+#   --model-set light|full  instead of choosing by this computer's memory
 set -uo pipefail
 
 SOURCE="https://github.com/Tereseus/PAN/releases/latest/download"
@@ -32,6 +40,7 @@ INSTALL_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/pan"
 DEFAULT_DIR="$INSTALL_DIR"
 PORT=7777; CARRIER_PORT=17760; CRAFT_PORT_BASE=17700; LINK_PORT=41720; LINK_ADMIN="127.0.0.1:7792"
 QUIET=0; NO_AUTOSTART=0; NO_FIREWALL=0; NO_START=0; DEV=0; START_TIMEOUT=240
+VOICE=0; TRANSLATOR=0; OWN_MODELS=""; MODEL_SET=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -48,7 +57,12 @@ while [ $# -gt 0 ]; do
         --no-firewall) NO_FIREWALL=1; shift ;;
         --no-start) NO_START=1; shift ;;
         --dev) DEV=1; shift ;;
-        -h|--help) sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --voice) VOICE=1; shift ;;
+        --translator) TRANSLATOR=1; shift ;;
+        --all) VOICE=1; TRANSLATOR=1; shift ;;
+        --own-models) OWN_MODELS="$2"; shift 2 ;;
+        --model-set) MODEL_SET="$2"; shift 2 ;;
+        -h|--help) sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "PAN Setup: unknown option $1" >&2; exit 2 ;;
     esac
 done
@@ -226,7 +240,7 @@ LINK_PORT="$LINK_PORT" LINK_ADMIN="$LINK_ADMIN" TAG="$TAG" DEV="$DEV" FIREWALL="
   fs.writeFileSync(f,JSON.stringify({version:e.VERSION,installDir:e.INSTALL_DIR,dataDir:e.DATA_DIR,port:+e.PORT,carrierPort:+e.CARRIER_PORT,
     craftPortBase:+e.CRAFT_PORT_BASE,linkPort:+e.LINK_PORT,linkAdmin:e.LINK_ADMIN,tag:e.TAG,unit:e.UNIT,installed:new Date().toISOString(),
     firewallRule:e.FIREWALL||old.firewallRule||null,autostart:false,dev:e.DEV==="1",
-    ollama:old.ollama||null,ollamaInstalledBySetup:!!old.ollamaInstalledBySetup,modelsAdded:old.modelsAdded||[]},null,2))' \
+    ollama:old.ollama||null,ollamaInstalledBySetup:!!old.ollamaInstalledBySetup,ollamaModels:old.ollamaModels||undefined,modelsAdded:old.modelsAdded||[]},null,2))' \
     || stop_setup "Could not write install.json"
 
 # Start with the computer, as this user (PAN needs this user's own Claude sign in).
@@ -299,6 +313,21 @@ else
     for d in "$APP_ROOT"/*; do
         [ -d "$d" ] && [ "$d" != "$TARGET" ] && rm -rf "$d"
     done
+
+    # ---- 6. what PAN talks with, and the translator -------------------------------------
+    if [ "$VOICE" = 1 ] || [ "$TRANSLATOR" = 1 ]; then
+        STEP="models"
+        extra=(--install-dir "$INSTALL_DIR")
+        [ "$VOICE" = 1 ] && extra+=(--voice)
+        [ "$TRANSLATOR" = 1 ] && extra+=(--translator)
+        [ -n "$OWN_MODELS" ] && extra+=(--own-models "$OWN_MODELS")
+        [ -n "$MODEL_SET" ] && extra+=(--model-set "$MODEL_SET")
+        [ "$QUIET" = 1 ] && extra+=(--quiet)
+        "$NODE" "$TARGET/setup/setup-models.cjs" "${extra[@]}" || { save_result false "the models did not install"; exit 1; }
+    fi
+fi
+if [ "$NO_START" = 1 ] && { [ "$VOICE" = 1 ] || [ "$TRANSLATOR" = 1 ]; }; then
+    warn "The models were not installed because PAN was not started."
 fi
 
 step "done" "Done"
