@@ -76,12 +76,46 @@ function readPhone(day) {
       pending.delete(r.device_id);
       byText.set(norm(m.slice(10)), turn);
       last.set(r.device_id, turn);
-    } else if ((x = /^Stream \(first=(\d+)ms total=(\d+)ms\)/.exec(m))) {
+    } else if ((x = /^Stream \(first=(\d+)ms total=(\d+)ms\)(?: up=(\d+)KB\/(\d+)ms)?/.exec(m))) {
       const t = last.get(r.device_id);
-      if (t && t.first == null) { t.first = +x[1]; t.total = +x[2]; }
+      // up (app 0.5.37 on): the turn's size and how long until the hub began answering, which is
+      // the network's share of the wait. In the car on a phone's hotspot it was most of it.
+      if (t && t.first == null) { t.first = +x[1]; t.total = +x[2]; if (x[4] != null) { t.up_kb = +x[3]; t.up = +x[4]; } }
     } else if ((x = /^Build: versionCode=(\S+)/.exec(m))) builds.add(`${r.device_id} ${x[1]}`);
   }
   return { byText, builds: [...builds] };
+}
+
+// Which voice each device spoke in. The app logs a "Voice: ..." line at every start and each
+// time the Android voice takes a line (tts/VoiceChoice.kt). The car unit spoke in the Android
+// voice for two days and nothing anywhere said so (2026-11-17 to 19): this puts it in the report.
+// rows: [{ device_id, message }] in order. -> [{ device, voice, problems: [..] }], problems first.
+const VOICE_FINE = [/^Voice: \S+ ready$/, /^Piper TTS: \S+ voice ready$/, /^Voice: the Android voice, chosen in Settings$/];
+export function voicesFrom(rows) {
+  const by = new Map();
+  for (const r of rows || []) {
+    const m = String(r.message || '');
+    const d = by.get(r.device_id) || { device: r.device_id, started: false, voice: null, problems: [] };
+    by.set(r.device_id, d);
+    if (m.startsWith('Build: versionCode=')) { d.started = true; continue; }
+    if (!m.startsWith('Voice: ') && !m.startsWith('Piper TTS: ')) continue;
+    d.voice = m;
+    if (!VOICE_FINE.some((re) => re.test(m)) && !d.problems.includes(m)) d.problems.push(m);
+  }
+  const out = [];
+  for (const d of by.values()) {
+    // The app started and said nothing about its voice: a build from before every case logged.
+    if (d.started && !d.voice) d.problems.push('started without saying which voice it has (a build before 0.5.37)');
+    out.push({ device: d.device, voice: d.voice, problems: d.problems.slice(0, 6) });
+  }
+  return out.sort((a, b) => b.problems.length - a.problems.length || a.device.localeCompare(b.device));
+}
+
+function readVoices(day) {
+  return voicesFrom(all(`SELECT device_id, message FROM client_logs
+                          WHERE created_at >= :d AND created_at < date(:d, '+1 day') AND device_id LIKE 'phone-%'
+                            AND (message LIKE 'Voice: %' OR message LIKE 'Piper TTS: %' OR message LIKE 'Build: versionCode=%')
+                          ORDER BY id`, { ':d': day }));
 }
 
 function readTurns(day) {
@@ -206,6 +240,7 @@ export async function buildReport(day = yesterday(), { judge = true, log = conso
     speed_ms: {
       phone_end_of_speech: stats(turns.map((t) => t.phone.commit)),
       phone_first_words: stats(spoken.map((t) => t.phone.first)),
+      phone_upload_and_back: stats(spoken.map((t) => t.phone.up)),
       phone_reply_done: stats(spoken.map((t) => t.phone.total)),
       hub_asr: hubStage('asr'),
       hub_setup: hubStage('setup'),
@@ -228,6 +263,7 @@ export async function buildReport(day = yesterday(), { judge = true, log = conso
     worst: scored.sort((a, b) => a.judged.score - b.judged.score).slice(0, 8)
       .map((t) => ({ at: new Date(t.at).toLocaleTimeString(), said: t.text, reply: String(t.reply).slice(0, 200), score: t.judged.score, why: t.judged.why, path: t.hub.path || null })),
     missed_lines: misses.slice(0, 8).map((t) => ({ at: new Date(t.at).toLocaleTimeString(), said: t.text, reason: t.reason, why: t.judged.why })),
+    voices: readVoices(day),
     slowest: spoken.filter((t) => Number.isFinite(t.phone.first)).sort((a, b) => b.phone.first - a.phone.first).slice(0, 5)
       .map((t) => ({ at: new Date(t.at).toLocaleTimeString(), said: t.text.slice(0, 80), phone_first: t.phone.first, hub_first_sent: t.hub.first_chunk_sent ?? null, path: t.hub.path || null })),
   };
@@ -270,6 +306,9 @@ function toMarkdown(r, prev) {
     ...Object.keys(r.speed_ms).map((k) => `| ${k} | ${s(k)} | ${ps(k) ?? '-'} |`),
     '',
   ];
+  const wrong = (r.voices || []).filter((v) => v.problems.length);
+  if (wrong.length) lines.push('## Voices: NOT all on PAN\'s voice', '', ...wrong.flatMap((v) => v.problems.map((p) => `- ${v.device}: ${p}`)), '');
+  else if ((r.voices || []).length) lines.push(`Voices: every device that started was on its set voice (${r.voices.length}).`, '');
   if (r.worst.length) lines.push('## Worst replies', '', ...r.worst.map((w) => `- ${w.at} [${w.score}, ${w.path || '-'}] "${w.said}" -> "${w.reply}" (${w.why})`), '');
   if (r.missed_lines.length) lines.push('## Missed (silent, judged for PAN)', '', ...r.missed_lines.map((m) => `- ${m.at} [${m.reason || '-'}] "${m.said}" (${m.why})`), '');
   if (r.slowest.length) lines.push('## Slowest first words', '', ...r.slowest.map((x) => `- ${x.at} phone ${x.phone_first} ms, hub ${x.hub_first_sent ?? '-'} ms, ${x.path || '-'}: "${x.said}"`), '');

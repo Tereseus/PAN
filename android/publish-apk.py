@@ -4,6 +4,9 @@ from the builds before it.
     python android/publish-apk.py --hub user@host [--keep 6] [--car car]
 
 What it does, in order:
+  0. Runs the app's unit tests (gradlew :app:testDebugUnitTest) and stops if one fails. Among
+     them is VoiceChoiceTest: which voice speaks, in every state the setting can be in. A build
+     that could speak in the wrong voice without saying so is not published. --no-tests skips.
   1. Reads the new build's versionCode here and the published one's on the hub. The same code
      twice is refused: a patch is made from one exact file per code.
   2. On the hub, keeps the published pair beside itself as app-debug.v<code>.apk and
@@ -114,7 +117,20 @@ def main():
     ap.add_argument("--keep", type=int, default=6, help="patches from this many earlier builds")
     ap.add_argument("--level", type=int, default=9, help="zstd level for the patches (9: 0.2 MB in a fifth of a second; the higher levels come out bigger through the library)")
     ap.add_argument("--car", help="ssh name of a car unit to update right after")
+    ap.add_argument("--no-tests", action="store_true", help="publish without running the app's unit tests")
     a = ap.parse_args()
+
+    if not a.no_tests:
+        env = dict(os.environ)
+        jbr = r"C:\Program Files\Android\Android Studio\jbr"
+        if not env.get("JAVA_HOME") and os.path.isdir(jbr):
+            env["JAVA_HOME"] = jbr
+        gradlew = os.path.join(HERE, "gradlew.bat" if os.name == "nt" else "gradlew")
+        r = subprocess.run([gradlew, "-p", HERE, ":app:testDebugUnitTest", "-q"], capture_output=True, text=True, env=env)
+        if r.returncode != 0:
+            tail = os.linesep.join((r.stdout + r.stderr).strip().splitlines()[-25:])
+            sys.exit("the app's unit tests failed, nothing published:" + os.linesep + tail)
+        print("app unit tests: passed")
 
     apk, meta = os.path.join(OUT, "app-debug.apk"), os.path.join(OUT, "output-metadata.json")
     new_code = code_of(open(meta, encoding="utf-8").read())

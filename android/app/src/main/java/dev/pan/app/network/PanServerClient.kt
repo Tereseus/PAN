@@ -430,6 +430,7 @@ class PanServerClient @Inject constructor(
         onInterpreting: (() -> Unit)? = null,
         onInterpreter: ((String?) -> Unit)? = null,
         onLineLang: ((String) -> Unit)? = null,
+        onSent: ((bytes: Long, ms: Long) -> Unit)? = null,
         onChunk: (String) -> Unit
     ): QueryResponse? = withContext(Dispatchers.IO) {
         try {
@@ -469,7 +470,12 @@ class PanServerClient @Inject constructor(
 
             val call = okHttpClient.newCall(request)
             onCall?.invoke(call)
+            // The hub starts its answer the moment the whole request is in (it sends the stream's
+            // headers before doing anything else), so this is how long the turn took to go up and
+            // the first byte to come back: the part of the wait that is the network, not the hub.
+            val sentAt = android.os.SystemClock.elapsedRealtime()
             val response = call.execute()
+            onSent?.invoke(body.contentLength(), android.os.SystemClock.elapsedRealtime() - sentAt)
             if (!response.isSuccessful) {
                 Log.e(TAG, "Stream request failed: ${response.code}")
                 return@withContext null

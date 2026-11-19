@@ -77,7 +77,21 @@ class TtsManager @Inject constructor(
         } else {
             piperActive = false
             Log.w(TAG, "Piper '$quality' not ready, using Android TTS")
+            onLog?.invoke("Voice: $quality could not be loaded, the Android voice speaks")
         }
+    }
+
+    /** For the app's own log, which goes to the hub: why a voice other than ΠAN's is speaking. */
+    var onLog: ((String) -> Unit)? = null
+    private val toldWhy = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    // Each reason once per language while the app runs: a line the Android voice takes is never
+    // silent in the log (the car unit, 2026-11-19), and never a line of log per sentence either.
+    private fun tellWhy(choice: VoiceChoice.ForLine) {
+        val why = choice.why ?: return
+        // The Android voice chosen by hand in Settings is the voice: nothing to explain.
+        if (!piperActive && voicePicked && voiceQuality == VoiceChoice.ANDROID) return
+        if (toldWhy.add("${choice.engine} ${choice.lang} $why")) onLog?.invoke("Voice: the Android voice has a line in ${choice.lang}: $why")
     }
 
     override fun onInit(status: Int) {
@@ -430,42 +444,32 @@ class TtsManager @Inject constructor(
         if (text.isBlank()) return
 
         val foreign = scriptLocale(text)
-        // Also any reply in another script outside interpreting: the line that STARTS interpreting
-        // ("translate what I say to Japanese") is not marked as interpreted yet, and its Japanese
-        // "understood" went to the Android voice, a woman's, before PAN's own voice took over
-        // (owner, 2026-11-15). One voice everywhere; the Android voice is only for a language
-        // Supertonic cannot read.
-        if (piperActive && (interpreting || foreign != null)) {
-            val lang = lineLanguage(foreign)
-            if (piper.speaks(lang)) {
-                val voice = if (interpreting) lineVoice else null
-                LineClauses.split(lineText(text, foreign, lang)).forEach { piper.speak(it, lang, voice) }
+        // Who says it is decided in VoiceChoice (rules with tests). Any reply in another script goes
+        // to ΠAN's voice outside interpreting too: the line that STARTS interpreting ("translate
+        // what I say to Japanese") is not marked as interpreted yet, and its Japanese "understood"
+        // went to the Android voice, a woman's, before ΠAN's own voice took over (owner,
+        // 2026-11-15). One voice everywhere; the Android voice is only for a language ΠAN's cannot
+        // read, and each time it takes a line the log says why.
+        val choice = VoiceChoice.forLine(piperActive, ready, interpreting, foreign?.language, lineLang, otherLanguage, lineVoice) { piper.speaks(it) }
+        tellWhy(choice)
+        when (choice.engine) {
+            VoiceChoice.Engine.PAN -> {
+                if (interpreting || foreign != null) LineClauses.split(lineText(text, foreign, choice.lang)).forEach { piper.speak(it, choice.lang, choice.sid) }
+                else piper.speak(latinGreek(text))
                 return
             }
-        }
-        if (foreign != null && ready) {
-            speakForeign(text, foreign)
-            return
-        }
-        // A Latin-letter language this voice cannot read: the Android voice for that language, not the English one.
-        val said = lineLang
-        if (interpreting && said != null && said != "en" && ready) {
-            speakForeign(text, Locale(said))
-            return
-        }
-
-        if (piperActive && interpreting && ready) {
-            speakTracked(androidText(text), englishVoice, Locale.US)
-            return
+            VoiceChoice.Engine.ANDROID_OTHER_LANGUAGE -> {
+                speakForeign(text, foreign ?: Locale(choice.lang))
+                return
+            }
+            VoiceChoice.Engine.ANDROID_ENGLISH -> if (piperActive) {
+                speakTracked(androidText(text), englishVoice, Locale.US)
+                return
+            }
+            VoiceChoice.Engine.NOTHING -> return
         }
 
-        if (piperActive) {
-            piper.speak(latinGreek(text))
-            return
-        }
-
-        // Android TTS fallback
-        if (!ready) return
+        // The Android voice is the voice (ΠAN's is not loaded).
         val spoken = androidText(text)
         // A foreign reply may have switched the voice; English goes back to the English one.
         englishVoice?.let { if (mainVoice != it) { tts?.voice = it; mainVoice = it } }

@@ -804,39 +804,33 @@ class PanForegroundService : Service() {
             CoroutineScope(Dispatchers.IO).launch {
                 val piper = tts.piper
                 piper.dropOldVoiceFiles()
-                var preferred = tts.voiceQuality
-                if (preferred in DEAD_VOICES) {
-                    panLog("Voice: $preferred speaks nothing on this sherpa-onnx, moving to $MAIN_VOICE")
-                    preferred = if (piper.isFullyReady(MAIN_VOICE)) MAIN_VOICE else "android"
-                    mainHandler.post { tts.voiceQuality = preferred }
-                }
-                if (preferred != "android" && piper.isFullyReady(preferred)) {
-                    // Already downloaded — just activate
-                    mainHandler.post { tts.activateVoice(preferred) }
-                    panLog("Piper TTS: $preferred voice ready")
-                } else if (!piper.isFullyReady(MAIN_VOICE)) {
-                    panLog("Voice: downloading $MAIN_VOICE (~129MB)...")
-                    val ok = piper.downloadVoice(MAIN_VOICE)
-                    if (ok) {
-                        mainHandler.post {
-                            if (tts.voiceQuality == "android") {
-                                tts.voiceQuality = MAIN_VOICE
-                                panLog("Voice: $MAIN_VOICE ready")
-                            }
-                        }
-                    } else {
-                        panLog("Voice: $MAIN_VOICE download failed, using the Android voice")
+                tts.onLog = { panLog(it) }
+                // What to do is VoiceChoice's to say (tts/VoiceChoice.kt, with a test for every state
+                // the setting can be in). Every case logs a line: the car unit spoke in the Android
+                // voice from Nov 17 to Nov 19 because the one case it was in said nothing.
+                val plan = dev.pan.app.tts.VoiceChoice.atStart(tts.voiceQuality, tts.voicePicked) { piper.isFullyReady(it) }
+                panLog(plan.say)
+                when (plan.action) {
+                    dev.pan.app.tts.VoiceChoice.StartAction.USE -> mainHandler.post {
+                        // Setting the voice loads it too.
+                        if (plan.setting != null) tts.voiceQuality = plan.voice else tts.activateVoice(plan.voice)
                     }
-                } else if (preferred == "android" && tts.voicePicked) {
-                    panLog("Voice: the Android voice, chosen in Settings")
-                } else {
-                    // The voice is on the device but the setting never moved to it: the download ended and
-                    // the app was stopped before the next line ran (a car turned off), or the setting names
-                    // a voice that is not there. Nothing was logged and the Android voice spoke from then
-                    // on, English and every other language: the car unit, from Nov 17 to Nov 19, where the
-                    // owner heard a voice that was not PAN's and a woman's voice for Japanese.
-                    panLog("Voice: $MAIN_VOICE is on the device and the setting was '$preferred', moving to it")
-                    mainHandler.post { tts.voiceQuality = MAIN_VOICE }
+                    dev.pan.app.tts.VoiceChoice.StartAction.KEEP_ANDROID -> {}
+                    dev.pan.app.tts.VoiceChoice.StartAction.DOWNLOAD -> {
+                        plan.setting?.let { s -> mainHandler.post { tts.voiceQuality = s } }
+                        val ok = piper.downloadVoice(plan.voice)
+                        if (ok) {
+                            mainHandler.post {
+                                // Unless the Android voice was chosen in Settings while this ran.
+                                if (!(tts.voicePicked && tts.voiceQuality == dev.pan.app.tts.VoiceChoice.ANDROID)) {
+                                    tts.voiceQuality = plan.voice
+                                    panLog("Voice: ${plan.voice} ready")
+                                }
+                            }
+                        } else {
+                            panLog("Voice: ${plan.voice} download failed, the Android voice speaks until the next start tries again")
+                        }
+                    }
                 }
             }
 
@@ -2074,6 +2068,8 @@ class PanForegroundService : Service() {
                 // Sentence buffer for streaming TTS — speak each sentence as it arrives
                 val sentenceBuf = StringBuilder()
                 var firstChunkTime = 0L
+                var sentBytes = 0L
+                var sentMs = 0L
                 var spokeFirst = false
 
                 VoiceEvents.emit("query", "text" to text, "history_lines" to conversationHistory.size,
@@ -2112,6 +2108,7 @@ class PanForegroundService : Service() {
                     onInterpreting = { tts.interpreting = true },
                     onLineLang = { lang -> tts.lineLang = lang },
                     onInterpreter = { lang -> setInterpreter(lang) },
+                    onSent = { bytes, ms -> sentBytes = bytes; sentMs = ms },
                     onChunk = { chunk ->
                         if (firstChunkTime == 0L) {
                             firstChunkTime = System.currentTimeMillis()
@@ -2221,7 +2218,8 @@ class PanForegroundService : Service() {
                 }
 
                 val firstWordMs = if (firstChunkTime > 0L) firstChunkTime - startTime else elapsed
-                panLog("Stream (first=${firstWordMs}ms total=${elapsed}ms): ${remaining.take(60)}")
+                // up: the turn's size and how long until the hub began answering (the network's share of "first").
+                panLog("Stream (first=${firstWordMs}ms total=${elapsed}ms) up=${sentBytes / 1024}KB/${sentMs}ms: ${remaining.take(60)}")
 
                 if (response != null) {
                     val responseText = response.response_text.ifBlank { remaining }
