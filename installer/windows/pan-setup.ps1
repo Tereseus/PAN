@@ -16,6 +16,9 @@
 #
 #   -Source     a folder or an http(s) address holding release.json and the zip
 #   -Quiet      no questions, no browser, no administrator prompt (for tests)
+#   -Dev        test mode: PAN skips the parts that act on the whole computer (its steward,
+#               the orphan reaper, the device heartbeat). For an install test on a computer
+#               that already runs a real PAN.
 #
 # Plain ASCII on purpose: Windows PowerShell 5.1 misreads UTF-8 files that have no BOM.
 
@@ -31,6 +34,7 @@ param(
     [switch]$NoAutostart,
     [switch]$NoFirewall,
     [switch]$NoStart,
+    [switch]$Dev,
     [int]$StartTimeoutSec = 240
 )
 
@@ -209,7 +213,7 @@ try {
         port = $Port; carrierPort = $CarrierPort; craftPortBase = $CraftPortBase
         linkPort = $LinkPort; linkAdmin = $LinkAdmin; tag = $Tag
         installed = (Get-Date).ToUniversalTime().ToString("s") + "Z"
-        firewallRule = $null; autostart = $false
+        firewallRule = $null; autostart = $false; dev = [bool]$Dev
     }
     Copy-Item (Join-Path $target "setup\pan-uninstall.ps1") (Join-Path $InstallDir "uninstall.ps1") -Force
 

@@ -53,7 +53,11 @@ function launchPlan(config, hostname, baseEnv = {}) {
   // An installed PAN never opens its ports to the network: other devices come in through
   // pan-link. Whatever the person's environment says, this stays shut.
   delete env.PAN_HOST;
+  // PAN_DEV comes from install.json only (pan-setup.ps1 -Dev), never from the environment.
+  // A dev PAN skips the parts that act on the whole computer (the steward, the orphan
+  // reaper, the device heartbeat), which is what an install test beside a real PAN needs.
   delete env.PAN_DEV;
+  if (config.dev === true) env.PAN_DEV = '1';
   Object.assign(env, {
     PAN_DATA_DIR: dataDir,
     PAN_PORT: String(panPort),

@@ -56,3 +56,9 @@ test('a program that keeps dying is started again more slowly', () => {
   assert.equal(restartDelayMs(3), 40000);
   assert.equal(restartDelayMs(50), 300000);
 });
+
+test('test mode comes from install.json only', () => {
+  assert.equal(launchPlan({ ...config, dev: true }, 'X', {}).pan.env.PAN_DEV, '1');
+  assert.equal('PAN_DEV' in launchPlan({ ...config, dev: 'yes' }, 'X', {}).pan.env, false);
+  assert.equal('PAN_HOST' in launchPlan({ ...config, dev: true }, 'X', { PAN_HOST: '0.0.0.0' }).pan.env, false);
+});

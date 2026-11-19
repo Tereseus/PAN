@@ -16,7 +16,7 @@ none of that may ever ship. A file that is not committed is not in the bundle.
 
 Runs at low priority, so it does not hog the computer it builds on.
 """
-import argparse, hashlib, io, json, os, shutil, subprocess, sys, tarfile, time, zipfile
+import argparse, hashlib, io, json, os, shutil, stat, subprocess, sys, tarfile, time, zipfile
 
 sys.stdout.reconfigure(encoding="utf-8")
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -34,6 +34,21 @@ def run(cmd, cwd=None, env=None, check=True):
         print(p.stdout[-3000:], p.stderr[-3000:])
         sys.exit(f"failed ({p.returncode}): {cmd}")
     return p.stdout.strip()
+
+
+def remove_tree(path):
+    """Delete a folder for real: read only files and long paths included. Stops if it can't."""
+    if not os.path.exists(path):
+        return
+    long = chr(92) * 2 + "?" + chr(92) + os.path.abspath(path)
+
+    def retry(func, target, _exc):
+        os.chmod(target, stat.S_IWRITE)
+        func(target)
+
+    shutil.rmtree(long, onexc=retry)
+    if os.path.exists(path):
+        sys.exit(f"could not clear {path}")
 
 
 def sha256(path):
@@ -57,7 +72,7 @@ def main():
     out = os.path.abspath(args.out)
     stage = os.path.join(out, "stage")
     app = os.path.join(stage, "app")
-    shutil.rmtree(stage, ignore_errors=True)
+    remove_tree(stage)
     os.makedirs(app)
     print(f"bundle {version}")
 
@@ -99,8 +114,14 @@ def main():
         print("node_modules from the cache")
     else:
         print("node_modules: npm ci (a few minutes)")
-        npm = shutil.which("npm.cmd") or shutil.which("npm")
-        run([npm, "ci", "--omit=dev", "--no-audit", "--no-fund"], cwd=service)
+        # npm through node itself, not npm.cmd: a .cmd goes through cmd.exe, and a computer
+        # with a cmd AutoRun set can swallow the command and still report success.
+        npm_cli = os.path.join(os.path.dirname(node), "node_modules", "npm", "bin", "npm-cli.js")
+        if not os.path.exists(npm_cli):
+            sys.exit(f"npm is not beside node ({npm_cli})")
+        run([node, npm_cli, "ci", "--omit=dev", "--no-audit", "--no-fund"], cwd=service)
+        if not os.path.isdir(os.path.join(service, "node_modules", "express")):
+            sys.exit("npm ci reported success but installed nothing")
         os.makedirs(os.path.dirname(cache), exist_ok=True)
         shutil.move(os.path.join(service, "node_modules"), cache)
     run(["robocopy", cache, os.path.join(service, "node_modules"), "/E", "/NFL", "/NDL", "/NJH", "/NJS",
@@ -115,7 +136,9 @@ def main():
     # 4. pan-link, built from source.
     print("pan-link")
     os.makedirs(os.path.join(app, "pan-link"))
-    env = dict(os.environ, CGO_ENABLED="0", GOOS="windows", GOARCH="amd64")
+    # GOENV off: a build machine's own Go settings (an -overlay left by another build)
+    # must not leak into this one.
+    env = dict(os.environ, CGO_ENABLED="0", GOOS="windows", GOARCH="amd64", GOENV="off", GOFLAGS="-mod=readonly")
     run(["go", "build", "-trimpath", "-ldflags", "-s -w", "-o", os.path.join(app, "pan-link", "pan-link.exe"),
          "./cmd/pan-link"], cwd=os.path.join(ROOT, "pan-link"), env=env)
 
@@ -139,7 +162,7 @@ def main():
     with open(os.path.join(out, "release.json"), "w", encoding="utf-8") as f:
         json.dump(release, f, indent=2)
     if not args.keep_stage:
-        shutil.rmtree(stage, ignore_errors=True)
+        remove_tree(stage)
     print(json.dumps(release, indent=2))
 
 
