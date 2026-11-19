@@ -72,3 +72,14 @@ test('test mode comes from install.json only', () => {
   assert.equal('PAN_DEV' in launchPlan({ ...config, dev: 'yes' }, 'X', {}).pan.env, false);
   assert.equal('PAN_HOST' in launchPlan({ ...config, dev: true }, 'X', { PAN_HOST: '0.0.0.0' }).pan.env, false);
 });
+
+test('on Linux the same plan uses the Linux layout of the bundle', () => {
+  const linux = { installDir: '/home/sam/.local/share/pan', version: '2026.11.19-abc', ollama: '/usr/local/bin/ollama' };
+  const p = launchPlan(linux, 'box', { PAN_HOST: '0.0.0.0' }, 'linux');
+  assert.equal(p.pan.exe, '/home/sam/.local/share/pan/app/2026.11.19-abc/node/bin/node');
+  assert.deepEqual(p.pan.args, ['/home/sam/.local/share/pan/app/2026.11.19-abc/service/pan.js', 'start']);
+  assert.equal(p.link.exe, '/home/sam/.local/share/pan/app/2026.11.19-abc/pan-link/pan-link');
+  assert.equal(p.pan.env.PAN_DATA_DIR, '/home/sam/.local/share/pan/data');
+  assert.equal(p.ollama.cwd, '/usr/local/bin');
+  assert.equal('PAN_HOST' in p.pan.env, false);
+});

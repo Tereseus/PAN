@@ -1,5 +1,6 @@
 // PAN's launcher on an installed computer. Started at logon (and by PAN Setup) as
-//     conhost.exe --headless <node.exe> pan-launcher.cjs <install folder>
+//     conhost.exe --headless <node.exe> pan-launcher.cjs <install folder>     (Windows)
+//     a systemd user unit running <node> pan-launcher.cjs <install folder>    (Linux)
 // so nothing shows on screen. It keeps pan-link and PAN running and writes what it does to
 // <data>\launcher.log. What it starts is decided in launch-plan.cjs.
 //
@@ -18,7 +19,7 @@ if (!installDir) {
 }
 
 const config = JSON.parse(fs.readFileSync(path.join(installDir, 'install.json'), 'utf8').replace(/^﻿/, ''));
-const plan = launchPlan(config, os.hostname(), process.env);
+const plan = launchPlan(config, os.hostname(), process.env, process.platform);
 fs.mkdirSync(plan.dataDir, { recursive: true });
 
 const logPath = path.join(plan.dataDir, 'launcher.log');
@@ -40,6 +41,7 @@ try {
 } catch {}
 fs.writeFileSync(pidPath, String(process.pid));
 
+const WINDOWS = process.platform === 'win32';
 let stopping = false;
 const children = new Map();
 
@@ -67,6 +69,9 @@ async function start(prog, quickDeaths = 0) {
   try {
     child = spawn(prog.exe, prog.args, {
       cwd: prog.cwd, env: prog.env, windowsHide: true, stdio: ['ignore', out, out],
+      // On Linux each program leads its own process group, so stopping it takes its
+      // children with it (PAN starts a Carrier, which starts a Craft).
+      detached: !WINDOWS,
     });
   } catch (e) {
     log(`${prog.name}: could not start: ${e.message}`);
@@ -99,7 +104,10 @@ function shutdown(code) {
   stopping = true;
   log('launcher stopping');
   for (const child of children.values()) {
-    try { spawn('taskkill', ['/F', '/T', '/PID', String(child.pid)], { windowsHide: true, stdio: 'ignore' }); } catch {}
+    try {
+      if (WINDOWS) spawn('taskkill', ['/F', '/T', '/PID', String(child.pid)], { windowsHide: true, stdio: 'ignore' });
+      else process.kill(-child.pid, 'SIGTERM');
+    } catch {}
   }
   try { fs.unlinkSync(pidPath); } catch {}
   setTimeout(() => process.exit(code), 1500);

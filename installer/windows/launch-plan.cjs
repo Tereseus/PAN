@@ -8,7 +8,9 @@
 //             (install.json "ollama"). Only when nothing answers on its port already:
 //             a person's own Ollama, or Ollama's own tray app, is left to do the job.
 //
-// install.json is written by pan-setup.ps1.
+// install.json is written by pan-setup.ps1 (Windows) or pan-setup.sh (Linux). The same plan
+// serves both: only the folder layout of the bundle differs (node.exe and pan-link.exe on
+// Windows, node/bin/node and pan-link on Linux).
 
 const path = require('path');
 
@@ -38,12 +40,15 @@ function port(value, fallback, what) {
  * @param {object} config   install.json
  * @param {string} hostname this computer's name, shown on the phone when pairing
  * @param {object} baseEnv  the environment to start from (process.env)
+ * @param {string} platform process.platform: 'win32', or anything else for the Linux layout
  */
-function launchPlan(config, hostname, baseEnv = {}) {
+function launchPlan(config, hostname, baseEnv = {}, platform = 'win32') {
+  const windows = platform === 'win32';
+  const p = windows ? path.win32 : path.posix;
   const installDir = need(config && config.installDir, 'installDir');
   const version = need(config.version, 'version');
-  const dataDir = config.dataDir || path.win32.join(installDir, 'data');
-  const appDir = path.win32.join(installDir, 'app', String(version));
+  const dataDir = config.dataDir || p.join(installDir, 'data');
+  const appDir = p.join(installDir, 'app', String(version));
 
   const panPort = port(config.port, DEFAULTS.port, 'port');
   const carrierPort = port(config.carrierPort, DEFAULTS.carrierPort, 'carrierPort');
@@ -51,7 +56,7 @@ function launchPlan(config, hostname, baseEnv = {}) {
   const linkPort = port(config.linkPort, DEFAULTS.linkPort, 'linkPort');
   const linkAdmin = config.linkAdmin || DEFAULTS.linkAdmin;
 
-  const node = path.win32.join(appDir, 'node', 'node.exe');
+  const node = windows ? p.join(appDir, 'node', 'node.exe') : p.join(appDir, 'node', 'bin', 'node');
   const env = { ...baseEnv };
   // An installed PAN never opens its ports to the network: other devices come in through
   // pan-link. Whatever the person's environment says, this stays shut.
@@ -76,16 +81,16 @@ function launchPlan(config, hostname, baseEnv = {}) {
     pan: {
       name: 'PAN',
       exe: node,
-      args: [path.win32.join(appDir, 'service', 'pan.js'), 'start'],
-      cwd: path.win32.join(appDir, 'service'),
-      log: path.win32.join(dataDir, 'hub.log'),
+      args: [p.join(appDir, 'service', 'pan.js'), 'start'],
+      cwd: p.join(appDir, 'service'),
+      log: p.join(dataDir, 'hub.log'),
       env,
       // PAN leaves with code 0 when it was asked to stop; anything else is a crash.
       restartOnCleanExit: false,
     },
     link: {
       name: 'pan-link',
-      exe: path.win32.join(appDir, 'pan-link', 'pan-link.exe'),
+      exe: p.join(appDir, 'pan-link', windows ? 'pan-link.exe' : 'pan-link'),
       args: [
         'hub',
         '--data', dataDir,
@@ -94,8 +99,8 @@ function launchPlan(config, hostname, baseEnv = {}) {
         '--backend', `http://127.0.0.1:${panPort}`,
         '--admin', linkAdmin,
       ],
-      cwd: path.win32.join(appDir, 'pan-link'),
-      log: path.win32.join(dataDir, 'pan-link.log'),
+      cwd: p.join(appDir, 'pan-link'),
+      log: p.join(dataDir, 'pan-link.log'),
       env: baseEnv,
       restartOnCleanExit: true,
     },
@@ -103,8 +108,8 @@ function launchPlan(config, hostname, baseEnv = {}) {
       name: 'Ollama',
       exe: String(config.ollama),
       args: ['serve'],
-      cwd: path.win32.dirname(String(config.ollama)),
-      log: path.win32.join(dataDir, 'ollama.log'),
+      cwd: p.dirname(String(config.ollama)),
+      log: p.join(dataDir, 'ollama.log'),
       env: baseEnv,
       restartOnCleanExit: true,
       onlyIfDown: 'http://127.0.0.1:11434/api/version',
