@@ -91,8 +91,8 @@ test('sound goes to the other one only once both have joined; ringing sends none
   ok(cv.voiceFor(1, OWNER_PHONE, T0 + 1000) && cv.voiceFor(mia.id, MIA_PHONE, T0 + 1000) && !cv.voiceFor(kit.id, KIT_PHONE, T0 + 1000), 'who is told to send and play');
   const his = stream();
   ok(cv.openVoiceStream(mia, hers, MIA_PHONE, T0 + 1000).ok && cv.openVoiceStream(null, his, OWNER_PHONE, T0 + 1000).ok, 'both listen');
-  ok(J(cv.pushVoice(null, sound('0102'), OWNER_PHONE, T0 + 1100)) === J({ ok: true, to: 1 }), 'his sound');
-  ok(J(cv.pushVoice(mia, sound('0304'), MIA_PHONE, T0 + 1200)) === J({ ok: true, to: 1 }), 'her sound');
+  ok(J(cv.pushVoice(null, sound('0102'), OWNER_PHONE, T0 + 1100)) === J({ ok: true, to: 1, opus: false }), 'his sound');
+  ok(J(cv.pushVoice(mia, sound('0304'), MIA_PHONE, T0 + 1200)) === J({ ok: true, to: 1, opus: false }), 'her sound');
   ok(J(heard(hers)) === J([[1, '0102']]) && J(heard(his)) === J([[mia.id, '0304']]), J([heard(hers), heard(his)]));
   // Someone not on the call: nothing in, nothing out.
   const kits = stream();
@@ -171,6 +171,27 @@ test('PAN\'s answer is read out by the other\'s own PAN even while voices flow, 
   await share.shareAnswerInCall({ person: mia, question: 'how far is the moon', answer: 'About 384,000 km.', intent: 'query' }, { judge: async () => true });
   const his = take(OWNER_PHONE, Date.now());
   ok(his.length === 1 && his[0].type === 'speak' && /^Asked PAN: how far is the moon PAN said:/.test(his[0].body), J(his));
+});
+
+test('the smaller codec goes only to devices that can play it, and the sender is told when one cannot', () => {
+  gc.startRoom(mia, KIDS, T0); gc.startRoom(kit, KIDS, T0); gc.startRoom(sam, KIDS, T0);
+  // Kit's app plays both kinds (listen=2); Sam's is the older one (listen=1).
+  const k = stream(), s = stream();
+  cv.openVoiceStream(kit, k, KIT_PHONE, T0, true); cv.openVoiceStream(sam, s, SAM_PHONE, T0);
+  // A piece for a device that plays both: [who: 4][kind: 1][length: 2][sound].
+  const both = (res) => res.got.filter((b) => b.length > 7).map((b) => [b.readUInt32LE(0), b.readUInt8(4), b.subarray(7, 7 + b.readUInt16LE(5)).toString('hex')]);
+  let got = cv.pushVoice(mia, sound('0a0b'), MIA_PHONE, T0 + 100, cv.OPUS);
+  ok(got.ok && got.to === 1 && got.opus === false, J(got));
+  ok(J(both(k)) === J([[mia.id, 1, '0a0b']]) && heard(s).length === 0, 'Opus reached the old app, or not the new one');
+  // Told so, her device sends mu-law: both hear it, each in the shape it reads.
+  got = cv.pushVoice(mia, sound('0c'), MIA_PHONE, T0 + 200, cv.MULAW);
+  ok(got.to === 2 && got.opus === false && J(both(k)[1]) === J([mia.id, 0, '0c']) && J(heard(s)) === J([[mia.id, '0c']]), J([got, both(k), heard(s)]));
+  // The old app leaves: everyone listening plays Opus.
+  s.end();
+  got = cv.pushVoice(mia, sound('0d'), MIA_PHONE, T0 + 300, cv.OPUS);
+  ok(got.to === 1 && got.opus === true, J(got));
+  // The piece that only keeps a stream open has the shape its device reads.
+  ok(k.got.every((b) => b.length >= 7), 'a short piece on the new stream');
 });
 
 test('in a group call, those the voice reaches are shown the line and the others have it read out', () => {

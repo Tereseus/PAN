@@ -1117,19 +1117,24 @@ router.post('/people/room', (req, res) => {
 // pieces (16 kHz mu-law, the request's body) and holds one stream open for what the others say.
 // The hub passes it on and keeps none of it. Only someone on a call others have joined, and
 // only from the device that opened or answered it.
-// One path, one method, both ways: with ?listen=1 the answer is the stream of the others' sound;
-// without it the body is a piece of this device's own. (One rule on the person allow list.)
+// One path, one method, both ways: with ?listen the answer is the stream of the others' sound
+// (listen=2: the device plays Opus too); without it the body is a piece of this device's own
+// (c=1: Opus). (One rule on the person allow list.)
 router.post('/people/voice', (req, res, next) => {
   if (!req.query.listen) return next();
   res.status(200).set({ 'Content-Type': 'application/octet-stream', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no', Connection: 'keep-alive' });
-  const got = openVoiceStream(req.user?.person ? req.user : null, res, callDev(req));
+  const got = openVoiceStream(req.user?.person ? req.user : null, res, callDev(req), Date.now(), String(req.query.listen) === '2');
   if (!got.ok) { res.status(409).type('json').end(JSON.stringify({ ok: false, error: got.reason })); return; }
   res.flushHeaders();
   req.socket?.setNoDelay?.(true);
 }, express.raw({ type: 'application/octet-stream', limit: '64kb' }), (req, res) => {
-  const got = pushVoice(req.user?.person ? req.user : null, req.body, callDev(req));
+  const opus = String(req.query.c) === '1';
+  const got = pushVoice(req.user?.person ? req.user : null, req.body, callDev(req), Date.now(), opus ? 1 : 0);
   if (!got.ok) return res.status(got.reason === 'no_call' || got.reason === 'not_this_device' ? 409 : 400).json({ ok: false, error: got.reason });
-  res.json({ ok: true, to: got.to });
+  // Several of these a second over someone's mobile data: an Opus piece that everyone can play
+  // gets the shortest answer there is.
+  if (opus && got.opus) { res.removeHeader('X-Powered-By'); return res.status(204).end(); }
+  res.json({ ok: true, to: got.to, opus: got.opus });
 });
 router.delete('/people/room', (req, res) => {
   leaveRoom(req.user?.person ? req.user : null);

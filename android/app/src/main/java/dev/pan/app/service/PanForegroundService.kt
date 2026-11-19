@@ -3064,7 +3064,11 @@ class PanForegroundService : Service() {
         if (dev.pan.app.BuildConfig.DEBUG && intent?.action == "TEST_CALL_QUIET") {
             dev.pan.app.audio.CallAudio.quiet = intent.getBooleanExtra("on", true)
             val (sent, got) = dev.pan.app.audio.CallAudio.counts()
-            panLog("Call voice: quiet=${dev.pan.app.audio.CallAudio.quiet} active=${dev.pan.app.audio.CallAudio.active} sent=$sent got=$got")
+            panLog("Call voice: quiet=${dev.pan.app.audio.CallAudio.quiet} active=${dev.pan.app.audio.CallAudio.active} sent=$sent got=$got; ${dev.pan.app.audio.CallAudio.detail()}")
+        }
+        // TEST_OPUS -> one second of a made-up tone through this device's Opus encoder and decoder, no sound made.
+        if (dev.pan.app.BuildConfig.DEBUG && intent?.action == "TEST_OPUS") {
+            Thread { panLog(dev.pan.app.audio.CallAudio.selfTest()) }.start()
         }
         if (dev.pan.app.BuildConfig.DEBUG && intent?.action == "TEST_AUDIO") {
             val name = intent.getStringExtra("file") ?: ""

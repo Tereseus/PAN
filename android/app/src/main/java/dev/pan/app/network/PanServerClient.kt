@@ -202,18 +202,27 @@ class PanServerClient @Inject constructor(
     private val streamClient by lazy { okHttpClient.newBuilder().readTimeout(0, java.util.concurrent.TimeUnit.MILLISECONDS).build() }
 
     /** A piece of this device's microphone sound for the call its person is on (CallAudio). -> the status, 0 when the hub cannot be reached */
-    suspend fun voiceSend(sound: ByteArray): Int = withContext(Dispatchers.IO) {
+    suspend fun voiceSend(sound: ByteArray, opus: Boolean = false): Pair<Int, Boolean?> = withContext(Dispatchers.IO) {
         try {
-            val request = Request.Builder().url("${Constants.PLACEHOLDER_BASE_URL}/api/v1/people/voice")
+            val request = Request.Builder().url("${Constants.PLACEHOLDER_BASE_URL}/api/v1/people/voice" + if (opus) "?c=1" else "")
                 .post(sound.toRequestBody("application/octet-stream".toMediaType())).build()
-            okHttpClient.newCall(request).execute().use { it.code }
-        } catch (e: Exception) { 0 }
+            okHttpClient.newCall(request).execute().use { r ->
+                // Can every device listening play Opus? 204: yes, and the piece went. Otherwise the hub says in its answer.
+                val text = if (r.code == 200) r.body?.string() ?: "" else ""
+                r.code to when {
+                    r.code == 204 -> true
+                    text.contains("\"opus\":true") -> true
+                    text.contains("\"opus\":false") -> false
+                    else -> null
+                }
+            }
+        } catch (e: Exception) { 0 to null }
     }
 
     /** The others' sound in the call, as one open stream. The caller reads it and closes it. Blocking: call it off the main thread. */
     fun voiceStream(): okhttp3.Response? = try {
-        // The same path as the sound out, with listen=1 (one rule on the hub's list for a person's device).
-        streamClient.newCall(Request.Builder().url("${Constants.PLACEHOLDER_BASE_URL}/api/v1/people/voice?listen=1")
+        // The same path as the sound out (one rule on the hub's list for a person's device). listen=2: this app plays Opus as well as mu-law.
+        streamClient.newCall(Request.Builder().url("${Constants.PLACEHOLDER_BASE_URL}/api/v1/people/voice?listen=2")
             .post(ByteArray(0).toRequestBody("application/octet-stream".toMediaType())).build()).execute()
     } catch (e: Exception) { null }
 

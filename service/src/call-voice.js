@@ -21,9 +21,15 @@
 //   - While the sound is reaching someone, the words of that line are only shown to them,
 //     not read out: they heard it (voiceLive).
 //
-// The sound: 16 kHz, one channel, 8-bit mu-law, as the phone made it. A piece on the stream is
-// [who said it: 4 bytes][how long: 2 bytes][the sound]. A piece with nobody and no length is
-// only to keep the stream open.
+// The sound, as the phone made it. The hub never opens it. Two kinds:
+//   0  16 kHz, one channel, 8-bit mu-law: 16 kB a second. What app 0.5.34 sends and plays.
+//   1  Opus at 16 kHz, about 2 kB a second: packets of 20 ms, each behind its length (2 bytes).
+//      The owner, 2026-11-19: 58 MB an hour is a lot.
+// A device says what it can play by how it listens. listen=1: mu-law only, and a piece is
+// [who said it: 4 bytes][how long: 2 bytes][the sound]. listen=2: both kinds, and a piece is
+// [who: 4][which kind: 1][how long: 2][the sound]. A piece with nobody and no length is only to
+// keep the stream open. Opus is never passed to a device that listens the old way: the sender is
+// told (opus: false) and goes back to mu-law, so two app versions in one call still hear each other.
 
 import { talkOf } from './person-messages.js';
 import { roomOf } from './group-calls.js';
@@ -82,18 +88,23 @@ export function voiceFor(userId, dev, now = Date.now()) {
   return carriesCall(me, dev);
 }
 
-function frame(from, sound) {
-  const head = Buffer.alloc(6);
+export const MULAW = 0;
+export const OPUS = 1;
+
+function frame(from, sound, kind, both) {
+  const head = Buffer.alloc(both ? 7 : 6);
   head.writeUInt32LE(from >>> 0, 0);
-  head.writeUInt16LE(sound.length, 4);
+  if (both) head.writeUInt8(kind, 4);
+  head.writeUInt16LE(sound.length, both ? 5 : 4);
   return sound.length ? Buffer.concat([head, sound]) : head;
 }
 
 /**
- * A piece of sound from a person's device. -> { ok, to: how many people it went to }
- * | { ok: false, reason: 'no_call' | 'not_this_device' | 'empty' | 'too_long' }
+ * A piece of sound from a person's device. -> { ok, to: how many people it went to,
+ * opus: can every device listening play Opus } | { ok: false, reason: 'no_call' |
+ * 'not_this_device' | 'empty' | 'too_long' }
  */
-export function pushVoice(person, sound, dev = {}, now = Date.now()) {
+export function pushVoice(person, sound, dev = {}, now = Date.now(), kind = MULAW) {
   const me = idOf(person);
   if (!Buffer.isBuffer(sound) || !sound.length) return { ok: false, reason: 'empty' };
   if (sound.length > MAX_PIECE) return { ok: false, reason: 'too_long' };
@@ -101,31 +112,38 @@ export function pushVoice(person, sound, dev = {}, now = Date.now()) {
   if (!peers.length) return { ok: false, reason: 'no_call' };
   if (!carriesCall(me, dev)) return { ok: false, reason: 'not_this_device' };
   lastSound.set(me, now);
-  const piece = frame(me, sound);
+  const pieces = [null, null];
   let to = 0;
+  let opus = true;
   for (const id of peers) {
     const open = streams.get(id);
     if (!open || !open.size) continue;
     let reached = false;
     for (const s of open) {
+      if (!s.both) {
+        opus = false;
+        if (kind !== MULAW) continue;      // it cannot play this
+      }
       // A stream whose device has fallen behind is skipped, not queued: late sound is worse than none.
       if (s.res.writableLength > 64_000) continue;
-      try { s.res.write(piece); reached = true; } catch {}
+      const i = s.both ? 1 : 0;
+      try { s.res.write(pieces[i] || (pieces[i] = frame(me, sound, kind, s.both))); reached = true; } catch {}
     }
     if (reached) to++;
   }
-  return { ok: true, to };
+  return { ok: true, to, opus };
 }
 
 /**
  * Hold a stream open for what the others on this person's call say. -> { ok } | { ok: false, reason }
  * The caller has already set the response's headers; this writes to it until it closes.
+ * [both]: the device plays Opus as well as mu-law, and reads the longer piece header.
  */
-export function openVoiceStream(person, res, dev = {}, now = Date.now()) {
+export function openVoiceStream(person, res, dev = {}, now = Date.now(), both = false) {
   const me = idOf(person);
   if (!onVoiceCall(me, now)) return { ok: false, reason: 'no_call' };
   if (!carriesCall(me, dev)) return { ok: false, reason: 'not_this_device' };
-  const s = { res, device: deviceKey(dev) };
+  const s = { res, device: deviceKey(dev), both: !!both };
   if (!streams.has(me)) streams.set(me, new Set());
   const mine = streams.get(me);
   // One stream per device: a new one from the same device replaces the old.
@@ -135,7 +153,7 @@ export function openVoiceStream(person, res, dev = {}, now = Date.now()) {
   const beat = setInterval(() => {
     // The call ended: the stream ends with it. Otherwise an empty piece keeps it open.
     if (!onVoiceCall(me) || !carriesCall(me, dev)) { try { res.end(); } catch {} return; }
-    try { res.write(frame(0, Buffer.alloc(0))); } catch {}
+    try { res.write(frame(0, Buffer.alloc(0), MULAW, s.both)); } catch {}
   }, KEEP_OPEN_MS);
   beat.unref?.();
   const done = () => { clearInterval(beat); mine.delete(s); if (!mine.size && streams.get(me) === mine) streams.delete(me); };

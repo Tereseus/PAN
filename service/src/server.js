@@ -3205,8 +3205,31 @@ function apkOverTailnet() {
   return null;
 }
 
+// The folder the app builds are published to, and the builds a patch to the current one exists
+// from. A patch is `zstd --patch-from=<old build>` of the new one (android/publish-apk.py makes
+// them): two builds in a row differ by about 0.2 MB, where the whole file is 74 MB.
+const APK_DIR = join(__dirname, '..', '..', 'android', 'app', 'build', 'outputs', 'apk', 'debug');
+function apkPatches(to) {
+  try {
+    const want = new RegExp(`^app-debug\\.p(\\d+)-${Number(to)}\\.zst$`);
+    return readdirSync(APK_DIR).map((f) => want.exec(f)).filter(Boolean).map((m) => Number(m[1])).sort((a, b) => b - a);
+  } catch { return []; }
+}
+
 // APK download — serves the latest debug build so the phone can sideload over Tailscale
 app.get('/apk/latest', (req, res) => {
+  // ?patch_from=<versionCode>: only what changed since that build, for a device that still has
+  // it (the car unit on a phone's hotspot). Same path, so no new rule on a person's allow list.
+  if (req.query.patch_from !== undefined) {
+    const from = Number(req.query.patch_from);
+    let to = 0;
+    try { to = Number((JSON.parse(readFileSync(join(APK_DIR, 'output-metadata.json'), 'utf8')).elements || [])[0]?.versionCode) || 0; } catch {}
+    const file = join(APK_DIR, `app-debug.p${from}-${to}.zst`);
+    if (!Number.isInteger(from) || from <= 0 || !to || !existsSync(file)) return res.status(404).json({ error: 'no patch from that build' });
+    res.setHeader('Content-Type', 'application/zstd');
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    return res.sendFile(file);
+  }
   // Over PAN Link the 85 MB download stalls after about 100 KB (Nov 15), and phones on
   // 0.4.99 to 0.4.112 download over the link. Send those to this computer's Tailscale
   // address instead: OkHttp follows the redirect after the app has rewritten the address,
@@ -3272,6 +3295,7 @@ app.get('/api/v1/apk/version', (req, res) => {
       apkUrl: '/apk/latest',
       apkSize: size,
       sha256,
+      patches: apkPatches(versionCode),      // builds a small patch exists from: /apk/latest?patch_from=<one of these>
       buildTime: new Date(mtimeMs).toISOString()
     });
   } catch (e) {
