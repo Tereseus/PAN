@@ -121,7 +121,7 @@ export function moneyMentions(text) {
 }
 
 const WEIGHT = /\b(kilos?|kilograms?|kg|weigh(?:s|t|ed)?|lbs?|heavy|heavier|lose|lost|gain(?:ed)?|ounces?|grams?)\b/i;
-const ASKS = /\b(how much|how many|what about|how about|what is|what's|whats|what would|convert|worth|exchange rate|conversion rate|the rate|equal|equals|come to|comes to)\b|\?\s*$/i;
+const ASKS = /\b(how much|how many|what about|how about|what is|what's|whats|what would|convert|worth|exchange rate|conversion rate|the rate|equal|equals|come to|comes to)\b|\?\s*$|^\s*(?:so\s+|and\s+|but\s+)?(?:is|are|does|do|would|will|can)\b/i;
 const POINTS_BACK = /\b(that|this|it|those|these)\b/i;
 
 /**
@@ -130,15 +130,20 @@ const POINTS_BACK = /\b(that|this|it|those|these)\b/i;
  * `home` is the currency he thinks in, used when a line names one foreign amount and nothing else.
  *
  *  A  an amount and another currency          "three million yen to usd"      3,000,000 JPY -> USD
- *  B  points back, names one currency         "so what is that, thirty bucks" the last other amount in the talk -> USD
- *  C  amounts in one currency, asking         "what about fifty thousand yen" 50,000 JPY -> the talk's other currency, else home
+ *  B  asks about "that", names one currency   "so what is that, thirty bucks" the amount in the last money line -> USD
+ *  C  amounts in one currency                 "what about fifty thousand yen" 50,000 JPY -> the talk's other currency, else home
  *  D  two currencies, no amount               "yen to dollars"                1 JPY -> USD
+ *
+ * Not a sum: a line that gives both sides itself and is not a question ("I looked it up, 3,000 yen
+ * is 18.79 dollars": he is telling, and a figure of ours a few cents off must not correct his), and
+ * a plain remark with one amount in it ("it was six dollars, not a few cents").
  */
 export function moneyAsk(text, recent = [], home = 'USD') {
   const mentions = moneyMentions(text);
   if (!mentions.length) return [];
   const withAmount = mentions.filter((m) => m.amount != null);
   const codes = [...new Set(mentions.map((m) => m.code))];
+  const asking = ASKS.test(text);
 
   // What the talk was converting: the last earlier line that asked for a sum by itself.
   const lines = [...(recent || [])].slice(-8);
@@ -147,8 +152,9 @@ export function moneyAsk(text, recent = [], home = 'USD') {
     const [ask] = moneyAsk(lines[i], [], home);
     if (ask) talk = { from: ask.from, to: ask.to };
   }
-  const earlier = [];
-  for (const line of [...lines].reverse()) earlier.push(...moneyMentions(line).reverse());
+  // The last line in the talk that named an amount of money.
+  let lastMoney = [];
+  for (let i = lines.length - 1; i >= 0 && !lastMoney.length; i--) lastMoney = moneyMentions(lines[i]).filter((m) => m.amount != null);
 
   // A
   if (withAmount.length && codes.length >= 2) {
@@ -159,26 +165,33 @@ export function moneyAsk(text, recent = [], home = 'USD') {
       const to = (mentions.find((x) => x.code !== m.code && x.amount == null) || mentions.find((x) => x.code !== m.code)).code;
       asks.push({ amount: m.amount, from: m.code, to });
     }
+    // Both sides of every sum are in the line and it is not a question: he is telling, not asking.
+    const answered = asks.every((a) => withAmount.some((m) => m.code === a.to));
+    if (answered && !asking) return [];
     return dedupe(asks);
   }
   if (codes.length === 1) {
     const code = codes[0];
-    // B: "that" is the last amount in the talk in another currency. Not when the line's own
-    // currency is the one the talk converts FROM: then its amounts are the sums he wants (C).
-    if (POINTS_BACK.test(text) && withAmount.length <= 1 && !(talk && talk.from === code)) {
-      const referent = earlier.find((m) => m.amount != null && m.code !== code);
+    // B: he asks about "that". It is the amount in the last money line, when that was in another
+    // currency. When it was in this same currency there is nothing to convert. Not when the
+    // line's own currency is the one the talk converts FROM: then its amounts are the sums (C).
+    if (asking && POINTS_BACK.test(text) && withAmount.length <= 1 && !(talk && talk.from === code)) {
+      const referent = lastMoney.find((m) => m.code !== code);
       if (referent) return [{ amount: referent.amount, from: referent.code, to: code }];
+      if (lastMoney.length) return [];
     }
-    // C: in a talk about money every amount named gets its sum; outside one, only an ask does.
-    if (withAmount.length && (talk || ASKS.test(text))) {
+    // C: an ask, or inside a money talk a short line ("and forty dollars") or one that sets two
+    // amounts side by side (a complaint: "you said 1800 yen is that, now 3,000 yen is the same").
+    const short = String(text).trim().split(/\s+/).length <= 6;
+    if (withAmount.length && (asking || (talk && (short || withAmount.length >= 2)))) {
       const to = talk ? (code === talk.from ? talk.to : talk.from)
-        : (earlier.find((m) => m.code !== code) || {}).code || (code !== home ? home : null);
+        : (lastMoney.find((m) => m.code !== code) || {}).code || (code !== home ? home : null);
       if (to && to !== code) return dedupe(withAmount.slice(0, 3).map((m) => ({ amount: m.amount, from: m.code, to })));
     }
     return [];
   }
   // D
-  if (!withAmount.length && codes.length >= 2 && ASKS.test(text)) return [{ amount: 1, from: codes[0], to: codes[1] }];
+  if (!withAmount.length && codes.length >= 2 && asking) return [{ amount: 1, from: codes[0], to: codes[1] }];
   return [];
 }
 
@@ -192,27 +205,95 @@ function dedupe(asks) {
   });
 }
 
-/** A sum of money the way it is said: no decimals from a hundred up, two below. */
+/** A sum of money in figures: no decimals from a hundred up, two below. */
 export function sayAmount(n) {
   const v = Math.abs(n) >= 100 ? Math.round(n) : Math.round(n * 100) / 100;
   return v.toLocaleString('en-US', { maximumFractionDigits: 2 });
 }
 
+// ---- out loud --------------------------------------------------------------------------
+// The model that reads the block writes numbers as words, and got big ones wrong doing it
+// (18,753 came out as "sixteen thousand eight hundred fifty-three"). So the words are made here.
+
+const SMALL = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve', 'thirteen',
+  'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen'];
+const TEN_WORDS = ['', '', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety'];
+
+/** A whole number in words: 18800 -> "eighteen thousand eight hundred". */
+export function numberWords(n) {
+  n = Math.round(Math.abs(n));
+  if (n < 20) return SMALL[n];
+  if (n < 100) return TEN_WORDS[Math.floor(n / 10)] + (n % 10 ? `-${SMALL[n % 10]}` : '');
+  if (n < 1000) return `${SMALL[Math.floor(n / 100)]} hundred${n % 100 ? ` ${numberWords(n % 100)}` : ''}`;
+  for (const [size, name] of [[1e12, 'trillion'], [1e9, 'billion'], [1e6, 'million'], [1e3, 'thousand']]) {
+    if (n >= size) return `${numberWords(Math.floor(n / size))} ${name}${n % size ? ` ${numberWords(n % size)}` : ''}`;
+  }
+  return String(n);
+}
+
+// [one, many, the small coin (many)] as spoken.
+const SPOKEN = {
+  USD: ['dollar', 'dollars', 'cents'], EUR: ['euro', 'euros', 'cents'], GBP: ['pound', 'pounds', 'pence'], JPY: ['yen', 'yen'],
+  CAD: ['Canadian dollar', 'Canadian dollars', 'cents'], AUD: ['Australian dollar', 'Australian dollars', 'cents'],
+  NZD: ['New Zealand dollar', 'New Zealand dollars', 'cents'], HKD: ['Hong Kong dollar', 'Hong Kong dollars', 'cents'],
+  SGD: ['Singapore dollar', 'Singapore dollars', 'cents'], CHF: ['Swiss franc', 'Swiss francs'], CNY: ['yuan', 'yuan'], KRW: ['won', 'won'],
+  INR: ['rupee', 'rupees'], MXN: ['Mexican peso', 'Mexican pesos'], PHP: ['Philippine peso', 'Philippine pesos'], BRL: ['Brazilian real', 'Brazilian reais'],
+  TRY: ['Turkish lira', 'Turkish lira'], ZAR: ['rand', 'rand'], THB: ['baht', 'baht'], PLN: ['zloty', 'zloty'], SEK: ['Swedish krona', 'Swedish kronor'],
+  NOK: ['Norwegian krone', 'Norwegian kroner'], DKK: ['Danish krone', 'Danish kroner'], ISK: ['Icelandic krona', 'Icelandic kronur'],
+  ILS: ['shekel', 'shekels'], HUF: ['forint', 'forints'], MYR: ['ringgit', 'ringgit'], CZK: ['Czech koruna', 'Czech koruna'],
+  RON: ['Romanian leu', 'Romanian lei'], IDR: ['rupiah', 'rupiah'],
+};
+const digitsWords = (digits) => [...digits].map((d) => SMALL[Number(d)]).join(' ');
+
 /**
- * The block the model reads: each sum already done. `rates` is { 'JPY>USD': 0.0062511, ... }.
- * '' when a rate is missing.
+ * An amount the way a person says it. Exact when `exact` (what he asked about), else rounded
+ * the way a sum is given out loud: three figures from a thousand up ("eighteen thousand eight
+ * hundred", "one point two five million"), cents under a hundred where the currency has them.
+ */
+export function sayMoney(amount, code, exact = false) {
+  const [one, many, coin] = SPOKEN[code] || [code, code];
+  const v = Math.abs(amount);
+  if (v >= 1e6 && !(exact && Number.isInteger(v) && v % 1e3 === 0 && v < 1e15 && numberWords(v).split(' ').length <= 6)) {
+    const [size, name] = v >= 1e12 ? [1e12, 'trillion'] : v >= 1e9 ? [1e9, 'billion'] : [1e6, 'million'];
+    const scaled = Number((v / size).toPrecision(3));
+    const [whole, frac] = String(scaled).split('.');
+    return `${numberWords(Number(whole))}${frac ? ` point ${digitsWords(frac)}` : ''} ${name} ${many}`;
+  }
+  if (v >= 1000 || (exact && Number.isInteger(v))) {
+    const n = exact ? Math.round(v) : Number(v.toPrecision(3));
+    return `${numberWords(n)} ${n === 1 ? one : many}`;
+  }
+  if (v >= 100) return `${numberWords(Math.round(v))} ${many}`;
+  if (coin) {
+    const cents = Math.round(v * 100);
+    const whole = Math.floor(cents / 100);
+    const small = cents % 100;
+    if (!whole) return `${numberWords(small)} ${coin}`;
+    return `${numberWords(whole)} ${whole === 1 ? one : many}${small ? ` and ${numberWords(small)} ${coin}` : ''}`;
+  }
+  if (v >= 10) return `${numberWords(Math.round(v))} ${many}`;
+  const [whole, frac] = String(Number(v.toPrecision(2))).split('.');
+  return `${numberWords(Number(whole))}${frac ? ` point ${digitsWords(frac)}` : ''} ${many}`;
+}
+
+/**
+ * The block the model reads: each sum already done, in figures and in the words to say.
+ * `rates` is { 'JPY>USD': 0.0062511, ... }. '' when a rate is missing.
  */
 export function moneyBlock(asks, rates, date) {
   const lines = [];
   for (const a of asks) {
     const rate = rates[`${a.from}>${a.to}`];
     if (!(rate > 0)) return '';
-    lines.push(`- ${sayAmount(a.amount)} ${a.from} = ${sayAmount(a.amount * rate)} ${a.to}`);
+    const got = a.amount * rate;
+    lines.push(`- ${sayAmount(a.amount)} ${a.from} = ${sayAmount(got)} ${a.to}. Out loud: "${sayMoney(a.amount, a.from, true)} is about ${sayMoney(got, a.to)}"`);
   }
   if (!lines.length) return '';
   const first = asks[0];
   const rate = rates[`${first.from}>${first.to}`];
   const per = rate < 1 ? `1 ${first.to} = ${sayAmount(1 / rate)} ${first.from}` : `1 ${first.from} = ${sayAmount(rate)} ${first.to}`;
-  return `\nEXCHANGE RATE (European Central Bank${date ? `, ${date}` : ''}) - real data. The sums are already done: say these figures and do no arithmetic of your own. If an earlier answer in this talk gave a different figure, that answer was wrong: say so plainly and give these.\n`
+  return `\nEXCHANGE RATE (European Central Bank${date ? `, ${date}` : ''}) - real data. The sums are already done. Use the words after "Out loud" as they are: `
+    + 'do no arithmetic and do not spell any number yourself. If an earlier answer of yours in this talk gave a different figure, yours was wrong: say so in a few words and give these. '
+    + 'Rates move during the day, so a figure he looked up that is within a few percent of these is right too.\n'
     + `${lines.join('\n')}\n- the rate: ${per}\n`;
 }

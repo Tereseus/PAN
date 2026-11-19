@@ -3,7 +3,7 @@
 // did the arithmetic, and two different amounts of yen both came out as the same dollars.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseNumber, moneyMentions, moneyAsk, moneyBlock, sayAmount } from '../money.js';
+import { parseNumber, moneyMentions, moneyAsk, moneyBlock, sayAmount, sayMoney, numberWords } from '../money.js';
 
 test('numbers the way they are said', () => {
   assert.equal(parseNumber('three million'), 3000000);
@@ -81,13 +81,42 @@ test('lines that are not asking for a sum get none', () => {
   }
 });
 
-test('the block holds the finished sums', () => {
+test('"that" in the same currency as the last figure is not a sum to do', () => {
+  const talk = [...TALK, 'How much do groceries cost for a week?', 'About three hundred fifty dollars.'];
+  assert.deepEqual(moneyAsk('So what is that, like thirty bucks?', talk), []);
+});
+
+test('telling is not asking', () => {
+  const talk = [...TALK, 'How much is 1,800 yen to USD', 'About 16.5 dollars.'];
+  // both sides are in the line: he looked it up, and our figure must not correct his
+  assert.deepEqual(moneyAsk('So I just looked up 3,000 yen is 18.79 dollars and 1800 yen is 11.27 dollars.', talk), []);
+  assert.deepEqual(moneyAsk('It was not a few cents though, it was six dollars.', talk), []);
+  assert.deepEqual(moneyAsk('I paid three thousand yen for lunch there last time I went', talk), []);
+});
+
+test('sums the way they are said out loud', () => {
+  assert.equal(numberWords(18800), 'eighteen thousand eight hundred');
+  assert.equal(numberWords(313), 'three hundred thirteen');
+  assert.equal(numberWords(200000000), 'two hundred million');
+  assert.equal(sayMoney(3000000, 'JPY', true), 'three million yen');
+  assert.equal(sayMoney(1800, 'JPY', true), 'one thousand eight hundred yen');
+  assert.equal(sayMoney(18753.3, 'USD'), 'eighteen thousand eight hundred dollars');
+  assert.equal(sayMoney(1250220, 'USD'), 'one point two five million dollars');
+  assert.equal(sayMoney(312.6, 'USD'), 'three hundred thirteen dollars');
+  assert.equal(sayMoney(11.25, 'USD'), 'eleven dollars and twenty-five cents');
+  assert.equal(sayMoney(0.63, 'USD'), 'sixty-three cents');
+  assert.equal(sayMoney(4799, 'JPY'), 'four thousand eight hundred yen');
+  assert.equal(sayMoney(1, 'USD', true), 'one dollar');
+});
+
+test('the block holds the finished sums, in figures and in words', () => {
   const rates = { 'JPY>USD': 0.0062511 };
   const block = moneyBlock([{ amount: 1800, from: 'JPY', to: 'USD' }, { amount: 3000, from: 'JPY', to: 'USD' }], rates, '2026-11-19');
-  assert.match(block, /1,800 JPY = 11\.25 USD/);
-  assert.match(block, /3,000 JPY = 18\.75 USD/);
+  assert.match(block, /1,800 JPY = 11\.25 USD\. Out loud: "one thousand eight hundred yen is about eleven dollars and twenty-five cents"/);
+  assert.match(block, /3,000 JPY = 18\.75 USD\. Out loud: "three thousand yen is about eighteen dollars and seventy-five cents"/);
   assert.match(block, /1 USD = 160 JPY/);
-  assert.match(moneyBlock([{ amount: 200000000, from: 'JPY', to: 'USD' }], rates), /200,000,000 JPY = 1,250,220 USD/);
+  assert.match(moneyBlock([{ amount: 200000000, from: 'JPY', to: 'USD' }], rates),
+    /200,000,000 JPY = 1,250,220 USD\. Out loud: "two hundred million yen is about one point two five million dollars"/);
   assert.equal(moneyBlock([{ amount: 5, from: 'JPY', to: 'CHF' }], rates), '');
   assert.equal(sayAmount(27000.4), '27,000');
   assert.equal(sayAmount(16.456), '16.46');
