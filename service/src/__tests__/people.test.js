@@ -74,8 +74,8 @@ test('what a child, an adult and the owner may do', () => {
   eq(people.may(null, 'fly_the_house'), false, 'not even for the owner');
 });
 
-test('the list of what a person may reach fits pan-link, which takes 32 rules and refuses a longer list whole', () => {
-  eq(people.PERSON_ALLOW.length <= 32, true, `${people.PERSON_ALLOW.length} rules`);
+test('the list of what a person may reach fits pan-link, which takes 64 rules and refuses a longer list whole', () => {
+  eq(people.PERSON_ALLOW.length <= 64, true, `${people.PERSON_ALLOW.length} rules`);
   for (const r of people.PERSON_ALLOW) {
     const [m, p] = r.split(' ');
     const base = p.endsWith('/*') ? p.slice(0, -2) : p;

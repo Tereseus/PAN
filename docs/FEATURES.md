@@ -457,7 +457,9 @@ asks for its notes every few seconds.
   still has a working call.
 - **Muted:** the microphone loop is off, so nothing is sent. What the others say is still played.
 - **One rule on the person allow list:** both ways use `POST /api/v1/people/voice`, because
-  pan-link takes at most 32 rules for a device and the list is at 32 (`people.test.js` checks).
+  pan-link took at most 32 rules for a device then and the list is at 32. The limit is 64 in
+  the code since Nov 19 (`pan-link/allow.go`, `people.test.js` checks the list against it); the
+  hub runs the old pan-link until the rebuilt one is put there, so a 33rd path waits for that.
 - **Tests:** `__tests__/call-voice.test.js` (6), people suite group "call voice" (5, with a
   real stream between two test people). On devices, with no sound made: a test clip in place
   of the Pad's microphone, 72 pieces sent, 72 received by the Pixel 6 (debug switch

@@ -18,9 +18,16 @@ import (
 // it: it can send alerts and messages to PAN, but it can't read PAN or change it.
 // The rules come from PAN (routes/link.js), which knows its own paths.
 
+// A list over maxAllowRules is refused whole, so the device keeps the list it had. PAN's
+// list for a person's device (service/src/people.js, PERSON_ALLOW) has to fit, and its
+// test counts against this number: raise both together.
 const (
-	maxAllowRules = 32
+	maxAllowRules = 64
 	maxRuleLen    = 200
+	// The most the admin API reads of a request that carries an allow list: a full list of
+	// full length rules, each written as JSON at up to twice its length, and the rest of
+	// the request.
+	maxAllowBody = 2*maxAllowRules*maxRuleLen + 4096
 )
 
 var ruleMethods = map[string]bool{"*": true, "GET": true, "HEAD": true, "POST": true, "PUT": true, "PATCH": true, "DELETE": true}

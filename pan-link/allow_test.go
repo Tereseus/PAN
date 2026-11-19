@@ -57,6 +57,23 @@ func TestCheckAllow(t *testing.T) {
 	if CheckAllow(many) == nil {
 		t.Error("too many rules accepted")
 	}
+	if err := CheckAllow(many[:maxAllowRules]); err != nil {
+		t.Errorf("a full list refused: %v", err)
+	}
+	// PAN's list for a person's device was 32 rules when the limit was 32, and the 33rd was
+	// refused whole. The limit never goes back under what PAN already sends.
+	if maxAllowRules < 64 {
+		t.Errorf("the limit is %d rules, PAN counts on 64", maxAllowRules)
+	}
+}
+
+// The longest list CheckAllow accepts, every rule at full length.
+func fullAllowJSON() string {
+	rules := make([]string, maxAllowRules)
+	for i := range rules {
+		rules[i] = `"GET /` + strings.Repeat("a", maxRuleLen-len("GET /")) + `"`
+	}
+	return "[" + strings.Join(rules, ",") + "]"
 }
 
 func TestAllowsMatching(t *testing.T) {
@@ -203,6 +220,23 @@ func TestLimitedDeviceOnlyReachesItsRequests(t *testing.T) {
 	if code, _ := send("GET", "/api/v1/memory"); code != http.StatusForbidden {
 		t.Fatal("the new limit did not hold")
 	}
+	// The longest list there can be gets through the admin API whole and holds.
+	if rec := put(`{"allow":` + fullAllowJSON() + `}`); rec.Code != 200 {
+		t.Fatalf("a full list: %d %s", rec.Code, rec.Body.String())
+	}
+	if devs := th.hub.Devices(); len(devs) != 1 || len(devs[0].Allow) != maxAllowRules {
+		t.Fatalf("after a full list: %d rules", len(devs[0].Allow))
+	}
+	if code, _ := send("GET", "/api/v1/memory"); code != http.StatusForbidden {
+		t.Fatal("a full list did not hold")
+	}
+	// One rule too many is refused whole: the device keeps the list it had.
+	if rec := put(`{"allow":` + strings.Replace(fullAllowJSON(), "[", `["GET /health",`, 1) + `}`); rec.Code != 400 {
+		t.Fatalf("one rule too many: %d", rec.Code)
+	}
+	if devs := th.hub.Devices(); len(devs[0].Allow) != maxAllowRules {
+		t.Fatalf("a refused list changed the device: %d rules", len(devs[0].Allow))
+	}
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("PUT", "/admin/devices/dnosuchdevice/allow", strings.NewReader(`{"allow":[]}`))
 	req.Header.Set(HeaderSecret, th.state.Secret)
@@ -259,6 +293,19 @@ func TestAdminPairWithLimit(t *testing.T) {
 	if rec := pair(`{"name":"x","allow":["GET /a/../b"]}`); rec.Code != 400 || len(th.hub.pending) != 0 {
 		t.Fatalf("bad rule: %d, %d pending", rec.Code, len(th.hub.pending))
 	}
+	// A request that can't be read makes no code. Read as empty it would make a code with
+	// no limit, for a device that was meant to have one.
+	for name, body := range map[string]string{
+		"cut short":         `{"name":"x","allow":["GET /health"`,
+		"allow not a list":  `{"name":"x","allow":"GET /health"}`,
+		"too long to read":  `{"name":"` + strings.Repeat("x", maxAllowBody) + `","allow":["GET /health"]}`,
+		"one rule too many": `{"name":"x","allow":` + strings.Replace(fullAllowJSON(), "[", `["GET /health",`, 1) + `}`,
+		"not JSON":          `allow=GET /health`,
+	} {
+		if rec := pair(body); rec.Code != 400 || len(th.hub.pending) != 0 {
+			t.Fatalf("%s: %d, %d pending", name, rec.Code, len(th.hub.pending))
+		}
+	}
 	rec := pair(`{"name":"Work PC","allow":["POST /api/v1/notify/inbound"]}`)
 	if rec.Code != 200 {
 		t.Fatalf("limited code: %d %s", rec.Code, rec.Body.String())
@@ -267,5 +314,12 @@ func TestAdminPairWithLimit(t *testing.T) {
 		if len(p.allow) != 1 {
 			t.Fatalf("pending pairing lost its limit: %+v", p)
 		}
+	}
+	// The longest list there can be, and a code with no limit asked for with no body.
+	if rec := pair(`{"name":"Full","allow":` + fullAllowJSON() + `}`); rec.Code != 200 {
+		t.Fatalf("a full list: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := pair(``); rec.Code != 200 {
+		t.Fatalf("no body: %d %s", rec.Code, rec.Body.String())
 	}
 }

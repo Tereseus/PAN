@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"net"
 	"net/http"
@@ -478,7 +479,12 @@ func (h *Hub) AdminHandler() http.Handler {
 			TTLMinutes int      `json:"ttl_minutes"`
 			Allow      []string `json:"allow"` // a limited device (allow.go); empty: no limit
 		}
-		json.NewDecoder(http.MaxBytesReader(w, r.Body, 16384)).Decode(&body)
+		// No body at all asks for a code with no limit. A body that can't be read is refused:
+		// read as empty it would drop the limit it asked for.
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAllowBody)).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+			writeJSON(w, 400, map[string]string{"error": "bad request"})
+			return
+		}
 		if err := CheckAllow(body.Allow); err != nil {
 			writeJSON(w, 400, map[string]string{"error": err.Error()})
 			return
@@ -502,7 +508,7 @@ func (h *Hub) AdminHandler() http.Handler {
 		var body struct {
 			Allow []string `json:"allow"`
 		}
-		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16384)).Decode(&body); err != nil {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAllowBody)).Decode(&body); err != nil {
 			writeJSON(w, 400, map[string]string{"error": "bad request"})
 			return
 		}
