@@ -150,6 +150,7 @@ class PanAccessibilityService : AccessibilityService() {
                 "read_screen" -> readScreen()
                 "tap" -> tap(cmd.optString("text"), cmd.optInt("x", -1), cmd.optInt("y", -1))
                 "type_text" -> typeText(cmd.optString("text"), cmd.optString("target"))
+                "press_enter" -> pressEnter(cmd.optString("target"))
                 "scroll" -> scroll(cmd.optString("direction", "down"))
                 "back" -> { performGlobalAction(GLOBAL_ACTION_BACK); ok("Pressed back") }
                 "home" -> { performGlobalAction(GLOBAL_ACTION_HOME); ok("Pressed home") }
@@ -196,6 +197,8 @@ class PanAccessibilityService : AccessibilityService() {
                     put("type", className.substringAfterLast("."))
                     put("clickable", node.isClickable)
                     put("editable", node.isEditable)
+                    // A checkbox or a switch: without this a read cannot tell ticked from not ticked.
+                    if (node.isCheckable) { put("checkable", true); put("checked", node.isChecked) }
                     put("x", rect.centerX())
                     put("y", rect.centerY())
                     put("id", viewId)
@@ -280,12 +283,28 @@ class PanAccessibilityService : AccessibilityService() {
             val args = Bundle().apply {
                 putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
             }
+            // Focus first, so a following press_enter goes to this field.
+            editNode.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
             editNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
             editNode.recycle()
             return ok("Typed: $text")
         }
 
         return error("No editable field found")
+    }
+
+    // The keyboard's Enter (Go, Search, Done) on a field: the one named, else the focused one, else the first.
+    fun pressEnter(target: String): JSONObject {
+        val root = rootInActiveWindow ?: return error("No active window")
+        var editNode: AccessibilityNodeInfo? = null
+        if (target.isNotBlank()) editNode = findEditableNode(root, target.lowercase())
+        if (editNode == null) editNode = findFocusedEditable(root)
+        if (editNode == null) editNode = findFirstEditable(root)
+        root.recycle()
+        if (editNode == null) return error("No editable field found")
+        val done = editNode.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
+        editNode.recycle()
+        return if (done) ok("Pressed enter") else error("The field did not take enter")
     }
 
     // Scroll in a direction
