@@ -2,7 +2,7 @@
 // itself is not started here: these are the pure parts.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { notesFromPage, pick, pageLines, grams, sentences, looksLikeBotCheck, ENGINES, DEFAULT_ENGINE } from '../web-lookup.js';
+import { notesFromPage, pick, pageLines, grams, sentences, looksLikeBotCheck, ENGINES, DEFAULT_ENGINE, engineFor, lookupStatus } from '../web-lookup.js';
 
 const PAGE = [
   'All', 'Images', 'News', 'Videos', 'Maps', 'Search Settings',
@@ -57,4 +57,19 @@ test('sentences and the bot check', () => {
 test('the default engine is the private one and every engine makes a search address', () => {
   assert.equal(DEFAULT_ENGINE, 'duckduckgo');
   for (const e of Object.values(ENGINES)) assert.match(e.url('a b&c'), /^https:\/\/[^ ]+a(?:%20|\+)b%26c/);
+});
+
+test('a blocked search site is skipped until its rest is over, and the status says so', () => {
+  const now = 1_000_000;
+  assert.equal(engineFor('duckduckgo', new Map(), now), 'duckduckgo');
+  assert.equal(engineFor('duckduckgo', new Map([['duckduckgo', now + 5000]]), now), 'bing');
+  assert.equal(engineFor('duckduckgo', new Map([['duckduckgo', now - 1]]), now), 'duckduckgo', 'the rest is over');
+  assert.equal(engineFor('qwant', new Map([['qwant', now + 5000]]), now), 'duckduckgo', 'his choice is resting: the default next');
+  assert.equal(engineFor('duckduckgo', new Map([['duckduckgo', now + 1], ['bing', now + 1], ['qwant', now + 1]]), now), null);
+  assert.equal(engineFor('no-such-engine', new Map(), now), 'duckduckgo');
+  const st = lookupStatus('duckduckgo');
+  assert.equal(st.chosen, 'duckduckgo');
+  assert.equal(st.using, 'duckduckgo');
+  assert.ok(st.engines.some((e) => e.id === 'duckduckgo' && e.blockedUntil === 0));
+  assert.ok(st.dayLimit > 100);
 });

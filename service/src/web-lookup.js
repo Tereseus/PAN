@@ -30,6 +30,17 @@ export const DEFAULT_ENGINE = 'duckduckgo';
 const IDLE_MS = 5 * 60_000;        // the browser closes after this long without a lookup
 const BOT_REST_MS = 30 * 60_000;   // an engine that showed a bot check is left alone this long
 const NOTES_BUDGET = 450;          // characters of notes handed to the model
+const CACHE_MS = 10 * 60_000;      // the same question asked again inside this long is not searched again
+const DAY_LIMIT = 300;             // lookups a day; far more than a person asks, far less than a program would
+
+/**
+ * Which engine to use now: the one chosen, else the next one that is not resting after a bot
+ * check. null when every engine is resting. Pure: `resting` maps an engine to the time its rest ends.
+ */
+export function engineFor(chosen, resting, now = Date.now()) {
+  const order = [chosen, DEFAULT_ENGINE, 'bing', 'qwant'].filter((e, i, a) => ENGINES[e] && a.indexOf(e) === i);
+  return order.find((e) => !((resting.get ? resting.get(e) : resting[e]) > now)) || null;
+}
 
 // ---- reading a page: pure, tested in __tests__/web-lookup.test.js -----------------------------
 
@@ -118,6 +129,28 @@ let starting = null;        // the start in progress, shared by lookups that arr
 let queue = Promise.resolve();
 let idleTimer = null;
 const resting = new Map();  // engine -> time until which it is left alone
+const seen = new Map();     // engine -> { ok, blocked, lastOkAt, lastBlockedAt }
+const cache = new Map();    // question -> { at, notes, engine }
+let day = { key: '', n: 0 };
+let onBlocked = null;
+const tally = (engine) => { if (!seen.has(engine)) seen.set(engine, { ok: 0, blocked: 0, lastOkAt: 0, lastBlockedAt: 0 }); return seen.get(engine); };
+const today = () => new Date().toISOString().slice(0, 10);
+
+/** Called with { engine, name, until } when a search site shows a bot check, so the app can tell the person. */
+export function setBlockedListener(fn) { onBlocked = typeof fn === 'function' ? fn : null; }
+
+/**
+ * For the settings page and the alerts: is there a browser, which engines are resting after a bot
+ * check and until when, and how many lookups today.
+ */
+export function lookupStatus(chosen = DEFAULT_ENGINE, now = Date.now()) {
+  const using = engineFor(chosen, resting, now);
+  return {
+    browser: !!findBrowser(), chosen, using, usingName: using ? ENGINES[using].name : null,
+    today: day.key === today() ? day.n : 0, dayLimit: DAY_LIMIT,
+    engines: Object.entries(ENGINES).map(([id, e]) => ({ id, name: e.name, blockedUntil: (resting.get(id) || 0) > now ? resting.get(id) : 0, ...tally(id) })),
+  };
+}
 
 async function start() {
   const exe = findBrowser();
@@ -200,7 +233,9 @@ export function searchPage(q, { engine = DEFAULT_ENGINE, timeoutMs = 3500 } = {}
       text = (r.result && r.result.value) || '';
       if (looksLikeBotCheck(text)) {
         resting.set(engine, Date.now() + BOT_REST_MS);
+        const t = tally(engine); t.blocked++; t.lastBlockedAt = Date.now();
         console.warn(`[web-lookup] ${eng.name} showed a bot check: left alone for ${BOT_REST_MS / 60000} minutes`);
+        try { if (onBlocked) onBlocked({ engine, name: eng.name, until: resting.get(engine) }); } catch {}
         return { text: '', ms: Date.now() - t0, bot: true };
       }
       // the results come in after the page shell: wait for real text that has stopped growing
@@ -215,17 +250,36 @@ export function searchPage(q, { engine = DEFAULT_ENGINE, timeoutMs = 3500 } = {}
 }
 
 /**
- * Notes for one question: { notes: [line, ...], ms, engine } or null (no browser, a bot check, or
- * nothing on the page that speaks to it). Never throws, never waits past deadlineMs.
+ * Notes for one question: { notes: [line, ...], ms, engine } or null (no browser, every engine
+ * resting after a bot check, the day's limit reached, or nothing on the page that speaks to it).
+ * `engine` is the person's choice; when it is resting the next one is used, and when it shows a bot
+ * check during this lookup the next one is tried once. Never throws, never waits past deadlineMs.
  */
 export async function lookupNotes(question, { engine = DEFAULT_ENGINE, budget = NOTES_BUDGET, deadlineMs = 4000 } = {}) {
   const q = String(question || '').trim();
   if (q.length < 4) return null;
   const t0 = Date.now();
+  const key = q.toLowerCase();
+  const kept = cache.get(key);
+  if (kept && t0 - kept.at < CACHE_MS) return { notes: kept.notes, ms: 0, engine: kept.engine, cached: true };
+  if (day.key !== today()) day = { key: today(), n: 0 };
+  if (day.n >= DAY_LIMIT) return null;
   try {
-    const page = await Promise.race([searchPage(q, { engine, timeoutMs: Math.max(1000, deadlineMs - 300) }), sleep(deadlineMs).then(() => null)]);
-    if (!page || page.bot || !page.text) return null;
-    const notes = notesFromPage(q, page.text, budget);
-    return notes.length ? { notes, ms: Date.now() - t0, engine } : null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const use = engineFor(engine, resting);
+      const left = deadlineMs - (Date.now() - t0);
+      if (!use || left < 1000) return null;
+      day.n++;
+      const page = await Promise.race([searchPage(q, { engine: use, timeoutMs: Math.max(1000, left - 300) }), sleep(left).then(() => null)]);
+      if (page && page.bot) continue;          // that engine now rests; the next one gets one try
+      if (!page || !page.text) return null;
+      const t = tally(use); t.ok++; t.lastOkAt = Date.now();
+      const notes = notesFromPage(q, page.text, budget);
+      if (!notes.length) return null;
+      cache.set(key, { at: Date.now(), notes, engine: use });
+      if (cache.size > 60) cache.delete(cache.keys().next().value);
+      return { notes, ms: Date.now() - t0, engine: use };
+    }
+    return null;
   } catch { return null; }
 }
