@@ -17,7 +17,9 @@ import * as browser from './playwright-bridge.js';
 import { spawn } from 'child_process';
 import { askAI } from './llm.js';
 import { get } from './db.js';
-import { moneyAsk, moneyBlock, CODES as MONEY_CODES } from './money.js';
+import { moneyAsk, moneyBlock, CODES as MONEY_CODES, ECB as ECB_CODES } from './money.js';
+import { unitAsk, unitBlock, clockPlace, coinsAsked, sayNumber } from './sums.js';
+import { sayMoney } from './money.js';
 import { sunTimes } from './intuition/place.js';
 import { hisTimeZone } from './intuition/time.js';
 
@@ -86,42 +88,141 @@ function homeCurrency() {
 }
 const moneyAsks = (text, opts) => moneyAsk(text, (opts && opts.recent) || [], homeCurrency());
 
+// Two sources, so no currency is left out. European Central Bank reference rates (Frankfurter)
+// carry 30 currencies; when a sum needs any other, the rates come from currency-api
+// (github.com/fawazahmed0/exchange-api: public domain, daily, every currency, served from a
+// CDN with a second host behind it). Neither needs a key.
+const RATE_HOSTS = [
+  (from) => `https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/${from}.min.json`,
+  (from) => `https://latest.currency-api.pages.dev/v1/currencies/${from}.min.json`,
+];
+async function ratesFor(asks) {
+  const rates = {};
+  let date = '';
+  const pairs = new Map();
+  for (const a of asks) pairs.set(a.from, [...new Set([...(pairs.get(a.from) || []), a.to])]);
+  if (asks.every((a) => ECB_CODES.includes(a.from) && ECB_CODES.includes(a.to))) {
+    try {
+      for (const [from, to] of pairs) {
+        const j = await getJson(`https://api.frankfurter.dev/v1/latest?from=${from}&to=${to.join(',')}`);
+        for (const c of to) if (j?.rates?.[c] != null) rates[`${from}>${c}`] = j.rates[c];
+        date = j?.date || date;
+      }
+      if (asks.every((a) => rates[`${a.from}>${a.to}`] > 0)) return { rates, date, source: 'European Central Bank' };
+    } catch (e) { console.warn('[tools] ECB rates: ' + (e?.message || e)); }
+  }
+  for (const [from, to] of pairs) {
+    const key = from.toLowerCase();
+    let j = null;
+    for (const host of RATE_HOSTS) {
+      try { j = await getJson(host(key)); if (j?.[key]) break; } catch (e) { console.warn('[tools] rates: ' + (e?.message || e)); }
+    }
+    for (const c of to) if (j?.[key]?.[c.toLowerCase()] > 0) rates[`${from}>${c}`] = j[key][c.toLowerCase()];
+    date = j?.date || date;
+  }
+  return { rates, date, source: 'daily market rates' };
+}
+
 async function currency(text, opts) {
   const asks = moneyAsks(text, opts);
   if (!asks.length) return '';
-  const rates = {};
-  let date = '';
-  for (const from of [...new Set(asks.map((a) => a.from))]) {
-    const to = [...new Set(asks.filter((a) => a.from === from).map((a) => a.to))];
-    const j = await getJson(`https://api.frankfurter.dev/v1/latest?from=${from}&to=${to.join(',')}`);
-    for (const c of to) if (j?.rates?.[c] != null) rates[`${from}>${c}`] = j.rates[c];
-    date = j?.date || date;
-  }
-  return moneyBlock(asks, rates, date);
+  const { rates, date, source } = await ratesFor(asks);
+  return moneyBlock(asks, rates, date, source);
 }
 
 // --- Crypto: relevant to Dream Fights and the data-staking work ------------
 const CRYPTO_RE = /\b(bitcoin|btc|ethereum|eth|solana|sol|crypto|usdc)\b/i;
 const COINS = { bitcoin: 'bitcoin', btc: 'bitcoin', ethereum: 'ethereum', eth: 'ethereum', solana: 'solana', sol: 'solana', usdc: 'usd-coin' };
 
-async function crypto(text) {
-  const ids = [];
+// Every coin the price source lists (its top 250, read once a day), not four typed in here.
+// Until the list has loaded, the four above still work.
+let coinList = [];
+let coinListAt = 0;
+let coinListLoading = null;
+function coins() {
+  if (Date.now() - coinListAt > 24 * 3600 * 1000 && !coinListLoading) {
+    coinListLoading = fetch('https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=250&page=1',
+      { signal: AbortSignal.timeout(10000), headers: { 'User-Agent': 'PAN/1.0 (personal assistant)' } })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
+      .then((list) => {
+        if (Array.isArray(list) && list.length) coinList = list.map((c) => ({ id: c.id, symbol: c.symbol, name: c.name, rank: c.market_cap_rank }));
+        coinListAt = Date.now();
+      })
+      .catch(async (e) => {
+        console.warn('[tools] coin list: ' + (e?.message || e));
+        coinListAt = Date.now() - (24 * 3600 - 300) * 1000;      // try the ranked list again in five minutes
+        if (coinList.length) return;
+        // Meanwhile the names in the daily rate files: every code there that is not a country's money.
+        // They carry no ranking, so a name only counts beside the word price ("price of X", "X at").
+        for (const host of RATE_HOSTS) {
+          try {
+            const names = await getJson(host('usd').replace(/currencies\/usd\.min\.json$/, 'currencies.min.json'));
+            const list = Object.entries(names || {}).filter(([code, name]) => name && !MONEY_CODES.includes(code.toUpperCase()) && !/^x[a-z]{2}$/.test(code))
+              .map(([code, name]) => ({ id: 'sym:' + code, symbol: code, name, rank: 50 }));
+            if (list.length) { coinList = list; break; }
+          } catch {}
+        }
+      })
+      .finally(() => { coinListLoading = null; });
+  }
+  return coinList;
+}
+function coinIds(text) {
+  const ids = coinsAsked(text, coins());
   for (const m of String(text).toLowerCase().matchAll(/\b(bitcoin|btc|ethereum|eth|solana|sol|usdc)\b/g)) {
     const id = COINS[m[1]];
-    if (id && !ids.includes(id)) ids.push(id);
+    // With only the unranked names loaded, the same coin is already in the list under its ticker.
+    const ticker = { bitcoin: 'btc', ethereum: 'eth', solana: 'sol', 'usd-coin': 'usdc' }[id];
+    if (id && !ids.includes(id) && !ids.includes('sym:' + ticker)) ids.push(id);
   }
+  return ids;
+}
+
+// A price the way it is said: dollars and cents, or cents with a decimal for a coin under a dollar.
+function sayCoinPrice(usd) {
+  if (usd >= 1) return sayMoney(usd, 'USD');
+  const cents = usd * 100;
+  return cents >= 1 ? `${sayNumber(cents)} cents` : `${sayNumber(cents)} of a cent`;
+}
+
+async function crypto(text) {
+  const ids = coinIds(text);
   if (!ids.length) ids.push('bitcoin', 'ethereum');
-  const j = await getJson(
-    'https://api.coingecko.com/api/v3/simple/price?ids=' + ids.join(',') +
-    '&vs_currencies=usd&include_24hr_change=true');
+  let j = null;
+  let source = 'CoinGecko, live';
+  try {
+    if (ids.some((id) => id.startsWith('sym:'))) throw new Error('no ranked coin list yet');
+    j = await getJson(
+      'https://api.coingecko.com/api/v3/simple/price?ids=' + ids.join(',') +
+      '&vs_currencies=usd&include_24hr_change=true');
+  } catch (e) {
+    // The live source allows only a few questions a minute. The daily rates (the same public
+    // files the currency sums use) carry the big coins too: an older price, said to be one.
+    console.warn('[tools] coin price: ' + (e?.message || e) + ', using the daily rates');
+    const SYMBOL = { bitcoin: 'btc', ethereum: 'eth', solana: 'sol', 'usd-coin': 'usdc' };
+    let day = null;
+    for (const host of RATE_HOSTS) {
+      try { day = await getJson(host('usd')); if (day?.usd) break; } catch {}
+    }
+    j = {};
+    for (const id of ids) {
+      const symbol = SYMBOL[id] || (coinList.find((c) => c.id === id) || {}).symbol;
+      const perDollar = symbol && day?.usd?.[symbol.toLowerCase()];
+      if (perDollar > 0) j[id] = { usd: 1 / perDollar };
+    }
+    source = `daily rates of ${day?.date || 'today'}, not live`;
+  }
   const lines = [];
   for (const [id, v] of Object.entries(j || {})) {
+    if (!(v?.usd > 0)) continue;
     const ch = v.usd_24h_change;
-    lines.push(`- ${id}: $${Math.round(v.usd).toLocaleString('en-US')}` +
-      (ch != null ? ` (${ch >= 0 ? '+' : ''}${ch.toFixed(1)}% in 24h)` : ''));
+    const name = (coinList.find((c) => c.id === id) || {}).name || id;
+    const figure = v.usd >= 100 ? Math.round(v.usd).toLocaleString('en-US') : v.usd >= 1 ? v.usd.toFixed(2) : String(Number(v.usd.toPrecision(3)));
+    lines.push(`- ${name}: $${figure}` + (ch != null ? ` (${ch >= 0 ? '+' : ''}${ch.toFixed(1)}% in 24h)` : '') + `. Out loud: "${name} is at about ${sayCoinPrice(v.usd)}"`);
   }
   if (!lines.length) return '';
-  return '\nCRYPTO PRICES (CoinGecko, live) - real data:\n' + lines.join('\n') + '\n';
+  return `\nCRYPTO PRICES (${source}) - real data.`
+    + ' Use the words after "Out loud" as they are; do not spell any number yourself:\n' + lines.join('\n') + '\n';
 }
 
 // --- Air quality: the wearer's local environment --------------------------
@@ -521,6 +622,26 @@ function worldClock(text) {
   return '';
 }
 
+// A place the table above does not hold (a country, a town anywhere, a name in another
+// language): the geocoder knows its time zone. The table missed "Nigeria", "Kenya" and
+// "Kathmandu", and the model then made a time up (7 of 20 wrong, right-answer bench 2026-11-19).
+async function clockAnywhere(text) {
+  const known = worldClock(text);
+  if (known) return known;
+  const place = clockPlace(text);
+  if (!place) return '';
+  const j = await getJson('https://geocoding-api.open-meteo.com/v1/search?count=5&language=en&name=' + encodeURIComponent(place));
+  const hits = (j?.results || []).filter((r) => r.timezone);
+  // A country or the biggest town of that name, before a village that shares it.
+  const best = hits.find((r) => r.feature_code === 'PCLI') || hits.sort((a, b) => (b.population || 0) - (a.population || 0))[0];
+  if (!best) return '';
+  try {
+    const when = new Date().toLocaleString('en-US', { timeZone: best.timezone, weekday: 'long', hour: 'numeric', minute: '2-digit' });
+    const where = best.country && best.country !== best.name ? `${best.name}, ${best.country}` : best.name;
+    return `\nCLOCK: in ${where} it is ${when} right now (${best.timezone}).\n`;
+  } catch { return ''; }
+}
+
 // live: data that changes (weather, prices, news, a page, a clock), which the voice
 // student cannot answer from its own head; routeStream hands such a turn the data
 // instead of the student. A function when the match is looser than a real ask:
@@ -533,18 +654,21 @@ const TOOLS = [
   { name: 'weather',  live: (t) => WEATHER_ASK.test(t), match: (t) => looksLikeWeather(t), run: (t, s) => buildWeatherBlock(t, s) },
   { name: 'wikipedia',match: (t) => WIKI_RE.test(t) && !looksLikeWeather(t), run: (t) => wikipedia(t) },
   { name: 'currency', live: true, match: (t, o) => moneyAsks(t, o).length > 0, run: (t, s, o) => currency(t, o) },
-  { name: 'crypto',   live: true, match: (t) => CRYPTO_RE.test(t),   run: (t) => crypto(t) },
+  { name: 'crypto',   live: true, match: (t) => CRYPTO_RE.test(t) || coinIds(t).length > 0, run: (t) => crypto(t) },
+  { name: 'units',    live: true, match: (t) => !!unitAsk(t), run: (t) => unitBlock(unitAsk(t)) },
   { name: 'air',      live: true, match: (t) => AIR_RE.test(t),      run: (t, s) => airQuality(t, s) },
   { name: 'search',   live: (t) => SEARCH_ASK.test(t) || CURRENT_RE.test(t), match: (t) => SEARCH_RE.test(t) || CURRENT_RE.test(t), run: (t) => webSearch(t) },
   { name: 'page',     live: true, match: (t) => URL_RE.test(t),      run: (t) => readNamedUrl(t) },
   { name: 'sun',      live: true, match: (t) => SUN_RE.test(t), run: (t) => sunForPlace(t) },
-  { name: 'clock',    live: true, match: (t) => /\btime\b/i.test(t) && /\bin\b/i.test(t), run: (t) => worldClock(t) },
+  { name: 'clock',    live: true, match: (t) => /\btime\b/i.test(t) && /\b(?:in|at)\b/i.test(t), run: (t) => clockAnywhere(t) },
   // decide builds its ranges with gemma4:e4b on the hub CPU, 16-20 s. Inside the
   // deadline below it failed 919 times out of 919 (hub.log, Aug 7 to Nov 2), and
   // every "should I" turn waited the full 1.5 s for it. Not run inline until it
   // has a way to follow up after the reply.
   { name: 'decide',   slow: true, match: (t) => DECIDE_RE.test(t), run: (t) => decideTool(t) },
 ];
+
+coins();
 
 /** All matching tool outputs, fetched in parallel. '' when nothing matches.
  *  With { detail: true }: { text, live }, live when any block came from a live tool.

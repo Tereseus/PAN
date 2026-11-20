@@ -6,15 +6,21 @@
 // 1,800 yen and 3,000 yen both came out as 16.5 dollars. The rule now: the code works out
 // which sum is asked and does it; the model only says the result.
 
-// Every currency the rate source (Frankfurter, European Central Bank rates) carries.
-export const CODES = ['AUD', 'BRL', 'CAD', 'CHF', 'CNY', 'CZK', 'DKK', 'EUR', 'GBP', 'HKD', 'HUF', 'IDR', 'ILS', 'INR', 'ISK',
+// The currencies with European Central Bank reference rates (the Frankfurter source).
+export const ECB = ['AUD', 'BRL', 'CAD', 'CHF', 'CNY', 'CZK', 'DKK', 'EUR', 'GBP', 'HKD', 'HUF', 'IDR', 'ILS', 'INR', 'ISK',
   'JPY', 'KRW', 'MXN', 'MYR', 'NOK', 'NZD', 'PHP', 'PLN', 'RON', 'SEK', 'SGD', 'THB', 'TRY', 'USD', 'ZAR'];
+// Every currency there is: the list comes from the runtime (ISO 4217 through ICU), not from us.
+// The first version of this file listed the 30 above by hand, and a hundred thousand naira got
+// a made-up answer (1 of 17 right on currencies outside the list, right-answer bench 2026-11-19).
+// X codes are metals and test codes, except the four shared currencies that are real money.
+const SHARED = new Set(['XAF', 'XOF', 'XCD', 'XPF']);
+export const CODES = Intl.supportedValuesOf('currency').filter((c) => !c.startsWith('X') || SHARED.has(c));
 
 // How people say them. Longer names first, so "australian dollars" is not read as "dollars".
 const NAMES = [
   ['australian dollars?|aussie dollars?', 'AUD'], ['canadian dollars?', 'CAD'], ['new zealand dollars?|kiwi dollars?', 'NZD'],
   ['hong kong dollars?', 'HKD'], ['singapore dollars?', 'SGD'], ['us dollars?|u s dollars?|american dollars?', 'USD'],
-  ['swiss francs?', 'CHF'], ['mexican pesos?', 'MXN'], ['philippine pesos?', 'PHP'], ['brazilian reals?|reais', 'BRL'],
+  ['swiss francs?', 'CHF'], ['mexican pesos?', 'MXN'], ['philippine pesos?', 'PHP'], ['brazilian (?:reals?|reais)|reais', 'BRL'],
   ['indian rupees?', 'INR'], ['indonesian rupiahs?|rupiahs?', 'IDR'], ['turkish liras?', 'TRY'], ['south african rands?', 'ZAR'],
   ['danish kron(?:e|er)', 'DKK'], ['norwegian kron(?:e|er)', 'NOK'], ['swedish kron(?:a|or)', 'SEK'], ['icelandic kron(?:a|ur)', 'ISK'],
   ['british pounds?|pounds? sterling', 'GBP'], ['japanese yen', 'JPY'], ['chinese yuan', 'CNY'], ['korean won', 'KRW'],
@@ -22,13 +28,56 @@ const NAMES = [
   ['won', 'KRW'], ['rupees?', 'INR'], ['pesos?', 'MXN'], ['francs?', 'CHF'], ['liras?', 'TRY'], ['rands?', 'ZAR'], ['baht', 'THB'],
   ['zloty|zlotys', 'PLN'], ['kron(?:a|or)', 'SEK'], ['kron(?:e|er)', 'NOK'], ['shekels?', 'ILS'], ['forints?', 'HUF'],
   ['ringgits?', 'MYR'], ['korun(?:a|y)', 'CZK'], ['leu|lei', 'RON'],
-  ...CODES.map((c) => [c.toLowerCase(), c]),
+  ['uae dirhams?|emirati dirhams?', 'AED'],
+  ...ECB.map((c) => [c.toLowerCase(), c]),
 ];
+// A bare word that several countries use ("pesos") means the one above unless it is his own money.
+const SHARED_WORDS = /^(?:dollars?|bucks?|pounds?|pesos?|rupees?|francs?|liras?|kron(?:a|or|e|er))$/;
+// Every other currency, by the names the runtime has for it: "Nigerian naira(s)", the country
+// and the word ("Taiwan dollars"), and the word alone when only one currency uses it ("naira").
+// Not alone when it is also an everyday word.
+const EVERYDAY = new Set(['real', 'mark', 'pound', 'gold', 'crown']);
+const nounOf = (code) => {
+  try { return new Intl.DisplayNames('en', { type: 'currency' }).of(code).toLowerCase().replace(/[()]/g, '').split(' ').pop(); } catch { return ''; }
+};
+(() => {
+  const en = new Intl.DisplayNames('en', { type: 'currency' });
+  const region = new Intl.DisplayNames('en', { type: 'region' });
+  const esc = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const plural = (x) => esc(x) + (/[sxz]$/.test(x) ? '(?:es)?' : 's?');
+  const known = new Set(NAMES.map(([, c]) => c));
+  const info = [];
+  const uses = new Map();
+  for (const code of CODES) {
+    const full = en.of(code);
+    if (!full || full === code) continue;
+    const name = full.toLowerCase().replace(/[()]/g, '');
+    const noun = name.split(' ').pop();
+    info.push({ code, name, noun });
+    uses.set(noun, (uses.get(noun) || 0) + 1);
+  }
+  const rows = [];
+  for (const { code, name, noun } of info) {
+    rows.push([plural(name), code]);
+    let place = '';
+    try { place = (region.of(code.slice(0, 2)) || '').toLowerCase(); } catch {}
+    if (place && place !== code.slice(0, 2).toLowerCase() && !name.startsWith(place)) rows.push([`${esc(place)} ${plural(noun)}`, code]);
+    if (uses.get(noun) === 1 && noun.length >= 4 && !EVERYDAY.has(noun) && !known.has(code)) rows.push([plural(noun), code]);
+    if (!ECB.includes(code)) rows.push([code.toLowerCase(), code]);
+  }
+  // Longer names first, and all of them before the bare words above ("jordanian dinars" before "dinars").
+  rows.sort((x, y) => y[0].length - x[0].length);
+  const bare = NAMES.findIndex(([n]) => n === 'dollars?|bucks?');
+  NAMES.splice(bare, 0, ...rows);
+})();
 const SYMBOLS = { '$': 'USD', '€': 'EUR', '£': 'GBP', '¥': 'JPY', '₹': 'INR', '₩': 'KRW' };
 const NAME_RE = new RegExp(`\\b(?:${NAMES.map(([n]) => n).join('|')})\\b`, 'gi');
-function codeOf(word) {
+const NAME_TESTS = NAMES.map(([pattern, code]) => [new RegExp(`^(?:${pattern})$`), code]);
+function codeOf(word, home) {
   const w = word.toLowerCase();
-  for (const [pattern, code] of NAMES) if (new RegExp(`^(?:${pattern})$`).test(w)) return code;
+  // "pesos" from someone whose own money is the Colombian peso is the Colombian peso.
+  if (home && SHARED_WORDS.test(w) && nounOf(home) && new RegExp(`^${nounOf(home)}s?$`).test(w)) return home;
+  for (const [test, code] of NAME_TESTS) if (test.test(w)) return code;
   return null;
 }
 
@@ -87,16 +136,20 @@ export function parseNumber(words) {
  * Every currency named in the line, in order, each with the amount said next to it (or null):
  * "three thousand yen" -> { amount: 3000, code: 'JPY' }, "in dollars" -> { amount: null, code: 'USD' }.
  */
-export function moneyMentions(text) {
+export function moneyMentions(text, home) {
+  return mentionsAt(text, home).map(({ amount, code }) => ({ amount, code }));
+}
+
+function mentionsAt(text, home) {
   // "u s d", "u.s.d." -> usd, the way a phone's speech to text spells it.
   const line = String(text || '').replace(/\bu\.?\s?s\.?\s?d\b\.?/gi, 'usd').replace(/[?!]/g, ' ');
   const out = [];
   for (const m of line.matchAll(/([$€£¥₹₩])\s?(\d[\d,]*(?:\.\d+)?(?:\s?(?:k|m|mil|bn|hundred|thousand|million|billion))?)/gi)) {
     const amount = parseNumber(m[2]);
-    if (amount != null) out.push({ amount, code: SYMBOLS[m[1]], at: m.index });
+    if (amount != null) out.push({ amount, code: SYMBOLS[m[1]], at: m.index, end: m.index + m[0].length, line });
   }
   for (const m of line.matchAll(NAME_RE)) {
-    const code = codeOf(m[0]);
+    const code = codeOf(m[0], home);
     if (!code) continue;
     // Pounds of weight are not money: "a pound of flour", "I lost ten pounds", "180 pounds in kilos".
     if (code === 'GBP' && /^(?:pounds?)$/i.test(m[0]) && (/^\s+of\b/i.test(line.slice(m.index + m[0].length)) || WEIGHT.test(line))) continue;
@@ -114,10 +167,10 @@ export function moneyMentions(text) {
     while (taken.length && (taken[0] === 'and' || taken[0] === 'point')) taken.shift();
     let amount = taken.length ? parseNumber(taken.join(' ')) : null;
     if (taken.length === 1 && (taken[0] === 'a' || taken[0] === 'an')) amount = 1;
-    out.push({ amount: amount != null && amount > 0 ? amount : null, code, at: m.index });
+    out.push({ amount: amount != null && amount > 0 ? amount : null, code, at: m.index, end: m.index + m[0].length, line });
   }
   out.sort((a, b) => a.at - b.at);
-  return out.map(({ amount, code }) => ({ amount, code }));
+  return out;
 }
 
 const WEIGHT = /\b(kilos?|kilograms?|kg|weigh(?:s|t|ed)?|lbs?|heavy|heavier|lose|lost|gain(?:ed)?|ounces?|grams?)\b/i;
@@ -133,14 +186,15 @@ const POINTS_BACK = /\b(that|this|it|those|these)\b/i;
  *  B  asks about "that", names one currency   "so what is that, thirty bucks" the amount in the last money line -> USD
  *  C  amounts in one currency                 "what about fifty thousand yen" 50,000 JPY -> the talk's other currency, else home
  *  D  two currencies, no amount               "yen to dollars"                1 JPY -> USD
+ *  E  in a money talk, an amount and no money  "what about fifty thousand"     50,000 of what the talk converts
+ *  F  in a money talk, a currency, no amount   "and in euros?"                 the talk's amount -> EUR
  *
  * Not a sum: a line that gives both sides itself and is not a question ("I looked it up, 3,000 yen
  * is 18.79 dollars": he is telling, and a figure of ours a few cents off must not correct his), and
  * a plain remark with one amount in it ("it was six dollars, not a few cents").
  */
 export function moneyAsk(text, recent = [], home = 'USD') {
-  const mentions = moneyMentions(text);
-  if (!mentions.length) return [];
+  const mentions = mentionsAt(text, home);
   const withAmount = mentions.filter((m) => m.amount != null);
   const codes = [...new Set(mentions.map((m) => m.code))];
   const asking = ASKS.test(text);
@@ -150,11 +204,19 @@ export function moneyAsk(text, recent = [], home = 'USD') {
   let talk = null;
   for (let i = lines.length - 1; i >= 0 && !talk; i--) {
     const [ask] = moneyAsk(lines[i], [], home);
-    if (ask) talk = { from: ask.from, to: ask.to };
+    if (ask) talk = { from: ask.from, to: ask.to, amount: ask.amount };
   }
   // The last line in the talk that named an amount of money.
+  const short = String(text).trim().split(/\s+/).length <= 6;
+  // E: no money word at all, but the talk is converting and this short line or question holds an
+  // amount: "what about fifty thousand", "okay and two hundred of them".
+  if (!mentions.length) {
+    if (!talk || !(asking || short) || /\b(?:percent|%|times|minutes?|hours?|days?|weeks?|years?|people|o'clock|am|pm)\b/i.test(text)) return [];
+    const amount = bareAmount(text);
+    return amount > 0 ? [{ amount, from: talk.from, to: talk.to }] : [];
+  }
   let lastMoney = [];
-  for (let i = lines.length - 1; i >= 0 && !lastMoney.length; i--) lastMoney = moneyMentions(lines[i]).filter((m) => m.amount != null);
+  for (let i = lines.length - 1; i >= 0 && !lastMoney.length; i--) lastMoney = moneyMentions(lines[i], home).filter((m) => m.amount != null);
 
   // A
   if (withAmount.length && codes.length >= 2) {
@@ -182,17 +244,40 @@ export function moneyAsk(text, recent = [], home = 'USD') {
     }
     // C: an ask, or inside a money talk a short line ("and forty dollars") or one that sets two
     // amounts side by side (a complaint: "you said 1800 yen is that, now 3,000 yen is the same").
-    const short = String(text).trim().split(/\s+/).length <= 6;
     if (withAmount.length && (asking || (talk && (short || withAmount.length >= 2)))) {
       const to = talk ? (code === talk.from ? talk.to : talk.from)
         : (lastMoney.find((m) => m.code !== code) || {}).code || (code !== home ? home : null);
+      const m = withAmount[0];
+      const ends = /^\s*(?:$|[?.!,]|in\b|to\b|into\b|worth\b|right now|now\b|today|these days|at the moment|then\b|again\b|please\b|is\b|are\b|and\b|or\b)/i.test(m.line.slice(m.end));
+      if (!talk && !lastMoney.length && !ends) return [];
       if (to && to !== code) return dedupe(withAmount.slice(0, 3).map((m) => ({ amount: m.amount, from: m.code, to })));
+    }
+    // F: "and in euros?": the amount the talk was about, into this currency.
+    if (!withAmount.length && talk && talk.amount > 0 && code !== talk.from && (asking || short) && /\b(?:in|to|into)\b/i.test(text)) {
+      return [{ amount: talk.amount, from: talk.from, to: code }];
     }
     return [];
   }
   // D
   if (!withAmount.length && codes.length >= 2 && asking) return [{ amount: 1, from: codes[0], to: codes[1] }];
   return [];
+}
+
+/** The one amount in a line that names no money: "what about fifty thousand" -> 50000. 0 when none or several. */
+function bareAmount(text) {
+  const words = String(text || '').toLowerCase().replace(/(\d),(?=\d{3}\b)/g, '$1').replace(/[^a-z0-9. ]+/g, ' ').split(/\s+/).filter(Boolean);
+  const runs = [];
+  let run = [];
+  for (const w of [...words, '']) {
+    const isNumber = /^\d+(?:\.\d+)?(?:k|m|mil|bn)?$/.test(w) || (NUMBER_WORD.test(w) && !(run.length === 0 && (w === 'a' || w === 'an' || w === 'and' || w === 'point' || w === 'half')));
+    if (isNumber) { run.push(w); continue; }
+    while (run.length && (run[run.length - 1] === 'and' || run[run.length - 1] === 'a' || run[run.length - 1] === 'an' || run[run.length - 1] === 'point')) run.pop();
+    if (run.length) runs.push(run.join(' '));
+    run = [];
+  }
+  if (runs.length !== 1) return 0;
+  const n = parseNumber(runs[0]);
+  return n != null && n > 0 ? n : 0;
 }
 
 function dedupe(asks) {
@@ -243,6 +328,13 @@ const SPOKEN = {
   ILS: ['shekel', 'shekels'], HUF: ['forint', 'forints'], MYR: ['ringgit', 'ringgit'], CZK: ['Czech koruna', 'Czech koruna'],
   RON: ['Romanian leu', 'Romanian lei'], IDR: ['rupiah', 'rupiah'],
 };
+// A currency with no entry above: the runtime's own name for one and for many ("Nigerian naira", "Nigerian nairas").
+function spokenByRuntime(code) {
+  try {
+    const name = (n) => new Intl.NumberFormat('en', { style: 'currency', currency: code, currencyDisplay: 'name', maximumFractionDigits: 0 }).formatToParts(n).filter((p) => p.type === 'currency').map((p) => p.value).join(' ');
+    return [name(1), name(2)];
+  } catch { return [code, code]; }
+}
 const digitsWords = (digits) => [...digits].map((d) => SMALL[Number(d)]).join(' ');
 
 /**
@@ -251,7 +343,7 @@ const digitsWords = (digits) => [...digits].map((d) => SMALL[Number(d)]).join(' 
  * hundred", "one point two five million"), cents under a hundred where the currency has them.
  */
 export function sayMoney(amount, code, exact = false) {
-  const [one, many, coin] = SPOKEN[code] || [code, code];
+  const [one, many, coin] = SPOKEN[code] || spokenByRuntime(code);
   const v = Math.abs(amount);
   if (v >= 1e6 && !(exact && Number.isInteger(v) && v % 1e3 === 0 && v < 1e15 && numberWords(v).split(' ').length <= 6)) {
     const [size, name] = v >= 1e12 ? [1e12, 'trillion'] : v >= 1e9 ? [1e9, 'billion'] : [1e6, 'million'];
@@ -280,7 +372,7 @@ export function sayMoney(amount, code, exact = false) {
  * The block the model reads: each sum already done, in figures and in the words to say.
  * `rates` is { 'JPY>USD': 0.0062511, ... }. '' when a rate is missing.
  */
-export function moneyBlock(asks, rates, date) {
+export function moneyBlock(asks, rates, date, source = 'European Central Bank') {
   const lines = [];
   for (const a of asks) {
     const rate = rates[`${a.from}>${a.to}`];
@@ -292,7 +384,7 @@ export function moneyBlock(asks, rates, date) {
   const first = asks[0];
   const rate = rates[`${first.from}>${first.to}`];
   const per = rate < 1 ? `1 ${first.to} = ${sayAmount(1 / rate)} ${first.from}` : `1 ${first.from} = ${sayAmount(rate)} ${first.to}`;
-  return `\nEXCHANGE RATE (European Central Bank${date ? `, ${date}` : ''}) - real data. The sums are already done. Use the words after "Out loud" as they are: `
+  return `\nEXCHANGE RATE (${source}${date ? `, ${date}` : ''}) - real data. The sums are already done. Use the words after "Out loud" as they are: `
     + 'do no arithmetic and do not spell any number yourself. If an earlier answer of yours in this talk gave a different figure, yours was wrong: say so in a few words and give these. '
     + 'Rates move during the day, so a figure he looked up that is within a few percent of these is right too.\n'
     + `${lines.join('\n')}\n- the rate: ${per}\n`;

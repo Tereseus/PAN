@@ -94,6 +94,46 @@ test('telling is not asking', () => {
   assert.deepEqual(moneyAsk('I paid three thousand yen for lunch there last time I went', talk), []);
 });
 
+test('every currency, not a list of thirty', () => {
+  // The right-answer bench (2026-11-19): 1 of 17 right on currencies outside the old list.
+  assert.deepEqual(moneyAsk('How much is a hundred thousand Nigerian naira in dollars'), [{ amount: 100000, from: 'NGN', to: 'USD' }]);
+  assert.deepEqual(moneyAsk('What is five hundred thousand Vietnamese dong in dollars'), [{ amount: 500000, from: 'VND', to: 'USD' }]);
+  assert.deepEqual(moneyAsk('How much is five hundred UAE dirhams in dollars'), [{ amount: 500, from: 'AED', to: 'USD' }]);
+  assert.deepEqual(moneyAsk('What is two hundred thousand Colombian pesos in dollars'), [{ amount: 200000, from: 'COP', to: 'USD' }]);
+  assert.deepEqual(moneyAsk('What is ten thousand Kenyan shillings in dollars'), [{ amount: 10000, from: 'KES', to: 'USD' }]);
+  assert.deepEqual(moneyAsk('What is five thousand Taiwan dollars in US dollars'), [{ amount: 5000, from: 'TWD', to: 'USD' }]);
+  assert.deepEqual(moneyAsk('How much is two hundred Jordanian dinars in dollars'), [{ amount: 200, from: 'JOD', to: 'USD' }]);
+  assert.deepEqual(moneyAsk('What is a thousand Moroccan dirhams in euros'), [{ amount: 1000, from: 'MAD', to: 'EUR' }]);
+  assert.deepEqual(moneyAsk('How much is fifty dollars in Nigerian naira'), [{ amount: 50, from: 'USD', to: 'NGN' }]);
+  assert.deepEqual(moneyAsk('how much is ten thousand naira'), [{ amount: 10000, from: 'NGN', to: 'USD' }]);
+  assert.deepEqual(moneyAsk('What is three hundred Brazilian reais in dollars'), [{ amount: 300, from: 'BRL', to: 'USD' }]);
+  assert.equal(sayMoney(100000, 'NGN', true), 'one hundred thousand Nigerian nairas');
+  assert.equal(sayMoney(1, 'KES', true), 'one Kenyan shilling');
+});
+
+test('a shared word means his own money when his money uses it', () => {
+  assert.deepEqual(moneyAsk('how much is fifty thousand pesos in dollars', [], 'COP'), [{ amount: 50000, from: 'COP', to: 'USD' }]);
+  assert.deepEqual(moneyAsk('how much is fifty thousand pesos in dollars'), [{ amount: 50000, from: 'MXN', to: 'USD' }]);
+  assert.deepEqual(moneyAsk('how much is three thousand yen in dollars', [], 'CAD'), [{ amount: 3000, from: 'JPY', to: 'CAD' }]);
+});
+
+test('a follow up with no money word, or no amount', () => {
+  const talk = ['How much is three thousand yen in dollars', 'About nineteen dollars.'];
+  assert.deepEqual(moneyAsk('What about fifty thousand', talk), [{ amount: 50000, from: 'JPY', to: 'USD' }]);
+  assert.deepEqual(moneyAsk('And in euros?', talk), [{ amount: 3000, from: 'JPY', to: 'EUR' }]);
+  assert.deepEqual(moneyAsk('Okay and two hundred of them', ['How much is eighty pounds in US dollars', 'About a hundred dollars.']), [{ amount: 200, from: 'GBP', to: 'USD' }]);
+  // an amount of something else in a money talk is not a sum
+  assert.deepEqual(moneyAsk('wait ten minutes', talk), []);
+  assert.deepEqual(moneyAsk('what time is it', talk), []);
+  assert.deepEqual(moneyAsk('What about fifty thousand'), []);
+});
+
+test('a money word that starts another thing is not a sum', () => {
+  for (const line of ['what is a euro step in basketball', 'is that real', 'she is from Sierra Leone', 'the quetzal is a bird', 'what is the dram shop law']) {
+    assert.deepEqual(moneyAsk(line), [], line);
+  }
+});
+
 test('sums the way they are said out loud', () => {
   assert.equal(numberWords(18800), 'eighteen thousand eight hundred');
   assert.equal(numberWords(313), 'three hundred thirteen');
