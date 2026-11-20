@@ -224,6 +224,8 @@ def main():
     stage("0. Reach the computer")
     source = box.put(args.source, release)
     p = box.probe()
+    # An Ollama the computer already runs for itself (not PAN's) is there before the test and stays after it.
+    own_ollama = p["listen"]["ollama"]
     print(f"  {p['computer']}, administrator: {p['admin']}, install folder {box.install_dir}")
     expect_firewall = remote and p["admin"]
 
@@ -318,7 +320,7 @@ def main():
         stage("7. Sign out, sign in")
         box.helper("stop-all")
         p = box.probe()
-        check("signed out: nothing is running", len(p["processes"]) == 0 and not p["health"] and p["listen"]["ollama"] == [] and p["listen"]["reader"] == [],
+        check("signed out: nothing is running", len(p["processes"]) == 0 and not p["health"] and p["listen"]["ollama"] == own_ollama and p["listen"]["reader"] == [],
               {"processes": [x["name"] for x in p["processes"]], "ollama": p["listen"]["ollama"], "reader": p["listen"]["reader"]})
         r = box.helper("run-autostart")
         back = box.wait_health(True, 180)
