@@ -172,7 +172,8 @@ class PanAccessibilityService : AccessibilityService() {
         val allText = StringBuilder()
 
         fun walk(node: AccessibilityNodeInfo, depth: Int) {
-            if (depth > 10) return
+            // A web page in a browser sits 15 to 25 levels down; at 10 only the browser's own tabs were read.
+            if (depth > 40) return
 
             val text = node.text?.toString() ?: ""
             val desc = node.contentDescription?.toString() ?: ""
@@ -214,7 +215,7 @@ class PanAccessibilityService : AccessibilityService() {
         return JSONObject().apply {
             put("ok", true)
             put("text", allText.toString().take(10000))
-            put("elements", JSONArray(elements.take(50)))
+            put("elements", JSONArray(elements.take(150)))
             put("element_count", elements.size)
         }
     }

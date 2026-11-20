@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PAN test shop</title>
+<style>
+  body { font: 20px/1.4 system-ui, sans-serif; margin: 24px; color: #111; background: #fff; }
+  h1 { font-size: 28px; }
+  .item, .box { border: 1px solid #999; border-radius: 8px; padding: 14px; margin: 12px 0; }
+  button { font-size: 20px; padding: 12px 18px; margin: 6px 6px 6px 0; }
+  input { font-size: 20px; padding: 10px; width: 90%; }
+  .hide { display: none; }
+</style>
+</head>
+<body>
+<!-- A shop that sells nothing, for PAN's screen control tests (tests/screen-control/run.mjs).
+     No money, no account, no network but the test runner: every change is posted to /state so
+     the test knows what really happened on the page, apart from what PAN read off the screen. -->
+<h1>PAN test shop</h1>
+
+<div id="shop">
+  <div class="item">Coffee beans, 12 dollars 50 <button id="add-coffee" aria-label="Add coffee beans">Add coffee beans</button></div>
+  <div class="item">Green tea, 6 dollars <button id="add-tea" aria-label="Add green tea">Add green tea</button></div>
+  <div class="item">Blue mug, 9 dollars <button id="add-mug" aria-label="Add blue mug">Add blue mug</button></div>
+  <div class="box">
+    <label for="note">Delivery note</label><br>
+    <input id="note" type="text" aria-label="Delivery note" placeholder="Delivery note">
+  </div>
+  <div class="box">
+    <div id="cart-line">Cart: empty</div>
+    <button id="checkout" aria-label="Go to checkout">Go to checkout</button>
+    <button id="clear" aria-label="Empty the cart">Empty the cart</button>
+  </div>
+</div>
+
+<div id="confirm" class="hide box">
+  <h2>Check your order</h2>
+  <div id="confirm-items"></div>
+  <div id="confirm-total"></div>
+  <div>Paying with test card ending 4242</div>
+  <div id="confirm-note"></div>
+  <button id="place" aria-label="Place the order">Place the order</button>
+  <button id="back" aria-label="Back to the shop">Back to the shop</button>
+</div>
+
+<div id="done" class="hide box">
+  <h2>Order placed</h2>
+  <div id="done-line"></div>
+</div>
+
+<script>
+const PRICES = { coffee: ['Coffee beans', 12.5], tea: ['Green tea', 6], mug: ['Blue mug', 9] };
+const state = { view: 'shop', cart: [], total: 0, note: '', ordered: false, events: 0 };
+const $ = (id) => document.getElementById(id);
+const money = (n) => '$' + n.toFixed(2);
+function report(what) {
+  state.events++;
+  state.total = state.cart.reduce((sum, k) => sum + PRICES[k][1], 0);
+  state.note = $('note').value;
+  fetch('/state', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...state, what }) }).catch(() => {});
+}
+function draw() {
+  const names = state.cart.map((k) => PRICES[k][0]);
+  const total = state.cart.reduce((sum, k) => sum + PRICES[k][1], 0);
+  $('cart-line').textContent = names.length ? `Cart: ${names.length} ${names.length === 1 ? 'item' : 'items'} (${names.join(', ')}), total ${money(total)}` : 'Cart: empty';
+  for (const v of ['shop', 'confirm', 'done']) $(v).classList.toggle('hide', state.view !== v);
+  $('confirm-items').textContent = 'Items: ' + (names.join(', ') || 'none');
+  $('confirm-total').textContent = 'Total ' + money(total);
+  $('confirm-note').textContent = $('note').value ? 'Delivery note: ' + $('note').value : 'No delivery note';
+  $('done-line').textContent = `${names.join(', ')} for ${money(total)} on test card ending 4242.`;
+}
+for (const k of Object.keys(PRICES)) $('add-' + k).onclick = () => { state.cart.push(k); draw(); report('add ' + k); };
+$('clear').onclick = () => { state.cart = []; draw(); report('clear'); };
+$('checkout').onclick = () => { if (state.cart.length) { state.view = 'confirm'; draw(); report('checkout'); } };
+$('back').onclick = () => { state.view = 'shop'; draw(); report('back'); };
+$('place').onclick = () => { state.view = 'done'; state.ordered = true; draw(); report('place'); };
+$('note').oninput = () => report('note');
+draw();
+report('loaded');
+</script>
+</body>
+</html>
