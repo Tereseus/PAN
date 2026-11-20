@@ -2,7 +2,7 @@
 // itself is not started here: these are the pure parts.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { notesFromPage, pick, pageLines, grams, sentences, looksLikeBotCheck, ENGINES, DEFAULT_ENGINE, engineFor, lookupStatus, searchQuery, isSystemAccount } from '../web-lookup.js';
+import { notesFromPage, pick, pageLines, grams, sentences, looksLikeBotCheck, ENGINES, DEFAULT_ENGINE, engineFor, lookupStatus, searchQuery, isSystemAccount, pageSummary } from '../web-lookup.js';
 
 const PAGE = [
   'All', 'Images', 'News', 'Videos', 'Maps', 'Search Settings',
@@ -86,4 +86,27 @@ test('what goes into the search box', () => {
 test('no browser under the system account', () => {
   for (const n of ['SYSTEM', 'system', 'root', 'LOCAL SERVICE', 'NetworkService', 'MINIPC$']) assert.equal(isSystemAccount(n), true, n);
   for (const n of ['alex', 'sam.lee', 'Administrator']) assert.equal(isSystemAccount(n), false, n);
+});
+
+test("the page's own summary box goes first in the notes", () => {
+  const page = ['All', 'Images', 'Search Assist', 'Show', 'Never', 'On Demand', 'Sometimes', 'Often',
+    'The capital of Northland is Port Example. It is the largest city on the north coast and has been the seat of government since 1901.',
+    'Wikipedia', 'northland.example', 'More', 'Auto-generated based on listed sources. May contain inaccuracies.',
+    'Wikipedia', 'https://en.wikipedia.org › wiki › Port_Example',
+    'Port Example - Wikipedia',
+    'Port Example is the capital of Northland and its main harbour, with about 400,000 people in the city proper.'].join('\n');
+  assert.equal(pageSummary(page), 'The capital of Northland is Port Example. It is the largest city on the north coast and has been the seat of government since 1901.');
+  const notes = notesFromPage('what is the capital of Northland', page);
+  assert.match(notes[0], /^The capital of Northland is Port Example\./);
+  assert.ok(notes.length <= 3 && notes.join('').length <= 450 + 10);
+  assert.equal(pageSummary(PAGE), '', 'a page with no summary box');
+  assert.equal(pageSummary('Search Assist\nNever\nAuto-generated based on listed sources.'), '', 'an empty box');
+});
+
+test('a follow up can draw on the page before it', () => {
+  const first = 'Port Example is the capital of Northland and its main harbour, with about 400,000 people in the city proper.';
+  const second = 'Weather in the north this week: rain on the coast and snow above 900 metres, clearing by Friday.';
+  assert.deepEqual(notesFromPage('how many people live in the capital of Northland', second), []);
+  const notes = notesFromPage('how many people live in the capital of Northland', second, 450, first);
+  assert.ok(notes.some((n) => /400,000/.test(n)), notes.join(' | '));
 });

@@ -313,7 +313,7 @@ const HUB_WORLD = 'He asked something that needs real knowledge or judgment. Ans
 const HUB_RULES = {
   WORLD: HUB_WORLD,
   WORLD_MAYBE: `The WORLD rule, but if he was not talking to you (the TV, someone else in the room), ${HUB_AMBIENT}.`,
-  LOOKED: 'The WORLD rule, and the notes above his line were looked up on the web just now and are newer than what you remember: where they speak to his question, trust them over your memory. Say the answer first, in one sentence. Then add one or two sentences of what is worth knowing about it (who, since when, where, how much), from the notes or from what you know well. When the notes do not cover his question, answer from what you know. When it is something that changes (who holds a post, a price, this year\'s events) and the notes do not cover it, say you are not sure instead of guessing. Never say that you looked it up or read notes.',
+  LOOKED: 'The WORLD rule, and the notes above his line were looked up on the web just now and are newer than what you remember: where they speak to his question, trust them over your memory. Say the answer first, in one sentence, exactly as the notes give it (names, scores, figures and dates copied from the notes, never from memory). Then add one or two sentences of what is worth knowing about it (who, since when, where, how much), using only what the notes say: a name, a score or a figure that is not in the notes must not be said. If the notes hold nothing more, stop after the answer. When the notes do not cover his question at all, answer from what you know. When it is something that changes (who holds a post, a price, this year\'s events) and the notes do not cover it, say you are not sure instead of guessing. Never say that you looked it up or read notes.',
   LOOKED_MAYBE: `The LOOKED rule, but if he was not talking to you (the TV, someone else in the room), ${HUB_AMBIENT}.`,
   ASKED: 'He asked you to come up with something yourself: a question for him, a joke, an idea, a story, your opinion. Do it now, in one to three short spoken sentences. If he wants a question, ask him one real, specific question about him or about what he is doing, and nothing else. Never just agree, and never ask what he would like.',
   ASKED_MAYBE: `The ASKED rule, but if he was not talking to you (the TV, someone else in the room), ${HUB_AMBIENT}.`,
@@ -3821,7 +3821,7 @@ answer an earlier question, and do not narrate what the context blocks mention.`
   let lookedUp = null;
   const startLookup = () => {
     if (!lookedUp) lookedUp = worldHub && !askedFor && webLookupOn(context.device_id)
-      ? lookupNotes(searchQuery(text, talkBefore(context, text)), { engine: webLookupEngine(), deadlineMs: WEB_LOOKUP_MS }).catch(() => null)
+      ? lookupNotes(searchQuery(text, talkBefore(context, text)), { engine: webLookupEngine(), deadlineMs: WEB_LOOKUP_MS, talk: String(context.device_id || '') }).catch(() => null)
       : Promise.resolve(null);
     return lookedUp;
   };

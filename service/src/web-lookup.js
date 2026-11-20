@@ -85,7 +85,9 @@ export function pick(question, lines, budget = NOTES_BUDGET) {
   const N = Math.max(1, lines.length);
   const scored = lines.map((c, i) => {
     let s = 0;
-    for (const g of q) if (sets[i].has(g)) s += Math.log(1 + N / df.get(g));
+    let shared = 0;
+    for (const g of q) if (sets[i].has(g)) { s += Math.log(1 + N / df.get(g)); shared++; }
+    if (shared < 2) s = 0;      // one word in common with the question says little
     let own = 0;
     for (const g of sets[i]) if (!q.has(g)) own++;
     if (own < 3 || /^https?:\/\/|\s›\s/.test(c.text)) s = 0;
@@ -120,9 +122,37 @@ export function searchQuery(text, recent = []) {
   return (before && before.toLowerCase() !== line.toLowerCase() ? `${before} ${line}` : line).slice(0, 200);
 }
 
-/** From the text of a results page to the notes for one question (an empty list when the page says nothing to it). */
-export function notesFromPage(question, pageText, budget = NOTES_BUDGET) {
-  return pick(question, pageLines(pageText), budget);
+/**
+ * The summary a search page writes itself at the top, when it shows one: DuckDuckGo's "Search
+ * Assist" box (the owner pointed it out, Nov 20; it showed for two of three test questions). It is
+ * the page's own direct answer with its sources, so it goes first in the notes. '' when there is none.
+ * Found by the box's own frame: its heading, and the line under it that says it was generated.
+ */
+export function pageSummary(pageText, max = 420) {
+  const lines = String(pageText || '').split('\n').map((l) => l.trim());
+  const end = lines.findIndex((l) => /^Auto-generated based on listed sources/i.test(l));
+  if (end < 1) return '';
+  let start = -1;
+  for (let i = end - 1; i >= 0 && i > end - 40; i--) if (/^Search Assist$/i.test(lines[i])) { start = i; break; }
+  if (start < 0) return '';
+  // Between the two: the box's buttons and source names (short lines) and the summary itself.
+  const body = lines.slice(start + 1, end).filter((l) => l.length > 60).join(' ').replace(/\s+/g, ' ').trim();
+  if (!body) return '';
+  if (body.length <= max) return body;
+  const cut = sentences(body).reduce((acc, x) => (acc.length + x.length + 1 <= max ? (acc ? acc + ' ' : '') + x : acc), '');
+  return cut || body.slice(0, max);
+}
+
+/**
+ * From the text of a results page to the notes for one question (an empty list when the page says
+ * nothing to it). `earlier` is the page of the search before this one in the same talk: a follow
+ * up can draw on it too.
+ */
+export function notesFromPage(question, pageText, budget = NOTES_BUDGET, earlier = '') {
+  const summary = pageSummary(pageText);
+  const lines = [...pageLines(pageText), ...pageLines(earlier).map((l) => ({ ...l, top: false }))];
+  const rest = pick(question, lines.filter((l) => !summary || !summary.includes(l.text.slice(0, 50))), Math.max(0, budget - summary.length));
+  return summary ? [summary, ...rest.slice(0, 2)] : rest;
 }
 
 // ---- the browser -----------------------------------------------------------------------------
@@ -147,6 +177,7 @@ let idleTimer = null;
 const resting = new Map();  // engine -> time until which it is left alone
 const seen = new Map();     // engine -> { ok, blocked, lastOkAt, lastBlockedAt }
 const cache = new Map();    // question -> { at, notes, engine }
+const pages = new Map();    // talk (a device) -> { at, text }: the last page looked up there
 let day = { key: '', n: 0 };
 let onBlocked = null;
 const tally = (engine) => { if (!seen.has(engine)) seen.set(engine, { ok: 0, blocked: 0, lastOkAt: 0, lastBlockedAt: 0 }); return seen.get(engine); };
@@ -327,7 +358,7 @@ export function searchPage(q, { engine = DEFAULT_ENGINE, timeoutMs = 3500 } = {}
  * `engine` is the person's choice; when it is resting the next one is used, and when it shows a bot
  * check during this lookup the next one is tried once. Never throws, never waits past deadlineMs.
  */
-export async function lookupNotes(question, { engine = DEFAULT_ENGINE, budget = NOTES_BUDGET, deadlineMs = 4000 } = {}) {
+export async function lookupNotes(question, { engine = DEFAULT_ENGINE, budget = NOTES_BUDGET, deadlineMs = 4000, talk = '' } = {}) {
   const q = String(question || '').trim();
   if (q.length < 4) return null;
   const t0 = Date.now();
@@ -336,7 +367,7 @@ export async function lookupNotes(question, { engine = DEFAULT_ENGINE, budget = 
   if (kept && t0 - kept.at < CACHE_MS) return { notes: kept.notes, ms: 0, engine: kept.engine, cached: true };
   if (isSystemAccount()) {
     try {
-      const r = await fetch(HELPER + '/notes', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ q, engine, budget, deadlineMs }), signal: AbortSignal.timeout(deadlineMs + 500) });
+      const r = await fetch(HELPER + '/notes', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ q, engine, budget, deadlineMs, talk }), signal: AbortSignal.timeout(deadlineMs + 500) });
       const j = await r.json();
       if (!j || !Array.isArray(j.notes) || !j.notes.length) return null;
       cache.set(key, { at: Date.now(), notes: j.notes, engine: j.engine });
@@ -355,7 +386,9 @@ export async function lookupNotes(question, { engine = DEFAULT_ENGINE, budget = 
       if (page && page.bot) continue;          // that engine now rests; the next one gets one try
       if (!page || !page.text) return null;
       const t = tally(use); t.ok++; t.lastOkAt = Date.now();
-      const notes = notesFromPage(q, page.text, budget);
+      const before = talk ? pages.get(talk) : null;
+      const notes = notesFromPage(q, page.text, budget, before && Date.now() - before.at < CACHE_MS ? before.text : '');
+      if (talk) { pages.set(talk, { at: Date.now(), text: page.text }); if (pages.size > 40) pages.delete(pages.keys().next().value); }
       if (!notes.length) return null;
       cache.set(key, { at: Date.now(), notes, engine: use });
       if (cache.size > 60) cache.delete(cache.keys().next().value);

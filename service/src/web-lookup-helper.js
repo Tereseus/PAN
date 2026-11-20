@@ -16,8 +16,8 @@ http.createServer(async (req, res) => {
     if (req.method === 'POST' && req.url === '/notes') {
       let raw = '';
       for await (const c of req) { raw += c; if (raw.length > 4000) return send(413, { notes: [] }); }
-      const { q, engine, budget, deadlineMs } = JSON.parse(raw || '{}');
-      const found = await lookupNotes(q, { engine, budget, deadlineMs: Math.min(Number(deadlineMs) || 4000, 8000) });
+      const { q, engine, budget, deadlineMs, talk } = JSON.parse(raw || '{}');
+      const found = await lookupNotes(q, { engine, budget, deadlineMs: Math.min(Number(deadlineMs) || 4000, 8000), talk: String(talk || '').slice(0, 80) });
       return send(200, found || { notes: [] });
     }
     send(404, {});
