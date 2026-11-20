@@ -108,6 +108,9 @@ class PiperTtsEngine(private val context: Context) {
             // written sentences said 3 was enough, and the owner heard it cut words off.
             // Threads on the Pixel 10 Pro, screen on, 33 letters at 3 steps: 2 473 ms, 3 472, 4 554, 6 669;
             // past 3 they wait on each other. Screen off they all take 550. xnnpack and nnapi were slower.
+            // speed is the pace the owner hears. The model itself is asked for 1.0 and the samples
+            // are shortened to this pace afterwards: at 1.20 itself it dropped the ends of clauses
+            // (Quicken, 2026-11-20).
             "supertonic3" to VoiceModel("supertonic3", "Supertonic 3 (Clear)", "Clear",
                 "$REL/sherpa-onnx-supertonic-3-tts-int8-2026-05-11.tar.bz2",
                 "sherpa-onnx-supertonic-3-tts-int8-2026-05-11", 129_000_000L, 44100,
@@ -564,14 +567,21 @@ class PiperTtsEngine(private val context: Context) {
             lang != null || short -> 1.0f
             else -> voice?.speed ?: 1.0f
         }
-        val audio: GeneratedAudio = if (voice?.kind == "supertonic") {
-            tts.generateWithConfig(spoken, GenerationConfig(silenceScale = silenceScale, speed = speed,
+        // Asked for more than its own pace, Supertonic drops the ends of clauses. It builds at its
+        // own pace and the samples are shortened afterwards (Quicken, with the numbers).
+        val (build, extra) = if (voice?.kind == "supertonic") Quicken.plan(speed) else speed to 1f
+        val made: GeneratedAudio = if (voice?.kind == "supertonic") {
+            tts.generateWithConfig(spoken, GenerationConfig(silenceScale = silenceScale, speed = build,
                 sid = lineSid ?: voice.sid, numSteps = if (supertonicSteps > 0) supertonicSteps else voice.steps,
                 extra = if (lang != null) mapOf("lang" to lang) else emptyMap()))
         } else {
             tts.generate(text = spoken, sid = voice?.sid ?: 0, speed = speed)
         }
+        val builtMs = SystemClock.elapsedRealtime() - genStart
+        val audio = if (extra > 1f) GeneratedAudio(Quicken.faster(trimQuiet(made.samples, made.sampleRate), made.sampleRate, extra), made.sampleRate)
+                    else made
         val genMs = SystemClock.elapsedRealtime() - genStart
+        if (extra > 1f) Log.i(TAG, "built at $build in $builtMs ms, made ${extra}x quicker in ${genMs - builtMs} ms (${made.samples.size} to ${audio.samples.size} samples)")
         CpuBoost.done(genMs)
         VoiceEvents.emit("tts_gen_end", "ms" to genMs,
             "samples" to audio.samples.size, "rate" to audio.sampleRate)
