@@ -250,6 +250,9 @@ def main():
         rc, out = box.setup(source, flags)
         took = round(time.time() - t)
         check(f"PAN Setup finished ({took} s)", rc == 0 and "PAN is installed." in out, out[-700:])
+        # The last step only reports in a test (-Quiet): it must say how Claude stands and never ask for a sign in.
+        check("PAN Setup says whether Claude is connected, and does not ask to sign in",
+              ("Claude is connected." in out or "Claude is not signed in." in out) and "Your browser opens now" not in out, out[-700:])
         warnings = [l.strip() for l in out.splitlines() if l.strip().startswith("! ")]
         check("PAN Setup had no warnings", not warnings, warnings)
         if rc != 0:

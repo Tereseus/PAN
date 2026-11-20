@@ -5,7 +5,8 @@
 #   2. downloads the current PAN (one zip, checked against its SHA-256)
 #   3. unpacks it into <install folder>\app\<version>
 #   4. starts PAN at logon and now, hidden
-#   5. opens the page with the code the phone scans
+#   5. connects the smart model: Claude, with the person's own sign in, in their own browser
+#   6. opens the page with the code the phone scans
 #
 # Nothing is installed for other users, no service runs as SYSTEM, and PAN listens on this
 # computer's own address only. The one thing that needs an administrator is the Windows
@@ -26,6 +27,8 @@
 #   -OwnModels  a folder or an http(s) address holding PAN's own two models as .gguf files
 #               (see model-set.json). Without it they are skipped and the stock ones stand in.
 #   -ModelSet   light or full, instead of choosing by this computer's memory
+#   -NoClaude   do not ask for the Claude sign in (the last step then only says whether
+#               Claude is connected)
 #   -Dev        test mode: PAN skips the parts that act on the whole computer (its steward,
 #               the orphan reaper, the device heartbeat). For an install test on a computer
 #               that already runs a real PAN.
@@ -48,6 +51,7 @@ param(
     [switch]$Voice,
     [switch]$Translator,
     [switch]$All,
+    [switch]$NoClaude,
     [string]$OwnModels = "",
     [string]$ModelSet = "",
     [int]$StartTimeoutSec = 240
@@ -600,6 +604,72 @@ try {
     } elseif ($Translator) {
         Warn "The translator was not installed because PAN was not started."
     }
+
+    # ---- 8. the smart model: Claude, with the person's own sign in --------------------
+    # PAN talks, listens and remembers on this computer's own models. The hard work (acting
+    # for the person, long questions, code) goes to Claude through the person's own account.
+    # The Claude program comes with PAN (service\node_modules); what a new computer lacks is
+    # the sign in, and only the person can do that, in their own browser. Setup never sees a
+    # password or a key. In a test (-Quiet), over a remote session or with -NoClaude this
+    # step only says how things stand.
+    Step "claude" "Connecting the smart model (Claude)"
+    $cli = Join-Path $target "service\node_modules\@anthropic-ai\claude-agent-sdk\cli.js"
+    $claudeState = "missing"
+    if (-not (Test-Path $cli)) {
+        Warn "The Claude program that comes with PAN is missing from this download."
+    } else {
+        $readStatus = {
+            try {
+                $ErrorActionPreference = "Continue"
+                $out = (& $nodeExe $cli auth status --json 2>$null | Out-String)
+                $a = $out.IndexOf("{"); $b = $out.LastIndexOf("}")
+                if ($a -lt 0 -or $b -le $a) { return $null }
+                return ($out.Substring($a, $b - $a + 1) | ConvertFrom-Json)
+            } catch { return $null }
+        }
+        $st = & $readStatus
+        $ErrorActionPreference = "Stop"
+        $signedIn = ($null -ne $st -and $st.loggedIn -eq $true)
+        $canAsk = (-not $Quiet) -and (-not $NoClaude) -and (-not $env:SSH_CONNECTION) -and [Environment]::UserInteractive
+        if (-not $signedIn -and $canAsk) {
+            Say "  PAN talks, listens and remembers by itself. For the hard work (acting for you,"
+            Say "  long questions, code) it uses Claude, with your own Claude account."
+            Say "  Your browser opens now: sign in there. PAN never sees your password."
+            $ErrorActionPreference = "Continue"
+            & $nodeExe $cli auth login
+            $ErrorActionPreference = "Stop"
+            $st = & $readStatus
+            $ErrorActionPreference = "Stop"
+            $signedIn = ($null -ne $st -and $st.loggedIn -eq $true)
+        }
+        if ($signedIn) {
+            $claudeState = "connected"
+            Say "  Claude is connected."
+            # PAN joins the person's Claude as a tool server, so Claude can use PAN's memory.
+            # Only for the real install, and never over an entry that is already there.
+            if ($IsDefaultDir -and -not $Dev) {
+                $ErrorActionPreference = "Continue"
+                & $nodeExe $cli mcp get pan 2>$null | Out-Null
+                $has = ($LASTEXITCODE -eq 0)
+                if (-not $has) {
+                    & $nodeExe $cli mcp add --transport http --scope user pan ("http://127.0.0.1:{0}/mcp/pan" -f $Port) 2>$null | Out-Null
+                    if ($LASTEXITCODE -eq 0) {
+                        WriteText (Join-Path $InstallDir "claude-mcp-added") "pan"
+                        Say "  PAN was added to Claude."
+                    } else { Warn "PAN could not be added to Claude. PAN itself is not affected." }
+                } else { Say "  Claude already knows PAN." }
+                $ErrorActionPreference = "Stop"
+            }
+        } elseif ($null -eq $st) {
+            $claudeState = "unknown"
+            Warn "Claude did not answer, so Setup cannot tell whether it is signed in."
+        } else {
+            $claudeState = "signed_out"
+            Say "  Claude is not signed in. PAN still talks, listens and remembers; acting for you,"
+            Say "  long questions and code wait until you sign in. Run PAN Setup again any time to do it."
+        }
+    }
+    $script:Result.claude = $claudeState
 
     # Older versions go once the new one is up. The one before this stays, to go back to.
     $keep = @($version)

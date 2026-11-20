@@ -23,6 +23,7 @@ import authRouter from './routes/auth.js';
 import devicesRouter from './routes/devices.js';
 import linkRouter, { callAdmin as linkAdmin } from './routes/link.js';
 import modelSetupRouter from './routes/model-setup.js';
+import smartModelRouter from './routes/smart-model.js';
 import { personOfDevice, pairingsWaiting, claimPairings, personMaySend, asUser, personGone } from './people.js';
 import { tailscaleKeyRouter } from './routes/tailscale-key.js';
 import dashboardRouter, { createAlert } from './routes/dashboard.js';
@@ -1013,6 +1014,8 @@ app.use('/api/v1/devices', devicesRouter);
 app.use('/api/v1/link', linkRouter);
 // Which models this computer should have and pointing PAN at them, owner only (routes/model-setup.js).
 app.use('/api/v1/setup/models', modelSetupRouter);
+// Is Claude signed in on this computer (the smart model), owner only (routes/smart-model.js).
+app.use('/api/v1/setup/smart-model', smartModelRouter);
 // Tailscale keys for phones paired through PAN Link (the Tailscale fallback).
 app.use('/api/v1/tailscale', tailscaleKeyRouter(getSecret));
 

@@ -41,6 +41,25 @@ $tag = if ($config.tag) { [string]$config.tag } else { "PAN" }
 $dataDir = if ($config.dataDir) { [string]$config.dataDir } else { Join-Path $InstallDir "data" }
 Say ("Removing PAN {0} from {1}" -f $config.version, $InstallDir)
 
+# 0. If PAN Setup added PAN to the person's Claude (it leaves a mark when it does), take it
+#    back out while the Claude program that came with PAN is still here. An entry the person
+#    made themselves has no mark and is never touched.
+$mcpMark = Join-Path $InstallDir "claude-mcp-added"
+if (Test-Path $mcpMark) {
+    try {
+        $appDir = Join-Path (Join-Path $InstallDir "app") ([string]$config.version)
+        $node = Join-Path $appDir "node\node.exe"
+        $cli = Join-Path $appDir "service\node_modules\@anthropic-ai\claude-agent-sdk\cli.js"
+        if ((Test-Path $node) -and (Test-Path $cli)) {
+            $ErrorActionPreference = "Continue"
+            & $node $cli mcp remove pan -s user 2>$null | Out-Null
+            $ErrorActionPreference = "Stop"
+            Say "  PAN was taken out of Claude."
+        }
+    } catch { $ErrorActionPreference = "Stop" }
+    Remove-Item $mcpMark -Force -ErrorAction SilentlyContinue
+}
+
 # 1. Stop everything that runs out of this folder.
 $prefix = $InstallDir.TrimEnd('\') + '\'
 for ($round = 0; $round -lt 4; $round++) {
