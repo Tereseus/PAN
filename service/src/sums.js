@@ -133,6 +133,47 @@ export function unitBlock(ask) {
     + `- ${figure(ask.amount)} ${named(ask.amount, ask.from)} = ${figure(got)} ${named(got, ask.to)}. Out loud: "${said}"\n`;
 }
 
+// ---- the figure the code worked out must be the figure that is said ---------------------------
+// The blocks above (and the money and calendar ones) end each sum with: Out loud: "...". The model
+// is told to use those words, and mostly does. Twice in 66 answers it did not: handed "one thousand
+// seven hundred fifty dollars" it said "thirteen hundred fifty", handed a sum of 262 dollars it
+// said 512 (right-answer bench, Craft 27, 2026-11-19). So the reply is checked before it is spoken.
+
+/** The finished sentences in a block. */
+export function outLoud(block) {
+  return [...String(block || '').matchAll(/Out loud: "([^"]+)"/g)].map((m) => m[1]);
+}
+const plainWords = (s) => String(s || '').toLowerCase().replace(/[-–]/g, ' ').replace(/[^\p{L}\p{N}. ]+/gu, ' ').replace(/\.(?!\d)/g, ' ').replace(/\s+/g, ' ').trim();
+/** The part of a finished sentence that carries the answer: "three thousand yen is about eighteen dollars" -> "eighteen dollars". */
+export function figureKey(sentence) {
+  const m = String(sentence || '').match(/ (?:is|was|are|falls|fell)(?: at)?(?: about| around| on a| on)? (.+)$/i);
+  const rest = (m ? m[1] : String(sentence || '')).split(',')[0];
+  return plainWords(rest).replace(/^(?:about|around) /, '').replace(/ (?:from now|ago|away)$/, '');
+}
+const SAYS_A_FIGURE = /\d|\b(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million|billion|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|monday|tuesday|wednesday|thursday|friday|saturday|sunday|january|february|march|april|june|july|august|september|october|november|december)\b/i;
+
+/**
+ * A reply to a turn that had finished sums: the same reply when it holds every worked out figure,
+ * or says no figure at all (he was answered about something else, or it stayed quiet); else the
+ * code's own sentences. `reply` is the model's whole output, JSON or plain words.
+ * Returns { text, changed }.
+ */
+export function keepFigures(reply, loud) {
+  const raw = String(reply || '');
+  if (!loud || !loud.length) return { text: raw, changed: false };
+  let obj = null;
+  try { const j = JSON.parse(raw); if (j && typeof j === 'object') obj = j; } catch {}
+  const said = obj ? String(obj.response || '') : raw;
+  if (obj && obj.intent && obj.intent !== 'query') return { text: raw, changed: false };
+  if (!said.trim() || said.includes('[')) return { text: raw, changed: false };
+  const heard = plainWords(said);
+  const keys = loud.map(figureKey).filter(Boolean);
+  if (keys.every((k) => heard.includes(k))) return { text: raw, changed: false };
+  if (!SAYS_A_FIGURE.test(said)) return { text: raw, changed: false };
+  const fixed = loud.map((s) => s[0].toUpperCase() + s.slice(1)).join('. ') + '.';
+  return { text: obj ? JSON.stringify({ ...obj, response: fixed }) : fixed, changed: true };
+}
+
 // ---- coins: which ones a line asks the price of ---------------------------------------------
 
 /**

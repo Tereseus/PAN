@@ -4,6 +4,7 @@ import { insert, all, get, logEvent, allScoped, getScoped } from './db.js';
 import { claude, askAIStream, getConfiguredModel, getModelForCaller } from './claude.js';
 import { askAIWithFallback, askAIStreamWithFallback, readChain } from './llm-fallback.js';
 import { buildToolBlocks } from './tools.js';
+import { outLoud, keepFigures } from './sums.js';
 import { buildSelfBlock, buildSelfLine } from './self.js';
 import { anonymizeForAI } from './anonymize.js';
 import { isAvailable as weztermAvailable, openTerminal as weztermOpen, sendText as weztermSend, getText as weztermGet, listPanes as weztermList } from './wezterm.js';
@@ -3905,7 +3906,16 @@ answer an earlier question, and do not narrate what the context blocks mention.`
     if (toolPrompt && !claudeQuiet) {
       console.log(`[routeStream] live data (${weatherBlock.length} chars) - short prompt instead of ${studentModel}`);
       notePath('tool');
-      yield* bigAsk(toolPrompt, 'DATA');
+      // The block holds sums already done, with the words to say. The reply is read whole before
+      // any of it is spoken: when it gives a figure that is not the worked out one, the code's own
+      // sentence is said instead (sums.js keepFigures). A short reply, so the wait is small.
+      const loud = outLoud(weatherBlock);
+      if (!loud.length) { yield* bigAsk(toolPrompt, 'DATA'); return; }
+      let whole = '';
+      for await (const c of bigAsk(toolPrompt, 'DATA')) whole += c;
+      const kept = keepFigures(whole, loud);
+      if (kept.changed) console.log(`[routeStream] the reply changed a worked out figure - saying the code's sentence (model said: ${whole.slice(0, 160)})`);
+      yield kept.text;
       return;
     }
     if (selfPrompt && !claudeQuiet) { notePath('self'); yield* bigAsk(selfPrompt, 'SELF', hubOwnerLine()); return; }

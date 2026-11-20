@@ -20,6 +20,7 @@ import { get } from './db.js';
 import { moneyAsk, moneyBlock, CODES as MONEY_CODES, ECB as ECB_CODES } from './money.js';
 import { unitAsk, unitBlock, clockPlace, coinsAsked, sayNumber } from './sums.js';
 import { sayMoney } from './money.js';
+import { dayAsk, dayBlock } from './calendar.js';
 import { sunTimes } from './intuition/place.js';
 import { hisTimeZone } from './intuition/time.js';
 
@@ -642,6 +643,21 @@ async function clockAnywhere(text) {
   } catch { return ''; }
 }
 
+// --- Calendar: when a holiday falls, what weekday, how many days until -------------------------
+// Worked out in calendar.js. Today is his own date, not the hub's.
+function todayHere() {
+  let tz;
+  try { tz = hisTimeZone(); } catch {}
+  try {
+    const p = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: tz || undefined, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date()).map((x) => [x.type, x.value]));
+    return { y: Number(p.year), m: Number(p.month), d: Number(p.day) };
+  } catch { const n = new Date(); return { y: n.getFullYear(), m: n.getMonth() + 1, d: n.getDate() }; }
+}
+function calendarDay(text) {
+  const today = todayHere();
+  return dayBlock(dayAsk(text, today), today);
+}
+
 // live: data that changes (weather, prices, news, a page, a clock), which the voice
 // student cannot answer from its own head; routeStream hands such a turn the data
 // instead of the student. A function when the match is looser than a real ask:
@@ -655,6 +671,7 @@ const TOOLS = [
   { name: 'wikipedia',match: (t) => WIKI_RE.test(t) && !looksLikeWeather(t), run: (t) => wikipedia(t) },
   { name: 'currency', live: true, match: (t, o) => moneyAsks(t, o).length > 0, run: (t, s, o) => currency(t, o) },
   { name: 'crypto',   live: true, match: (t) => CRYPTO_RE.test(t) || coinIds(t).length > 0, run: (t) => crypto(t) },
+  { name: 'calendar', live: true, match: (t) => !!dayAsk(t, todayHere()), run: (t) => calendarDay(t) },
   { name: 'units',    live: true, match: (t) => !!unitAsk(t), run: (t) => unitBlock(unitAsk(t)) },
   { name: 'air',      live: true, match: (t) => AIR_RE.test(t),      run: (t, s) => airQuality(t, s) },
   { name: 'search',   live: (t) => SEARCH_ASK.test(t) || CURRENT_RE.test(t), match: (t) => SEARCH_RE.test(t) || CURRENT_RE.test(t), run: (t) => webSearch(t) },

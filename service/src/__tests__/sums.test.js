@@ -2,7 +2,7 @@
 // right-answer bench asks; the model got 7 of 16 unit sums wrong doing them itself.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { unitAsk, unitBlock, convert, sayNumber, clockPlace, coinsAsked } from '../sums.js';
+import { unitAsk, unitBlock, convert, sayNumber, clockPlace, coinsAsked, outLoud, figureKey, keepFigures } from '../sums.js';
 
 const sum = (line) => { const a = unitAsk(line); return a ? Math.round(convert(a.amount, a.from, a.to) * 100) / 100 : null; };
 
@@ -74,4 +74,37 @@ test('the place a clock question names', () => {
   assert.equal(clockPlace('what time is the game in the morning'), '');
   assert.equal(clockPlace('is there time in my schedule'), '');
   assert.equal(clockPlace('how much is rent in Lisbon'), '');
+});
+
+test('the figure the code worked out is the figure that is said', () => {
+  const block = 'EXCHANGE RATE - real data.\n- 200 GBP = 262.4 USD. Out loud: "two hundred pounds is about two hundred sixty-two dollars"\n- the rate: 1 GBP = 1.31 USD\n';
+  const loud = outLoud(block);
+  assert.deepEqual(loud, ['two hundred pounds is about two hundred sixty-two dollars']);
+  assert.equal(figureKey(loud[0]), 'two hundred sixty two dollars');
+  assert.equal(figureKey('Ethereum is at about one thousand seven hundred fifty dollars'), 'one thousand seven hundred fifty dollars');
+  assert.equal(figureKey('Christmas is thirty-six days from now, on December twenty-fifth, a Friday'), 'thirty six days');
+  assert.equal(figureKey('Thanksgiving is on November twenty-sixth, a Thursday'), 'november twenty sixth');
+  assert.equal(figureKey('Christmas falls on a Friday, December twenty-fifth'), 'friday');
+  const json = (response, extra = {}) => JSON.stringify({ to: 'pan', response, intent: 'query', addressed: 0.9, ...extra });
+  // the model kept the figure: its own words stand
+  assert.equal(keepFigures(json('About two hundred sixty-two dollars.'), loud).changed, false);
+  assert.equal(keepFigures(json('Two hundred pounds is about two hundred sixty-two dollars, give or take.'), loud).changed, false);
+  // it changed the figure: the code's sentence is said
+  const fixed = keepFigures(json("That's about five hundred twelve dollars."), loud);
+  assert.equal(fixed.changed, true);
+  assert.equal(JSON.parse(fixed.text).response, 'Two hundred pounds is about two hundred sixty-two dollars.');
+  assert.equal(JSON.parse(fixed.text).addressed, 0.9);
+  assert.equal(keepFigures(json('About 262 dollars.'), loud).changed, true);      // same sum, but checked by words only: the code's words are said
+  // no figure in the reply, or it stayed quiet: left alone
+  assert.equal(keepFigures(json('Got it.'), loud).changed, false);
+  assert.equal(keepFigures(JSON.stringify({ intent: 'ambient', addressed: 0.1, response: '[AMBIENT]' }), loud).changed, false);
+  assert.equal(keepFigures(json(''), loud).changed, false);
+  // two sums: both must be there
+  const two = ['one thousand eight hundred yen is about eleven dollars and twenty-five cents', 'three thousand yen is about eighteen dollars and seventy-five cents'];
+  assert.equal(keepFigures(json('I got that wrong. One thousand eight hundred yen is eleven dollars and twenty-five cents, and three thousand yen is eighteen dollars and seventy-five cents.'), two).changed, false);
+  assert.equal(JSON.parse(keepFigures(json('Both are sixteen dollars.'), two).text).response,
+    'One thousand eight hundred yen is about eleven dollars and twenty-five cents. Three thousand yen is about eighteen dollars and seventy-five cents.');
+  // plain words, no JSON
+  assert.equal(keepFigures('One is thirteen hundred fifty dollars.', ['Ethereum is at about one thousand seven hundred fifty dollars']).text, 'Ethereum is at about one thousand seven hundred fifty dollars.');
+  assert.equal(keepFigures(json('anything'), []).changed, false);
 });
