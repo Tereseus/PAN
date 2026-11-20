@@ -15,7 +15,7 @@
 //
 // The profile is a throwaway folder, wiped when the browser closes: no cookies or history are kept
 // from one use to the next. The browser closes itself after IDLE_MS without a lookup.
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -89,7 +89,8 @@ export function pick(question, lines, budget = NOTES_BUDGET) {
     let own = 0;
     for (const g of sets[i]) if (!q.has(g)) own++;
     if (own < 3 || /^https?:\/\/|\s›\s/.test(c.text)) s = 0;
-    return { text: c.text, s: s * (c.top ? 1.25 : 1), i };
+    // A line with little of its own beyond the question's words (a headline) says less than a full sentence.
+    return { text: c.text, s: s * (c.top ? 1.25 : 1) * Math.min(1, own / 6), i };
   }).filter((c) => c.s > 0).sort((a, b) => b.s - a.s || a.i - b.i);
   const kept = [];
   const seen = new Set();
@@ -102,6 +103,21 @@ export function pick(question, lines, budget = NOTES_BUDGET) {
     if (kept.length >= 4) break;
   }
   return kept;
+}
+
+/**
+ * What to type into the search box. His line as he said it; a short follow up ("and in Osaka?")
+ * gets his line before it in front, since on its own it names nothing to search for.
+ * `recent` is the talk before this line, oldest first ("User: ..." / "PAN: ..." or bare lines).
+ */
+export function searchQuery(text, recent = []) {
+  const line = String(text || '').replace(/\s+/g, ' ').trim();
+  const words = line.split(' ').filter(Boolean).length;
+  const cjk = /[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/.test(line);
+  if (cjk ? line.length >= 8 : words >= 5) return line.slice(0, 200);
+  const his = (recent || []).map((l) => String(l || '')).filter((l) => !/^\s*PAN\s*:/i.test(l)).map((l) => l.replace(/^\s*User\s*:\s*/i, '').trim()).filter(Boolean);
+  const before = his.length ? his[his.length - 1] : '';
+  return (before && before.toLowerCase() !== line.toLowerCase() ? `${before} ${line}` : line).slice(0, 200);
 }
 
 /** From the text of a results page to the notes for one question (an empty list when the page says nothing to it). */
@@ -152,10 +168,63 @@ export function lookupStatus(chosen = DEFAULT_ENGINE, now = Date.now()) {
   };
 }
 
+/** A browser must not run with the rights of the system account (a Windows service, root). */
+export function isSystemAccount(name = (() => { try { return os.userInfo().username; } catch { return ''; } })()) {
+  return /^(system|root|local ?service|network ?service)$/i.test(String(name || '').trim()) || /\$$/.test(String(name || '').trim());
+}
+// Where a PAN that runs as the system account asks instead: web-lookup-helper.js, started as the person.
+const HELPER = process.env.PAN_LOOKUP_HELPER || 'http://127.0.0.1:7796';
+
+// The process node starts is only the browser's launcher: the browser itself is another process
+// (found Nov 20: nine test windows stayed open). What marks OUR browser is its throwaway profile
+// folder on its command line, so that is how it is found, on every platform.
+const profileTag = (profile) => path.basename(profile);
+
+/** End the browser that uses this profile, and every process it started. */
+function killBrowser(profile, pid, sync = false) {
+  try {
+    if (process.platform === 'win32') {
+      const script = `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match '${profileTag(profile)}' -and $_.CommandLine -notmatch '--type=' -and $_.Name -ne 'powershell.exe' } | ForEach-Object { taskkill /PID $_.ProcessId /T /F | Out-Null }`;
+      const args = ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')];
+      if (sync) spawnSync('powershell', args, { stdio: 'ignore', windowsHide: true, timeout: 8000 });
+      else spawn('powershell', args, { stdio: 'ignore', windowsHide: true }).on('error', () => {});
+    } else {
+      if (pid) { try { process.kill(pid); } catch {} }
+      const r = sync ? spawnSync : spawn;
+      r('pkill', ['-f', profileTag(profile)], { stdio: 'ignore' });
+    }
+  } catch {}
+}
+
+// Windows only, one hidden PowerShell after the first page: take the window's button off the
+// taskbar (a window parked off screen still gets one), and end any lookup browser whose PAN
+// process is gone (the profile folder's name carries that process's id).
+function tidyWindows(profile) {
+  if (process.platform !== 'win32') return;
+  const script = `
+$sig = '[DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr h, int i); [DllImport("user32.dll")] public static extern int SetWindowLong(IntPtr h, int i, int v); [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);'
+$u = Add-Type -MemberDefinition $sig -Name U -Namespace PanLookup -PassThru
+$mine = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match '${profileTag(profile)}' -and $_.CommandLine -notmatch '--type=' -and $_.Name -ne 'powershell.exe' } | Select-Object -First 1
+for ($i = 0; $mine -and $i -lt 8; $i++) {
+  $p = Get-Process -Id $mine.ProcessId -ErrorAction SilentlyContinue
+  if (-not $p) { break }
+  $h = $p.MainWindowHandle
+  if ($h -ne 0) { $ex = $u::GetWindowLong($h, -20); if (($ex -band 0x80) -eq 0) { [void]$u::ShowWindow($h, 0); [void]$u::SetWindowLong($h, -20, (($ex -bor 0x80) -band (-bnot 0x40000))); [void]$u::ShowWindow($h, 4) } }
+  Start-Sleep -Milliseconds 500
+}
+Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'pan-lookup-(\\d+)-' -and $_.CommandLine -notmatch '--type=' -and $_.Name -ne 'powershell.exe' } | ForEach-Object {
+  if ($_.CommandLine -match 'pan-lookup-(\\d+)-') { $owner = [int]$Matches[1]; if (-not (Get-Process -Id $owner -ErrorAction SilentlyContinue)) { taskkill /PID $_.ProcessId /T /F | Out-Null } }
+}`;
+  try {
+    spawn('powershell', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
+      { stdio: 'ignore', windowsHide: true }).on('error', () => {});
+  } catch {}
+}
+
 async function start() {
   const exe = findBrowser();
-  if (!exe || typeof WebSocket === 'undefined') return null;
-  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'pan-lookup-'));
+  if (!exe || typeof WebSocket === 'undefined' || isSystemAccount()) return null;
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), `pan-lookup-${process.pid}-`));
   // Port 0: the browser picks a free one and writes it to DevToolsActivePort in the profile.
   const child = spawn(exe, ['--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check',
     '--disable-sync', '--window-position=-3000,-3000', '--window-size=1100,900', 'about:blank'], { stdio: 'ignore', windowsHide: true });
@@ -170,10 +239,10 @@ async function start() {
     try { target = (await (await fetch(`http://127.0.0.1:${port}/json`)).json()).find((t) => t.type === 'page'); } catch {}
     if (!target) await sleep(150);
   }
-  if (!target) { try { child.kill(); } catch {} wipe(profile); return null; }
+  if (!target) { killBrowser(profile, child.pid); wipe(profile); return null; }
   const ws = new WebSocket(target.webSocketDebuggerUrl);
   const opened = await new Promise((r) => { ws.onopen = () => r(true); ws.onerror = () => r(false); });
-  if (!opened) { try { child.kill(); } catch {} wipe(profile); return null; }
+  if (!opened) { killBrowser(profile, child.pid); wipe(profile); return null; }
   let id = 0;
   const waiting = new Map();
   ws.onmessage = (m) => { let j; try { j = JSON.parse(m.data); } catch { return; } if (j.id && waiting.has(j.id)) { waiting.get(j.id)(j.result || {}); waiting.delete(j.id); } };
@@ -184,13 +253,13 @@ async function start() {
     try { ws.send(JSON.stringify({ id: n, method, params })); } catch { waiting.delete(n); r({}); }
   });
   await send('Page.enable');
-  const made = { child, ws, send, profile };
-  child.on('exit', () => { if (lane === made) lane = null; wipe(profile); });
+  const made = { child, ws, send, profile, tidied: false };
   return made;
 }
 
 function wipe(profile) {
-  setTimeout(() => { try { fs.rmSync(profile, { recursive: true, force: true }); } catch {} }, 800).unref?.();
+  // the browser lets go of its files a moment after it ends: try a few times
+  for (const ms of [800, 3000, 8000]) setTimeout(() => { try { fs.rmSync(profile, { recursive: true, force: true }); } catch {} }, ms).unref?.();
 }
 
 /** Close the browser now (also done after IDLE_MS, and when this process ends). */
@@ -200,10 +269,11 @@ export function closeBrowser() {
   starting = null;
   if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
   if (!l) return;
-  try { l.ws.close(); } catch {}
-  try { l.child.kill(); } catch {}
+  try { l.send('Browser.close'); } catch {}          // the browser's own way out first
+  setTimeout(() => { try { l.ws.close(); } catch {} killBrowser(l.profile, l.child.pid); wipe(l.profile); }, 300);
 }
-process.on('exit', () => { try { lane?.child.kill(); } catch {} });
+process.on('exit', () => { if (lane) killBrowser(lane.profile, lane.child.pid, true); });
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.once(sig, () => { if (lane) killBrowser(lane.profile, lane.child.pid, true); process.exit(0); });
 
 async function ready() {
   if (lane) return lane;
@@ -242,6 +312,8 @@ export function searchPage(q, { engine = DEFAULT_ENGINE, timeoutMs = 3500 } = {}
       if (text.length > 1500 && text.length === last) { if (++still >= 3) break; } else still = 0;
       last = text.length;
     }
+    // Once the first page is up: the browser sets its window styles while it starts, so earlier is too early.
+    if (!l.tidied) { l.tidied = true; tidyWindows(l.profile); }
     return { text, ms: Date.now() - t0, bot: false };
   };
   const p = queue.then(run, run).catch(() => null);
@@ -262,6 +334,15 @@ export async function lookupNotes(question, { engine = DEFAULT_ENGINE, budget = 
   const key = q.toLowerCase();
   const kept = cache.get(key);
   if (kept && t0 - kept.at < CACHE_MS) return { notes: kept.notes, ms: 0, engine: kept.engine, cached: true };
+  if (isSystemAccount()) {
+    try {
+      const r = await fetch(HELPER + '/notes', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ q, engine, budget, deadlineMs }), signal: AbortSignal.timeout(deadlineMs + 500) });
+      const j = await r.json();
+      if (!j || !Array.isArray(j.notes) || !j.notes.length) return null;
+      cache.set(key, { at: Date.now(), notes: j.notes, engine: j.engine });
+      return { notes: j.notes, ms: Date.now() - t0, engine: j.engine };
+    } catch { return null; }
+  }
   if (day.key !== today()) day = { key: today(), n: 0 };
   if (day.n >= DAY_LIMIT) return null;
   try {

@@ -2,7 +2,7 @@
 // itself is not started here: these are the pure parts.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { notesFromPage, pick, pageLines, grams, sentences, looksLikeBotCheck, ENGINES, DEFAULT_ENGINE, engineFor, lookupStatus } from '../web-lookup.js';
+import { notesFromPage, pick, pageLines, grams, sentences, looksLikeBotCheck, ENGINES, DEFAULT_ENGINE, engineFor, lookupStatus, searchQuery, isSystemAccount } from '../web-lookup.js';
 
 const PAGE = [
   'All', 'Images', 'News', 'Videos', 'Maps', 'Search Settings',
@@ -72,4 +72,18 @@ test('a blocked search site is skipped until its rest is over, and the status sa
   assert.equal(st.using, 'duckduckgo');
   assert.ok(st.engines.some((e) => e.id === 'duckduckgo' && e.blockedUntil === 0));
   assert.ok(st.dayLimit > 100);
+});
+
+test('what goes into the search box', () => {
+  assert.equal(searchQuery('how much is a subway ride in New York'), 'how much is a subway ride in New York');
+  assert.equal(searchQuery('and in Osaka?', ['User: how much is a metro ticket in Tokyo', 'PAN: About 180 yen.']), 'how much is a metro ticket in Tokyo and in Osaka?');
+  assert.equal(searchQuery('what about London', ['PAN: It is three dollars.']), 'what about London', 'only his own lines are added');
+  assert.equal(searchQuery('who won', []), 'who won');
+  assert.equal(searchQuery('オーストラリアの首都はどこですか', ['User: something else']), 'オーストラリアの首都はどこですか');
+  assert.ok(searchQuery('word '.repeat(100)).length <= 200);
+});
+
+test('no browser under the system account', () => {
+  for (const n of ['SYSTEM', 'system', 'root', 'LOCAL SERVICE', 'NetworkService', 'MINIPC$']) assert.equal(isSystemAccount(n), true, n);
+  for (const n of ['alex', 'sam.lee', 'Administrator']) assert.equal(isSystemAccount(n), false, n);
 });

@@ -741,6 +741,7 @@ export async function buildToolBlocks(text, sensors, opts = {}) {
   const isLive = (tool) => (typeof tool.live === 'function' ? tool.live(t) : !!tool.live);
   const hits = TOOLS.filter((tool) => {
     if (tool.slow) return false;
+    if (opts.skip && opts.skip.includes(tool.name)) return false;
     try { return tool.match(t, opts) && (!opts.liveOnly || isLive(tool)); } catch { return false; }
   });
   if (!hits.length) return none;

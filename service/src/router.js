@@ -5,6 +5,7 @@ import { claude, askAIStream, getConfiguredModel, getModelForCaller } from './cl
 import { askAIWithFallback, askAIStreamWithFallback, readChain } from './llm-fallback.js';
 import { buildToolBlocks } from './tools.js';
 import { outLoud, keepFigures } from './sums.js';
+import { lookupNotes, searchQuery, DEFAULT_ENGINE, ENGINES } from './web-lookup.js';
 import { buildSelfBlock, buildSelfLine } from './self.js';
 import { anonymizeForAI } from './anonymize.js';
 import { isAvailable as weztermAvailable, openTerminal as weztermOpen, sendText as weztermSend, getText as weztermGet, listPanes as weztermList } from './wezterm.js';
@@ -240,6 +241,29 @@ function situationOnEveryTurn() {
 
 // Questions about the world (reader.js asksTheWorld) answered by the bigger model, not the 2B voice
 // model: 'cloud' = on, 'bench' = only for benchmark devices (a silent replay), anything else = off.
+// LOOKING A WORLD QUESTION UP (web-lookup.js): the hub's own browser reads a search page and the hub
+// model gets a few lines of it. Right-answer bench, 88 general questions (Nov 20): 58 right and 18
+// false from the model's own head, 80 right and 7 false with the lines, in every language asked.
+// Setting web_lookup: 'all' = every device, 'bench' = benchmark devices only, else off.
+// web_lookup_engine: the search site the person chose (web-lookup.js ENGINES), DuckDuckGo if unset.
+const WEB_LOOKUP_MS = 3000;   // the longest a turn waits for the page; past it the model answers from what it knows
+function webLookupOn(deviceId) {
+  try {
+    const v = String(get("SELECT value FROM settings WHERE key = 'web_lookup'")?.value || '').replace(/^"|"$/g, '').trim().toLowerCase();
+    return v === 'all' || (v === 'bench' && /-bench$/.test(String(deviceId || '')));
+  } catch { return false; }
+}
+function webLookupEngine() {
+  try {
+    const v = String(get("SELECT value FROM settings WHERE key = 'web_lookup_engine'")?.value || '').replace(/^"|"$/g, '').trim().toLowerCase();
+    return ENGINES[v] ? v : DEFAULT_ENGINE;
+  } catch { return DEFAULT_ENGINE; }
+}
+// With the lookup on, the keyword tools for headlines and Wikipedia leave a question about the
+// world to it ("who won the World Cup this year" got headlines and "I don't know", Nov 20).
+function toolSkips(deviceId, text) {
+  return webLookupOn(deviceId) && worldQuestionsOn(deviceId) && !!worldModel(deviceId) && asksTheWorld(text) ? ['search', 'wikipedia'] : undefined;
+}
 function worldQuestionsOn(deviceId) {
   try {
     const v = String(get("SELECT value FROM settings WHERE key = 'voice_world_questions'")?.value || '').replace(/^"|"$/g, '').trim().toLowerCase();
@@ -289,6 +313,8 @@ const HUB_WORLD = 'He asked something that needs real knowledge or judgment. Ans
 const HUB_RULES = {
   WORLD: HUB_WORLD,
   WORLD_MAYBE: `The WORLD rule, but if he was not talking to you (the TV, someone else in the room), ${HUB_AMBIENT}.`,
+  LOOKED: 'The WORLD rule, and the notes above his line were looked up on the web just now and are newer than what you remember: where they speak to his question, trust them over your memory. Say the answer first, in one sentence. Then add one or two sentences of what is worth knowing about it (who, since when, where, how much), from the notes or from what you know well. When the notes do not cover his question, answer from what you know. When it is something that changes (who holds a post, a price, this year\'s events) and the notes do not cover it, say you are not sure instead of guessing. Never say that you looked it up or read notes.',
+  LOOKED_MAYBE: `The LOOKED rule, but if he was not talking to you (the TV, someone else in the room), ${HUB_AMBIENT}.`,
   ASKED: 'He asked you to come up with something yourself: a question for him, a joke, an idea, a story, your opinion. Do it now, in one to three short spoken sentences. If he wants a question, ask him one real, specific question about him or about what he is doing, and nothing else. Never just agree, and never ask what he would like.',
   ASKED_MAYBE: `The ASKED rule, but if he was not talking to you (the TV, someone else in the room), ${HUB_AMBIENT}.`,
   WORD: `He stopped mid-sentence, reaching for a word or a name. If you are confident which word or name he means, your reply is only that word or name with a question mark, the way a friend helps out ("Inception?"). If you are not sure, ${HUB_AMBIENT}.`,
@@ -1448,7 +1474,7 @@ async function handleUnified(text, context) {
     // Honors `ai_fallback_enabled=false` for users who want single-backend semantics.
     const _fallbackMeta = {};
     let weatherBlock = '';
-    try { weatherBlock = await buildToolBlocks(text, sensors, { recent: talkBefore(context, text) }); } catch {}
+    try { weatherBlock = await buildToolBlocks(text, sensors, { recent: talkBefore(context, text), skip: toolSkips(context?.device_id, text) }); } catch {}
     let selfBlock = '';
     try { selfBlock = buildSelfBlock(); } catch {}
     raw = await askAIWithFallback(
@@ -2988,7 +3014,7 @@ async function* personTurn(text, context, withProsody) {
   // Live data for the question, from this turn's own sensors only (tools.js reads no stored place).
   let liveBlock = '';
   try {
-    const b = await buildToolBlocks(text, context.sensors || null, { detail: true, liveOnly: true, recent: talkBefore(context, text) });
+    const b = await buildToolBlocks(text, context.sensors || null, { detail: true, liveOnly: true, recent: talkBefore(context, text), skip: toolSkips(context.device_id, text) });
     if (b.live) liveBlock = b.text;
   } catch {}
 
@@ -3394,7 +3420,7 @@ export async function* routeStream(text, context = {}) {
   const [studentModel, studentBackup] = studentModels();
   let weatherBlock = '';
   let liveData = false;   // a block holds data that changes (weather, prices, news, a clock)
-  if (!interpreting) try { ({ text: weatherBlock, live: liveData } = await buildToolBlocks(text, sensors, { detail: true, liveOnly: !!studentModel, recent: talkBefore(context, text) })); } catch {}
+  if (!interpreting) try { ({ text: weatherBlock, live: liveData } = await buildToolBlocks(text, sensors, { detail: true, liveOnly: !!studentModel, recent: talkBefore(context, text), skip: toolSkips(context.device_id, text) })); } catch {}
   // selfBlock is 1030 chars describing which model is running, what is
   // local, what leaves the house. It is the right answer to "how do you
   // work" / "is this private" and dead weight on every other turn, which
@@ -3786,11 +3812,26 @@ answer an earlier question, and do not narrate what the context blocks mention.`
       return owner ? `Your name is PAN. The name of the person talking to you is ${owner}.` : '';
     } catch { return ''; }
   };
-  const worldPromptHub = (gate) => hubPrompt((askedFor ? 'ASKED' : 'WORLD') + (gate ? '_MAYBE' : ''), [studentHistory, nowLine(),
-    `${isDash ? 'User typed' : 'Mic heard'}: "${safeText}"`], hubSelf());
-  const worldAsk = (gate) => worldHub
-    ? plainAsReply(askAIStreamWithFallback(worldPromptHub(gate), { ...streamOpts, chain: [worldHub, ...cloudFirst()].slice(0, 3), firstTokenMs: WORLD_LOCAL_MS, temperature: HUB_TEMPERATURE }), HUB_SENTENCES)
-    : askAIStreamWithFallback(worldPrompt(gate), cloudOpts());
+  // The notes go right above his line, after everything that stays the same from turn to turn.
+  const worldPromptHub = (gate, notes) => hubPrompt((askedFor ? 'ASKED' : notes ? 'LOOKED' : 'WORLD') + (gate ? '_MAYBE' : ''), [studentHistory, nowLine(),
+    notes ? 'Notes, looked up on the web just now:\n' + notes.map((n) => '- ' + n).join('\n') : '',
+    `${isDash ? 'User typed' : 'Mic heard'}: "${safeText}"`].filter(Boolean), hubSelf());
+  // The lookup starts once per turn: at once while PAN is in the talk, else the moment the voice
+  // model starts a spoken answer (a question on the TV is not searched for).
+  let lookedUp = null;
+  const startLookup = () => {
+    if (!lookedUp) lookedUp = worldHub && !askedFor && webLookupOn(context.device_id)
+      ? lookupNotes(searchQuery(text, talkBefore(context, text)), { engine: webLookupEngine(), deadlineMs: WEB_LOOKUP_MS }).catch(() => null)
+      : Promise.resolve(null);
+    return lookedUp;
+  };
+  if (worldQ && talking && !claudeQuiet) startLookup();
+  async function* worldAsk(gate) {
+    if (!worldHub) { yield* askAIStreamWithFallback(worldPrompt(gate), cloudOpts()); return; }
+    const found = await startLookup();
+    if (found) console.log(`[routeStream] looked it up on ${found.engine}: ${found.notes.length} lines in ${found.ms} ms${found.cached ? ' (kept from before)' : ''}`);
+    yield* plainAsReply(askAIStreamWithFallback(worldPromptHub(gate, found ? found.notes : null), { ...streamOpts, chain: [worldHub, ...cloudFirst()].slice(0, 3), firstTokenMs: WORLD_LOCAL_MS, temperature: HUB_TEMPERATURE }), HUB_SENTENCES);
+  }
   // Every other line handed up: the hub model when voice_hub_paths says so, else the cloud model.
   // voice_hub_paths_model: another hub model for these lines (same values as voice_world_model). They are
   // answered from what the prompt holds, not from the model's own knowledge, so the faster reader can take them.
