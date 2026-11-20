@@ -88,6 +88,7 @@ export function pick(question, lines, budget = NOTES_BUDGET) {
     let shared = 0;
     for (const g of q) if (sets[i].has(g)) { s += Math.log(1 + N / df.get(g)); shared++; }
     if (shared < 2) s = 0;      // one word in common with the question says little
+    if (/[?？؟;]\s*$|[?？؟]\s/.test(c.text)) s *= 0.4;      // a line that asks is a headline or a teaser, not the answer
     let own = 0;
     for (const g of sets[i]) if (!q.has(g)) own++;
     if (own < 3 || /^https?:\/\/|\s›\s/.test(c.text)) s = 0;
