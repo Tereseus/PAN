@@ -313,7 +313,7 @@ const HUB_WORLD = 'He asked something that needs real knowledge or judgment. Ans
 const HUB_RULES = {
   WORLD: HUB_WORLD,
   WORLD_MAYBE: `The WORLD rule, but if he was not talking to you (the TV, someone else in the room), ${HUB_AMBIENT}.`,
-  LOOKED: 'The WORLD rule, and the notes above his line were looked up on the web just now and are newer than what you remember: where they speak to his question, trust them over your memory. Say the answer first, in one sentence, exactly as the notes give it (names, scores, figures and dates copied from the notes, never from memory). Then add one or two sentences of what is worth knowing about it (who, since when, where, how much), using only what the notes say: a name, a score or a figure that is not in the notes must not be said. If the notes hold nothing more, stop after the answer. When the notes do not cover his question at all, answer from what you know. When it is something that changes (who holds a post, a price, this year\'s events) and the notes do not cover it, say you are not sure instead of guessing. Never say that you looked it up or read notes.',
+  LOOKED: 'The WORLD rule, and the notes above his line were looked up on the web just now and are newer than what you remember: where they speak to his question, trust them over your memory. Say the answer first, in one sentence, exactly as the notes give it (names, scores, figures and dates copied from the notes, never from memory). Then add one or two sentences of what is worth knowing about it (who, since when, where, how much), using only what the notes say: a name, a score or a figure that is not in the notes must not be said. If the notes hold nothing more, stop after the answer. When the notes do not cover his question at all, answer from what you know. If the notes show that something you said earlier in this conversation was wrong, say so in a few plain words and give what the notes say. When it is something that changes (who holds a post, a price, this year\'s events) and the notes do not cover it, say you are not sure instead of guessing. Never say that you looked it up or read notes.',
   LOOKED_MAYBE: `The LOOKED rule, but if he was not talking to you (the TV, someone else in the room), ${HUB_AMBIENT}.`,
   ASKED: 'He asked you to come up with something yourself: a question for him, a joke, an idea, a story, your opinion. Do it now, in one to three short spoken sentences. If he wants a question, ask him one real, specific question about him or about what he is doing, and nothing else. Never just agree, and never ask what he would like.',
   ASKED_MAYBE: `The ASKED rule, but if he was not talking to you (the TV, someone else in the room), ${HUB_AMBIENT}.`,
@@ -3781,13 +3781,16 @@ answer an earlier question, and do not narrate what the context blocks mention.`
   // in the talk (it spoke in the last 45 s) the bigger model is asked at once, as the paths above
   // are, which saves the voice model's first words (about 1 s on a cold bench turn). Not for a
   // look through the camera, a line his own notes answer, or the paths above.
+  // A follow up on a question about the world is one too ("what years did he win that in" after a
+  // question about titles went to the voice model, which answered from its own head, Nov 20).
+  const followsWorld = !!followUp && asksTheWorld(followUp.asked);
   const worldQ = !!studentModel && !standing && !wordSearch && !(context.canCamera && looksVisual(text))
     && !/Relevant memories:|His own notes from/.test(String(memoryContext || ''))
-    && worldQuestionsOn(context.device_id) && (asksTheWorld(text) || asksForSomething(text));
+    && worldQuestionsOn(context.device_id) && (asksTheWorld(text) || asksForSomething(text) || followsWorld);
   // A request to come up with something (a question for him, a joke): the same road to the bigger
   // model, its own rule there. The 2B voice model answered such a request with two words of
   // agreement, twice running (Nov 17).
-  const askedFor = worldQ && !asksTheWorld(text);
+  const askedFor = worldQ && !asksTheWorld(text) && !followsWorld;
   const worldRule = (gate) => 'He asked something that needs real knowledge or judgment. Answer it correctly and plainly, the way a smart friend would out loud, in one to three short spoken sentences, talking to him as "you". Give the real figure, step or reason when there is one. If you are not sure, say so in a few words and give what you do know; never make up a term, a number or a product. Stay on his question: nothing about his work, his projects or the background line unless he asked.'
       + (gate ? ' If he was not talking to you (the TV, someone else in the room), reply {"intent":"ambient","addressed":0.1,"response":"[AMBIENT]"}.' : '');
   const worldPrompt = (gate) => [
@@ -3821,7 +3824,7 @@ answer an earlier question, and do not narrate what the context blocks mention.`
   let lookedUp = null;
   const startLookup = () => {
     if (!lookedUp) lookedUp = worldHub && !askedFor && webLookupOn(context.device_id)
-      ? lookupNotes(searchQuery(text, talkBefore(context, text)), { engine: webLookupEngine(), deadlineMs: WEB_LOOKUP_MS, talk: String(context.device_id || '') }).catch(() => null)
+      ? lookupNotes(followsWorld ? searchQuery(`${followUp.asked} ${text}`) : searchQuery(text, talkBefore(context, text)), { engine: webLookupEngine(), deadlineMs: WEB_LOOKUP_MS, talk: String(context.device_id || '') }).catch(() => null)
       : Promise.resolve(null);
     return lookedUp;
   };
