@@ -97,6 +97,31 @@ const RATE_HOSTS = [
   (from) => `https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/${from}.min.json`,
   (from) => `https://latest.currency-api.pages.dev/v1/currencies/${from}.min.json`,
 ];
+// The files change once a day, so one read serves three hours of questions, and the two hosts
+// are asked at once: a slow CDN answer once cost a whole turn its data (the model then guessed
+// 300 dollars for 500 lari, right-answer bench, Craft 28).
+const DAY_RATES_KEEP_MS = 3 * 3600 * 1000;
+const dayRatesKept = new Map();
+async function dayRates(key) {
+  const kept = dayRatesKept.get(key);
+  if (kept && Date.now() - kept.at < DAY_RATES_KEEP_MS) return kept.j;
+  const one = async (host) => {
+    const res = await fetch(host(key), { signal: AbortSignal.timeout(1300), headers: { 'User-Agent': 'PAN/1.0 (personal assistant)' } });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const j = await res.json();
+    if (!j?.[key]) throw new Error('no rates in the file');
+    return j;
+  };
+  try {
+    const j = await Promise.any(RATE_HOSTS.map(one));
+    dayRatesKept.set(key, { at: Date.now(), j });
+    return j;
+  } catch (e) {
+    console.warn('[tools] rates: ' + (e?.errors?.[0]?.message || e?.message || e));
+    return kept ? kept.j : null;      // an older day's rates are better than a guess
+  }
+}
+
 async function ratesFor(asks) {
   const rates = {};
   let date = '';
@@ -114,10 +139,7 @@ async function ratesFor(asks) {
   }
   for (const [from, to] of pairs) {
     const key = from.toLowerCase();
-    let j = null;
-    for (const host of RATE_HOSTS) {
-      try { j = await getJson(host(key)); if (j?.[key]) break; } catch (e) { console.warn('[tools] rates: ' + (e?.message || e)); }
-    }
+    const j = await dayRates(key);
     for (const c of to) if (j?.[key]?.[c.toLowerCase()] > 0) rates[`${from}>${c}`] = j[key][c.toLowerCase()];
     date = j?.date || date;
   }
@@ -128,7 +150,7 @@ async function currency(text, opts) {
   const asks = moneyAsks(text, opts);
   if (!asks.length) return '';
   const { rates, date, source } = await ratesFor(asks);
-  return moneyBlock(asks, rates, date, source);
+  return moneyBlock(asks, rates, date, source) || lookupFailed('the exchange rate');
 }
 
 // --- Crypto: relevant to Dream Fights and the data-staking work ------------
@@ -201,10 +223,7 @@ async function crypto(text) {
     // files the currency sums use) carry the big coins too: an older price, said to be one.
     console.warn('[tools] coin price: ' + (e?.message || e) + ', using the daily rates');
     const SYMBOL = { bitcoin: 'btc', ethereum: 'eth', solana: 'sol', 'usd-coin': 'usdc' };
-    let day = null;
-    for (const host of RATE_HOSTS) {
-      try { day = await getJson(host('usd')); if (day?.usd) break; } catch {}
-    }
+    const day = await dayRates('usd');
     j = {};
     for (const id of ids) {
       const symbol = SYMBOL[id] || (coinList.find((c) => c.id === id) || {}).symbol;
@@ -709,6 +728,11 @@ function withDeadline(promise, ms, label) {
   return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
 }
 
+// A lookup the line needed did not arrive. Without this the turn went on with no data and the
+// model gave a figure from its own head, said as fact.
+const lookupFailed = (what) => `\nLOOKUP FAILED: ${what} could not be fetched just now. Tell him in a few words that you could not look it up this time. Do NOT give a figure, a date or a name from memory.\n`;
+const WHAT = { currency: 'the exchange rate', crypto: 'the coin price', weather: 'the weather', air: 'the air quality', clock: 'the time there', sun: 'the sun times', calendar: 'the date', units: 'the sum' };
+
 export async function buildToolBlocks(text, sensors, opts = {}) {
   const t = String(text || '');
   const none = opts.detail ? { text: '', live: false } : '';
@@ -730,7 +754,10 @@ export async function buildToolBlocks(text, sensors, opts = {}) {
   settled.forEach((r, i) => {
     // "Switch on your location" is an instruction, not data: the student already gives it.
     if (r.status === 'fulfilled' && r.value) { blocks.push(r.value); live = live || (isLive(hits[i]) && !r.value.includes('LOCATION UNAVAILABLE')); }
-    else if (r.status === 'rejected') console.warn(`[tools] ${hits[i].name}: ${r.reason?.message || r.reason}`);
+    else if (r.status === 'rejected') {
+      console.warn(`[tools] ${hits[i].name}: ${r.reason?.message || r.reason}`);
+      if (isLive(hits[i]) && WHAT[hits[i].name]) { blocks.push(lookupFailed(WHAT[hits[i].name])); live = true; }
+    }
   });
   if (blocks.length) {
     console.log(`[tools] ${hits.map((h) => h.name).join('+')} -> ${blocks.length} block(s) in ${Date.now() - started}ms`);
