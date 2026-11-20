@@ -26,6 +26,7 @@ import { pushVoice, openVoiceStream, voiceFor, setCallDevice } from '../call-voi
 import { whoseLine, speechLevel } from '../same-line.js';
 import { linkDevice } from '../pan-link-auth.js';
 import { getDataDir as notesDataDir } from '../platform.js';
+import { createScreenControl } from '../screen-control.js';
 
 const execFilePromise = promisify(execFile);
 warmHubAsr();
@@ -1583,13 +1584,18 @@ router.post('/browser', async (req, res) => {
 globalThis._panBrowserCommand = browserCommand;
 
 // Phone accessibility service bridge
-const pendingA11yCommands = [];
+// Every command waits for the ONE device it is meant for (screen-control.js): the app names its
+// device when it asks, and a command names its device or goes to the only one that is on.
+const screenControl = createScreenControl();
 const pendingA11yResults = new Map();
 
 router.get('/accessibility/commands', (req, res) => {
-  const commands = [...pendingA11yCommands];
-  pendingA11yCommands.length = 0;
-  res.json(commands);
+  res.json(screenControl.poll(req.query.device || req.headers['x-device-id'], req.headers['x-device-name']));
+});
+
+// Which devices have the service on right now.
+router.get('/accessibility/devices', (req, res) => {
+  res.json({ devices: screenControl.devices() });
 });
 
 router.post('/accessibility/result', (req, res) => {
@@ -1603,15 +1609,16 @@ router.post('/accessibility/result', (req, res) => {
 });
 
 router.post('/accessibility', async (req, res) => {
-  const { action, ...params } = req.body;
+  const { action, device, ...params } = req.body;
   if (!action) return res.status(400).json({ error: 'missing action' });
 
   const id = `a11y-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-  pendingA11yCommands.push({ id, action, ...params });
+  const queued = screenControl.add({ id, action, ...params }, device);
+  if (queued.error) return res.json({ ok: false, error: queued.error });
 
   const timeout = setTimeout(() => {
     pendingA11yResults.delete(id);
-    res.json({ ok: false, error: 'Accessibility service timeout — is it enabled in Android Settings?' });
+    res.json({ ok: false, device: queued.device, error: 'The device did not answer in 15 seconds.' });
   }, 15000);
 
   pendingA11yResults.set(id, {

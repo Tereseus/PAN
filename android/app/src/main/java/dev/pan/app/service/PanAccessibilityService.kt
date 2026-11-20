@@ -40,6 +40,25 @@ class PanAccessibilityService : AccessibilityService() {
 
         // Static reference so the foreground service can call methods directly
         var instance: PanAccessibilityService? = null
+
+        /** This device as the hub knows it: the same id every other request carries (X-Device-Id). */
+        val hubDeviceId: String get() = android.os.Build.MODEL.lowercase().replace(" ", "-")
+    }
+
+    /** Why the last poll got nothing, logged once per change so a dead link is visible in the log. */
+    private var pollState = ""
+    private fun note(state: String) {
+        if (state != pollState) { pollState = state; Log.i(TAG, "screen control poll: $state") }
+    }
+
+    /** The hub hands a device only its own commands, so every request says which device this is. */
+    private fun open(path: String): HttpURLConnection {
+        val conn = URL(path).openConnection() as HttpURLConnection
+        conn.connectTimeout = 5000
+        conn.readTimeout = 5000
+        conn.setRequestProperty("X-Device-Name", dev.pan.app.di.DeviceNameHolder.name)
+        conn.setRequestProperty("X-Device-Id", hubDeviceId)
+        return conn
     }
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -83,13 +102,12 @@ class PanAccessibilityService : AccessibilityService() {
         while (true) {
             try {
                 val hub = PAN_SERVER
-                if (hub == null) { delay(POLL_INTERVAL); continue }
-                val url = URL("$hub/api/v1/accessibility/commands")
-                val conn = url.openConnection() as HttpURLConnection
-                conn.connectTimeout = 5000
-                conn.readTimeout = 5000
+                if (hub == null) { note("no hub address yet"); delay(POLL_INTERVAL); continue }
+                val conn = open("$hub/api/v1/accessibility/commands?device=" + java.net.URLEncoder.encode(hubDeviceId, "UTF-8"))
+                val code = conn.responseCode
+                note(if (code == 200) "ok, asking $hub as $hubDeviceId" else "the hub answered $code at $hub")
 
-                if (conn.responseCode == 200) {
+                if (code == 200) {
                     val body = conn.inputStream.bufferedReader().readText()
                     val commands = JSONArray(body)
 
@@ -102,7 +120,7 @@ class PanAccessibilityService : AccessibilityService() {
                     }
                 }
                 conn.disconnect()
-            } catch (_: Exception) {}
+            } catch (e: Exception) { note("failed: ${e.javaClass.simpleName} ${e.message}") }
 
             delay(POLL_INTERVAL)
         }
@@ -111,8 +129,7 @@ class PanAccessibilityService : AccessibilityService() {
     private fun sendResult(id: String, result: JSONObject) {
         try {
             val hub = PAN_SERVER ?: return
-            val url = URL("$hub/api/v1/accessibility/result")
-            val conn = url.openConnection() as HttpURLConnection
+            val conn = open("$hub/api/v1/accessibility/result")
             conn.requestMethod = "POST"
             conn.setRequestProperty("Content-Type", "application/json")
             conn.doOutput = true
