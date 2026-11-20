@@ -96,21 +96,24 @@ const PAGES = {
   // A to-do list app: type a line, press Enter, tick it off.
   async todo() {
     if (!await openPage('https://demo.playwright.dev/todomvc/', /todos/i)) return;
+    // The page keeps its list between visits (browser storage), so count what is left first.
+    const left = (s) => { const m = /(\d+)\s+items?\s+left/.exec(s.text || ''); return m ? Number(m[1]) : 0; };
+    const before = left((await readUntil((s) => /What needs to be done/i.test(s.text || ''))).seen);
     const line = `Buy coffee beans ${String(Date.now()).slice(-4)}`;
     let r = await pan('type_text', { text: line, target: 'What needs to be done?' });
     const typed = r.ok;
     r = await pan('press_enter');
     const entered = r.ok;
-    r = await readUntil((s) => (s.text || '').includes(line) && /1 item left/.test(s.text || ''));
-    check('typed a to-do, pressed Enter, the list shows it with "1 item left"', typed && entered && r.ok, brief(r.seen));
+    r = await readUntil((s) => (s.text || '').includes(line) && left(s) === before + 1);
+    check(`typed a to-do, pressed Enter, the list shows it (${before} left before, ${before + 1} after)`, typed && entered && r.ok, brief(r.seen));
     if (!r.ok) return;
-    // The line's own tick box: the list's "mark all" box comes first, so take the last one.
+    // The new line's own tick box: new lines go to the bottom, so take the last tick box.
     const boxes = els(r.seen).filter((e) => e.checkable);
     const box = boxes[boxes.length - 1];
     if (!box) return check('ticked the to-do off', false, brief(r.seen));
     await pan('tap', { x: box.x, y: box.y });
-    r = await readUntil((s) => /0 items left/.test(s.text || ''));
-    check('ticked it off, the list says "0 items left"', r.ok, brief(r.seen));
+    r = await readUntil((s) => left(s) === before);
+    check(`ticked it off, the list is back to ${before} left`, r.ok, brief(r.seen));
   },
 };
 
