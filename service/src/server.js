@@ -6652,6 +6652,33 @@ app.get('/api/v1/logs', (req, res) => {
   }
 });
 
+// GET /api/v1/voice/picks: the models the voice runs on and each device's turn times, for the
+// app's Hub screen, Models tab (voice-picks.js). Changing a pick is PUT /api/v1/settings.
+app.get('/api/v1/voice/picks', async (req, res) => {
+  try {
+    const { deviceTimes, pickChoices } = await import('./voice-picks.js');
+    const setting = k => String(get('SELECT value FROM settings WHERE key = :k', { ':k': k })?.value || '').replace(/^"|"$/g, '');
+    let pinned = {};
+    try { pinned = JSON.parse(setting('model_hosts') || '{}'); } catch {}
+    let names = [];
+    try {
+      const r = await fetch(`${getOllamaUrl()}/api/tags`, { signal: AbortSignal.timeout(2500) });
+      names = ((await r.json()).models || []).map(m => m.name);
+    } catch {}
+    const rows = db.prepare(`SELECT device_id, message FROM client_logs WHERE message LIKE 'Stream (first=%'
+      AND created_at >= datetime('now','localtime','-14 days') ORDER BY created_at DESC LIMIT 5000`).all();
+    res.json({
+      hub_model: { key: 'voice_world_model', value: setting('voice_world_model') },
+      reader_model: { key: 'voice_student_model', value: setting('voice_student_model') },
+      hub_asr: 'Parakeet',
+      choices: pickChoices(names, pinned),
+      devices: deviceTimes(rows),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // DELETE /api/v1/logs — retention cleanup
 app.delete('/api/v1/logs', (req, res) => {
   try {

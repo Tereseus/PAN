@@ -6,6 +6,7 @@ import { askAIWithFallback, askAIStreamWithFallback, readChain } from './llm-fal
 import { buildToolBlocks } from './tools.js';
 import { outLoud, keepFigures } from './sums.js';
 import { lookupNotes, searchQuery, DEFAULT_ENGINE, ENGINES } from './web-lookup.js';
+import { peekSearch } from './search-again.js';
 import { buildSelfBlock, buildSelfLine } from './self.js';
 import { anonymizeForAI } from './anonymize.js';
 import { isAvailable as weztermAvailable, openTerminal as weztermOpen, sendText as weztermSend, getText as weztermGet, listPanes as weztermList } from './wezterm.js';
@@ -253,6 +254,14 @@ function webLookupOn(deviceId) {
     return v === 'all' || (v === 'bench' && /-bench$/.test(String(deviceId || '')));
   } catch { return false; }
 }
+// web_lookup_again: when the notes miss something that changes, the hub model may ask for one more
+// search in its own words (search-again.js). 'all' = every device, 'bench' = benchmark devices only.
+function lookAgainOn(deviceId) {
+  try {
+    const v = String(get("SELECT value FROM settings WHERE key = 'web_lookup_again'")?.value || '').replace(/^"|"$/g, '').trim().toLowerCase();
+    return v === 'all' || (v === 'bench' && /-bench$/.test(String(deviceId || '')));
+  } catch { return false; }
+}
 function webLookupEngine() {
   try {
     const v = String(get("SELECT value FROM settings WHERE key = 'web_lookup_engine'")?.value || '').replace(/^"|"$/g, '').trim().toLowerCase();
@@ -276,6 +285,12 @@ function worldQuestionsOn(deviceId) {
 // on for him). Empty or anything else = the cloud model of the voice chain, as before.
 function worldModel(deviceId, key = 'voice_world_model') {
   try {
+    // <key>_bench: the model a benchmark device gets, while everyone else keeps <key>. The
+    // smartness test (evals/smartbench) tries a candidate on his real lines this way (Nov 21).
+    if (/-bench$/.test(String(deviceId || ''))) {
+      const b = String(get(`SELECT value FROM settings WHERE key = '${key}_bench'`)?.value || '').replace(/^"|"$/g, '').trim();
+      if (/^(?:ollama|reader):\S+$/.test(b)) return b;
+    }
     const v = String(get(`SELECT value FROM settings WHERE key = '${key}'`)?.value || '').replace(/^"|"$/g, '').trim();
     const m = v.replace(/^bench=/, '');
     if (!/^(?:ollama|reader):\S+$/.test(m)) return '';
@@ -315,6 +330,8 @@ const HUB_RULES = {
   WORLD_MAYBE: `The WORLD rule, but if he was not talking to you (the TV, someone else in the room), ${HUB_AMBIENT}.`,
   LOOKED: 'The WORLD rule, and the notes above his line were looked up on the web just now and are newer than what you remember: where they speak to his question, trust them over your memory. Say the answer first, in one sentence, exactly as the notes give it (names, scores, figures and dates copied from the notes, never from memory). Then add one or two sentences of what is worth knowing about it (who, since when, where, how much), using only what the notes say: a name, a score or a figure that is not in the notes must not be said. If the notes hold nothing more, stop after the answer. When the notes do not cover his question at all, answer from what you know. If the notes show that something you said earlier in this conversation was wrong, say so in a few plain words and give what the notes say. When it is something that changes (who holds a post, a price, this year\'s events) and the notes do not cover it, say you are not sure instead of guessing. Never say that you looked it up or read notes.',
   LOOKED_MAYBE: `The LOOKED rule, but if he was not talking to you (the TV, someone else in the room), ${HUB_AMBIENT}.`,
+  LOOKED_SEARCH: 'The LOOKED rule, and almost always you just answer from the notes. Read the notes first: if any line in them answers his question, answer it and never search. Only when no line in the notes answers it, and it is something that changes (a recent result or winner, who holds a post, a price), reply with exactly [SEARCH: the few words you would type into a search box, with the year when it matters] instead of saying you are not sure.',
+  LOOKED_SEARCH_MAYBE: `The LOOKED_SEARCH rule, but if he was not talking to you (the TV, someone else in the room), ${HUB_AMBIENT}.`,
   ASKED: 'He asked you to come up with something yourself: a question for him, a joke, an idea, a story, your opinion. Do it now, in one to three short spoken sentences. If he wants a question, ask him one real, specific question about him or about what he is doing, and nothing else. Never just agree, and never ask what he would like.',
   ASKED_MAYBE: `The ASKED rule, but if he was not talking to you (the TV, someone else in the room), ${HUB_AMBIENT}.`,
   WORD: `He stopped mid-sentence, reaching for a word or a name. If you are confident which word or name he means, your reply is only that word or name with a question mark, the way a friend helps out ("Inception?"). If you are not sure, ${HUB_AMBIENT}.`,
@@ -3816,7 +3833,7 @@ answer an earlier question, and do not narrate what the context blocks mention.`
     } catch { return ''; }
   };
   // The notes go right above his line, after everything that stays the same from turn to turn.
-  const worldPromptHub = (gate, notes) => hubPrompt((askedFor ? 'ASKED' : notes ? 'LOOKED' : 'WORLD') + (gate ? '_MAYBE' : ''), [studentHistory, nowLine(),
+  const worldPromptHub = (gate, notes, again = false) => hubPrompt((askedFor ? 'ASKED' : notes ? (again ? 'LOOKED_SEARCH' : 'LOOKED') : 'WORLD') + (gate ? '_MAYBE' : ''), [studentHistory, nowLine(),
     notes ? 'Notes, looked up on the web just now:\n' + notes.map((n) => '- ' + n).join('\n') : '',
     `${isDash ? 'User typed' : 'Mic heard'}: "${safeText}"`].filter(Boolean), hubSelf());
   // The lookup starts once per turn: at once while PAN is in the talk, else the moment the voice
@@ -3833,7 +3850,16 @@ answer an earlier question, and do not narrate what the context blocks mention.`
     if (!worldHub) { yield* askAIStreamWithFallback(worldPrompt(gate), cloudOpts()); return; }
     const found = await startLookup();
     if (found) console.log(`[routeStream] looked it up on ${found.engine}: ${found.notes.length} lines in ${found.ms} ms${found.cached ? ' (kept from before)' : ''}`);
-    yield* plainAsReply(askAIStreamWithFallback(worldPromptHub(gate, found ? found.notes : null), { ...streamOpts, chain: [worldHub, ...cloudFirst()].slice(0, 3), firstTokenMs: WORLD_LOCAL_MS, temperature: HUB_TEMPERATURE }), HUB_SENTENCES);
+    const hubOpts = { ...streamOpts, chain: [worldHub, ...cloudFirst()].slice(0, 3), firstTokenMs: WORLD_LOCAL_MS, temperature: HUB_TEMPERATURE };
+    const notes = found ? found.notes : null;
+    if (!notes || askedFor || !lookAgainOn(context.device_id)) { yield* plainAsReply(askAIStreamWithFallback(worldPromptHub(gate, notes), hubOpts), HUB_SENTENCES); return; }
+    // The notes may miss it: the model may ask for one more search in its own words, once.
+    const first = await peekSearch(askAIStreamWithFallback(worldPromptHub(gate, notes, true), hubOpts));
+    if (!first.query) { yield* plainAsReply(first.stream, HUB_SENTENCES); return; }
+    const t0 = Date.now();
+    const more = await lookupNotes(first.query, { engine: webLookupEngine(), deadlineMs: WEB_LOOKUP_MS, talk: String(context.device_id || '') }).catch(() => null);
+    console.log(`[routeStream] the hub model searched again for "${first.query}": ${more ? more.notes.length : 0} lines in ${Date.now() - t0} ms`);
+    yield* plainAsReply(askAIStreamWithFallback(worldPromptHub(gate, more ? more.notes : notes), hubOpts), HUB_SENTENCES);
   }
   // Every other line handed up: the hub model when voice_hub_paths says so, else the cloud model.
   // voice_hub_paths_model: another hub model for these lines (same values as voice_world_model). They are
