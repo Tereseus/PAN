@@ -10,6 +10,10 @@ import { broadcastNotification } from '../terminal-bridge.js';
 import { readTranscript as readPtyTranscript, renameTranscript, setSessionName } from '../pty-transcript.js';
 import { fileURLToPath } from 'url';
 import { createHash } from 'crypto';
+import {
+  toFtsQuery, allWordsQuery, someWordsQuery, needsSomeWords, needsMeaning,
+  mergeKeywordHits, appendMeaningHits, orderByIds, MEANING_K,
+} from '../event-search.js';
 import { hostname } from 'os';
 import { execSync as _execSync, execFile } from 'child_process';
 
@@ -426,12 +430,7 @@ router.get('/api/search', (req, res) => {
   res.json(results);
 });
 
-// Free text -> FTS5 query. Each word becomes a quoted prefix term, so the user's
-// text can never be parsed as FTS syntax. joiner ' ' = every word, ' OR ' = any.
-function toFtsQuery(text, joiner) {
-  const words = String(text).match(/[\p{L}\p{N}_]+/gu) || [];
-  return words.slice(0, 12).map(w => `"${w}"*`).join(joiner);
-}
+// toFtsQuery and the search passes' pure logic live in ../event-search.js.
 
 // Window the LIKE-based project_path filter scans, counted back from the newest event.
 const PROJECT_PATH_SCAN_WINDOW = 50_000;
@@ -444,7 +443,7 @@ const PROJECT_PATH_SCAN_WINDOW = 50_000;
 // and scanned every row on the main thread. A multi-word q almost never
 // matched as one literal substring, so the page query scanned everything too:
 // two back-to-back ~220 s blocks per search, with /health still answering.
-router.get('/api/events', (req, res) => {
+router.get('/api/events', async (req, res) => {
   const limit = Math.min(parseInt(req.query.limit) || 50, 500);
   const offset = parseInt(req.query.offset) || 0;
   const type = req.query.type || null;
@@ -485,26 +484,59 @@ router.get('/api/events', (req, res) => {
   const whereClause = `WHERE ${where.join(' AND ')}`;
 
   if (search) {
-    // Candidate ids come from the FTS index only; at most `cap` events rows are read.
-    const cap = Math.max(2000, (offset + limit) * 2);
-    const page = { ...params, ':limit': limit, ':offset': offset, ':cap': cap };
-    // CROSS JOIN pins the FTS hits as the outer loop; with a plain JOIN the
-    // planner walked all of idx_events_org_id_created and probed the hits.
-    const fromFts = (fts, order) =>
-      `FROM (SELECT rowid AS fts_id FROM events_fts WHERE events_fts MATCH :fts ORDER BY ${order} LIMIT :cap) f CROSS JOIN events ON events.id = f.fts_id ${whereClause}`;
-    const runSearch = (fts, order) => {
-      if (!fts) return { events: [], total: 0 };
-      const p = { ...page, ':fts': fts };
-      const events = allScoped(req, `SELECT events.* ${fromFts(fts, order)} ORDER BY created_at DESC LIMIT :limit OFFSET :offset`, p);
-      const total = getScoped(req, `SELECT COUNT(*) AS count ${fromFts(fts, order)}`, p)?.count || 0;
-      return { events, total };
-    };
+    // Three passes, each bounded (see ../event-search.js for why):
+    //   1. all words, newest first
+    //   2. some words, bm25 best first: when pass 1 found less than the page or < 10
+    //   3. meaning, nearest embeddings: first page only, when 1 + 2 found < 5
+    // Every returned event carries match: 'all words' | 'some words' | 'meaning'.
+    //
+    // total = distinct keyword hits across passes 1 and 2, plus the meaning hits
+    // returned. Each keyword pass reads at most `cap` FTS candidates, so when a
+    // pass hits the cap (capped: true) total is a lower bound. counts breaks it down.
+    const want = offset + limit;
+    const cap = Math.max(2000, want * 2);
+    // Candidate ids come from the FTS index only; at most `cap` events rows are
+    // read per pass. CROSS JOIN pins the FTS hits as the outer loop; with a plain
+    // JOIN the planner walked all of idx_events_org_id_created and probed the hits.
+    const keywordIds = (fts, inner, outer) => fts ? allScoped(req,
+      `SELECT events.id AS id
+       FROM (SELECT rowid AS fts_id, ${inner === 'rank' ? 'rank' : '0'} AS score FROM events_fts WHERE events_fts MATCH :fts ORDER BY ${inner} LIMIT :cap) f
+       CROSS JOIN events ON events.id = f.fts_id ${whereClause}
+       ORDER BY ${outer}`,
+      { ...params, ':fts': fts, ':cap': cap }).map(r => r.id) : [];
+    // The same filters again on hydration, so meaning hits obey type/date/session too.
+    const hydrate = (ids) => ids.length ? orderByIds(allScoped(req,
+      `SELECT events.* FROM (SELECT value AS vid FROM json_each(:ids)) v
+       CROSS JOIN events ON events.id = v.vid ${whereClause}`,
+      { ...params, ':ids': JSON.stringify(ids) }), ids) : [];
     try {
-      // Every word, newest first. If nothing has all of them (pan_search often
-      // sends a bag of keywords), fall back to any word, best bm25 matches first.
-      let r = runSearch(toFtsQuery(search, ' '), 'rowid DESC');
-      if (r.total === 0) r = runSearch(toFtsQuery(search, ' OR '), 'rank');
-      return res.json({ ...r, limit, offset });
+      const allIds = keywordIds(allWordsQuery(search), 'rowid DESC', 'events.created_at DESC');
+      const ranSome = needsSomeWords(allIds.length, offset, limit);
+      const someIds = ranSome ? keywordIds(someWordsQuery(search), 'rank', 'f.score') : [];
+      const hits = mergeKeywordHits(allIds, someIds);
+      const pageHits = hits.slice(offset, offset + limit);
+      const matchOf = new Map(pageHits.map(h => [h.id, h.match]));
+      let events = hydrate(pageHits.map(h => h.id)).map(e => ({ ...e, match: matchOf.get(e.id) }));
+
+      let meaning = 0;
+      if (needsMeaning(hits.length, offset) && events.length < limit) {
+        try {
+          const { nearestEventIds } = await import('../memory-search.js');
+          const near = await nearestEventIds(search, { k: MEANING_K, embedTimeoutMs: 1500, vecTimeoutMs: 2500 });
+          const before = events.length;
+          events = appendMeaningHits(events, hydrate(near.map(n => n.id)), limit);
+          meaning = events.length - before;
+        } catch (err) {
+          console.warn('[dashboard] meaning fallback failed:', err.message);
+        }
+      }
+      return res.json({
+        events,
+        total: hits.length + meaning,
+        limit, offset,
+        counts: { all_words: allIds.length, some_words: hits.length - allIds.length, meaning },
+        capped: allIds.length >= cap || someIds.length >= cap,
+      });
     } catch (err) {
       return res.status(400).json({ error: `search failed: ${err.message}`, events: [], total: 0, limit, offset });
     }

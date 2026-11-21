@@ -47,13 +47,21 @@ export function registerPanTools(server, { panBaseUrl }) {
 
   server.tool(
     'pan_search',
-    'Full-text search across all PAN events (conversations, commands, voice, system). Returns ranked results. THE primary tool for "I don\'t remember — what did I do / say / decide?" — searches every chat message, every Claude session, every voice utterance, every command across history.',
+    'Search across all PAN events (conversations, commands, voice, system). THE primary tool for "I don\'t remember — what did I do / say / decide?" — searches every chat message, every Claude session, every voice utterance, every command across history. ' +
+    'Each event has `match`: "all words" (has every word, newest first), then "some words" (has some of them, best first), then "meaning" (no shared words, close in meaning; only when keywords found under 5). ' +
+    'Short queries of the distinctive words work best. If nothing fits, search again with fewer or different words (an outcome often uses other words than the question: "blocked", "done", "fixed") before concluding there is no record.',
     { q: z.string(), limit: z.number().optional(), type: z.string().optional() },
     async ({ q, limit, type }) => {
       try {
         let path = `/dashboard/api/events?q=${encodeURIComponent(q)}&limit=${limit || 50}`;
         if (type) path += `&type=${encodeURIComponent(type)}`; // the endpoint reads `type`; `event_type` was silently ignored
-        return ok(await panFetch(path));
+        const r = await panFetch(path);
+        if (r && Array.isArray(r.events) && !r.events.some((e) => e.match === 'all words')) {
+          r.hint = r.events.length
+            ? 'No event has every word. These match some words or the meaning; if none fits, search again with fewer or different words.'
+            : 'Nothing matched. Search again with fewer or different words before concluding there is no record.';
+        }
+        return ok(r);
       } catch (e) { return err(e); }
     },
   );

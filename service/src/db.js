@@ -658,6 +658,12 @@ function extractEventText(eventType, dataStr) {
     const msg = data.last_assistant_message || '';
     if (msg.length >= 20) return msg;
   }
+  // A turn's assistant text written between tool calls (POST /hooks/internal/turn-text).
+  // Capped at 2000 chars when written, so the whole of it fits the FTS row.
+  if (eventType === 'AssistantTurnText') {
+    const t = data.text || '';
+    if (t.length >= 20) return t;
+  }
   if (eventType === 'PhoneAudio') {
     const transcript = data.transcript || '';
     const finals = transcript.match(/Final: (.+?)(?:\[|Heard|$)/g)

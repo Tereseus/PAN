@@ -6671,6 +6671,8 @@ app.get('/api/v1/voice/picks', async (req, res) => {
       hub_model: { key: 'voice_world_model', value: setting('voice_world_model') },
       reader_model: { key: 'voice_student_model', value: setting('voice_student_model') },
       hub_asr: 'Parakeet',
+      // His switch: PAN may take the Mint's graphics card (WoE's pan-gpu.sh reads it). Off unless 'true'.
+      mint_gpu_allowed: setting('pan_mint_gpu_allowed') === 'true',
       choices: pickChoices(names, pinned),
       devices: deviceTimes(rows),
     });

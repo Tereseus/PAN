@@ -12,6 +12,7 @@ import { noteClaudePrompt } from '../conv-state-watcher.js';
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
 import { createHash } from 'crypto';
+import { capBlocks, dropSeenBlocks, turnTextData } from '../hooks/mid-turn-text.js';
 
 // Context size thresholds (in chars)
 const CLAUDE_MD_WARN_SIZE = 15000;  // ~3,750 tokens — alert if CLAUDE.md exceeds this
@@ -536,7 +537,7 @@ router.post('/internal/transcript-sync', async (req, res) => {
     do {
       page = all(
         `SELECT id, event_type, data, substr(created_at, 1, 16) AS min FROM events
-         WHERE session_id = :sid AND +event_type IN ('UserPromptSubmit', 'Stop', 'AssistantMessage')
+         WHERE session_id = :sid AND +event_type IN ('UserPromptSubmit', 'Stop', 'AssistantMessage', 'AssistantTurnText')
            AND id > :after ORDER BY id LIMIT 200`,
         { ':sid': sessionId, ':after': after }
       );
@@ -544,6 +545,8 @@ router.post('/internal/transcript-sync', async (req, res) => {
         let d;
         try { d = JSON.parse(r.data); } catch { continue; }
         if (d.transcript_uuid) seenUuid.add(d.transcript_uuid);
+        // AssistantTurnText (POST /internal/turn-text) holds a turn's mid-turn blocks by uuid.
+        for (const u of d.transcript_uuids || []) seenUuid.add(u);
         if (d.prompt) seenKey.add(_turnKey('user', d.prompt, r.min));
         // last_assistant_message (Stop) and text (AssistantMessage) are the same
         // reply seen through two different capture paths; both key the same way.
@@ -659,6 +662,54 @@ router.post('/internal/recap-backfill', async (req, res) => {
     res.status(200).json({ ok: true, processed: results.length, results });
   } catch (err) {
     console.error('[recap-backfill] failed:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// Mid-turn assistant text of one turn, sent by the Stop command hook
+// (hooks/capture-mid-turn.js) from the machine that holds the transcript.
+//
+// The live Stop row has only the last message; text written between tool calls
+// was never stored, so outcomes like "The KVM is unbound, but it isn't fully local
+// yet" could not be found. One AssistantTurnText row per turn: FTS-indexed here
+// (db.js extractEventText) and embedded by the backfill worker, since it is not in
+// NEVER_EMBED. Caps are applied again here; the client is not trusted for size.
+router.post('/internal/turn-text', (req, res) => {
+  try {
+    const { session_id: sessionId, cwd = '', transcript_path = null, blocks } = req.body || {};
+    if (!sessionId) return res.status(400).json({ ok: false, error: 'missing session_id' });
+    if (!Array.isArray(blocks)) return res.status(400).json({ ok: false, error: 'missing blocks' });
+    let keep = capBlocks(blocks.slice(0, 50));
+    if (!keep.length) return res.json({ ok: true, written: 0 });
+
+    // A Stop hook that makes Claude continue fires Stop again in the same turn;
+    // the second pass must not store the first pass's blocks or its final reply.
+    // The id subquery walks the session index (see the SessionEnd note below).
+    const recent = allScoped(req,
+      `SELECT event_type, data FROM events
+       WHERE id IN (SELECT id FROM events
+                    WHERE session_id = :sid AND +event_type IN ('Stop', 'AssistantTurnText')
+                    ORDER BY id DESC LIMIT 6)
+       AND +org_id = :org_id`,
+      { ':sid': sessionId });
+    keep = dropSeenBlocks(keep, recent);
+    if (!keep.length) return res.json({ ok: true, written: 0 });
+
+    if (!getScoped(req, 'SELECT id FROM sessions WHERE id = :id AND org_id = :org_id', { ':id': sessionId })) {
+      runScoped(req, `INSERT INTO sessions (id, cwd, model, source, transcript_path, user_id, org_id)
+        VALUES (:id, :cwd, NULL, 'turn-text', :tp, :uid, :org_id)`, {
+        ':id': sessionId, ':cwd': cwd, ':tp': transcript_path, ':uid': req.user?.id || null,
+      });
+    }
+    const dataStr = JSON.stringify(turnTextData(keep, cwd));
+    const eventId = insertScoped(req, `INSERT INTO events (session_id, event_type, data, user_id, org_id)
+      VALUES (:sid, 'AssistantTurnText', :data, :uid, :org_id)`, {
+      ':sid': sessionId, ':data': dataStr, ':uid': req.user?.id || null,
+    });
+    indexEventFTS(eventId, 'AssistantTurnText', dataStr);
+    res.json({ ok: true, written: 1, blocks: keep.length });
+  } catch (err) {
+    console.error('[turn-text] store failed:', err.message);
     res.status(500).json({ ok: false, error: err.message });
   }
 });

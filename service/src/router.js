@@ -7,6 +7,7 @@ import { buildToolBlocks } from './tools.js';
 import { outLoud, keepFigures } from './sums.js';
 import { lookupNotes, searchQuery, DEFAULT_ENGINE, ENGINES } from './web-lookup.js';
 import { peekSearch } from './search-again.js';
+import { readerMayAnswer } from './reader-alone.js';
 import { buildSelfBlock, buildSelfLine } from './self.js';
 import { anonymizeForAI } from './anonymize.js';
 import { isAvailable as weztermAvailable, openTerminal as weztermOpen, sendText as weztermSend, getText as weztermGet, listPanes as weztermList } from './wezterm.js';
@@ -306,6 +307,15 @@ const WORLD_LOCAL_MS = 4000;   // a hub model reads the prompt before its first 
 // chain, which a hub with no key does not have (the owner, Nov 16: no keys, one model). Setting
 // voice_hub_paths: 'all' = every device, 'bench' = benchmark devices only, else the cloud model as
 // before. The model is voice_world_model's.
+// voice_reader_alone: 'all' or 'bench' (devices ending in -bench) = the voice model answers only
+// short talk and its own actions alone (reader-alone.js). Empty = as before.
+function readerAloneOn(deviceId) {
+  try {
+    const v = String(get("SELECT value FROM settings WHERE key = 'voice_reader_alone'")?.value || '').replace(/^"|"$/g, '').trim().toLowerCase();
+    return v === 'all' || (v === 'bench' && /-bench$/.test(String(deviceId || '')));
+  } catch { return false; }
+}
+
 function hubPathsOn(deviceId) {
   try {
     const v = String(get("SELECT value FROM settings WHERE key = 'voice_hub_paths'")?.value || '').replace(/^"|"$/g, '').trim().toLowerCase();
@@ -4044,6 +4054,9 @@ answer an earlier question, and do not narrate what the context blocks mention.`
           if (r.startsWith('[CA')) { camera = true; break; }
           if (r.startsWith('[TH')) { think = true; break; }
           if (worldQ && !r.startsWith('[') && /^(?:query|question|chat|)$/.test(head.match(/"intent"\s*:\s*"([^"]*)"/)?.[1] || '')) { world = true; break; }
+          // voice_reader_alone: the voice model keeps only short talk and its own actions; every
+          // other line goes to the hub model the [THINK] way (reader-alone.js, Nov 21).
+          if (!r.startsWith('[') && readerAloneOn(context.device_id) && !readerMayAnswer(text, head.match(/"intent"\s*:\s*"([^"]*)"/)?.[1])) { think = true; break; }
           yield head;
           head = null;
         }

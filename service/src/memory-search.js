@@ -19,7 +19,7 @@ const sqliteVec = require('sqlite-vec');
 
 import { getDb } from './db-registry.js';
 import { get as _settingsGet } from './db.js';
-import { embed, embedForWriteDetailed, toBlob, EMBED_DIM, EMBED_MODEL } from './memory/embeddings.js';
+import { embed, embedQuery, embedForWriteDetailed, toBlob, EMBED_DIM, EMBED_MODEL } from './memory/embeddings.js';
 import { privatizeSearch } from './privacy.js';
 import { NEVER_EMBED_SQL } from './event-filters.js';
 
@@ -503,6 +503,29 @@ function vectorSearch(path, blob, limit, timeoutMs) {
 }
 
 /**
+ * Nearest events by meaning, for keyword search to fall back on (GET
+ * /dashboard/api/events?q=, which pan_search calls). Returns [{ id, distance }],
+ * nearest first, or [] when anything is slow or down: the query embedding gets
+ * embedTimeoutMs, the vector thread vecTimeoutMs. Main database only, through the
+ * same off-thread vectors as searchMemory, so nothing here scans on the main thread.
+ * The first call after a start finds the vectors still loading and returns [];
+ * that call starts the load, so the next one works.
+ */
+async function nearestEventIds(query, { k = 10, embedTimeoutMs = 1500, vecTimeoutMs = 2500 } = {}) {
+  const q = String(query || '').trim();
+  if (!q) return [];
+  try {
+    const vec = await embedQuery(q, embedTimeoutMs);
+    if (!vec || vec.length !== EMBED_DIM) return [];
+    const rows = await vectorSearch(getDb('main').name, toBlob(vec), Math.max(1, Math.min(50, k)), vecTimeoutMs);
+    return rows || [];
+  } catch (err) {
+    console.warn('[PAN MemorySearch] meaning fallback skipped:', err.message);
+    return [];
+  }
+}
+
+/**
  * Hybrid search. Runs FTS5 and vector search in parallel, then fuses the
  * two ranked lists with reciprocal rank fusion.
  *
@@ -899,6 +922,7 @@ function backfillStatus(scope = 'main') {
 export {
   ensureInitialized,
   searchMemory,
+  nearestEventIds,
   warmVectors,
   embedEvent,
   backfillEmbeddings,

@@ -247,6 +247,23 @@ async function embed(text) {
   return embedFallback(text);
 }
 
+// Query-time embedding from the real model only, or null, within timeoutMs in all
+// (host lookup included). Unlike embed(), it never hands back the keyword fallback:
+// those vectors live in a different space from the stored ones, so a nearest-
+// neighbour search with one returns noise that looks like results.
+async function embedQuery(text, timeoutMs = 1500) {
+  const q = String(text || '').trim();
+  if (!q) return null;
+  let timer;
+  const late = new Promise((resolve) => { timer = setTimeout(() => resolve(null), timeoutMs); });
+  const work = embedOllama(q, timeoutMs, 2000).catch(() => null);
+  try {
+    return await Promise.race([work, late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // Cosine similarity between two vectors
 function cosineSimilarity(a, b) {
   if (!a || !b || a.length !== b.length) return 0;
@@ -413,4 +430,4 @@ async function embedForWrite(text) {
   return r.vec ?? null;
 }
 
-export { embed, embedForWrite, embedForWriteDetailed, cosineSimilarity, toBlob, fromBlob, resetOllamaStatus, EMBED_DIM, EMBED_MODEL };
+export { embed, embedQuery, embedForWrite, embedForWriteDetailed, cosineSimilarity, toBlob, fromBlob, resetOllamaStatus, EMBED_DIM, EMBED_MODEL };
