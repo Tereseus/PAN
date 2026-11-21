@@ -3048,6 +3048,10 @@ class PanForegroundService : Service() {
             dev.pan.app.stt.SherpaStreamingStt.readBelowGate = intent.getBooleanExtra("on", false)
             panLog("TEST_READ_BELOW: ${dev.pan.app.stt.SherpaStreamingStt.readBelowGate}")
         }
+        // TEST_NET_CHANGE [--ez dead true]: what a real network change does to the link (vpn/LinkRecovery.kt).
+        if (dev.pan.app.BuildConfig.DEBUG && intent?.action == "TEST_NET_CHANGE") {
+            linkManager.testNetworkChange(intent.getBooleanExtra("dead", false))
+        }
         // TEST_STOP_RINGING: what the hub's stop_ringing does, 3 s later so no start from adb is still
         // in effect: proves the app can stop a ringing timer from the background (audio/Ringing.kt).
         if (dev.pan.app.BuildConfig.DEBUG && intent?.action == "TEST_STOP_RINGING") {

@@ -17,9 +17,23 @@ const COMMAND = new RegExp(
   + /(?:(?:can|could|would|will) you\s+)?(?:please\s+)?(?:just\s+)?(?:(?:mute,?\s+)*mute(?:\s+your\s?self)?|be quiet|shut up|stop listening|go quiet)(?:\s+for (?:a (?:bit|minute|moment|second|while)|now))?(?:\s+(?:please|now))?/.source
   + `(?:,?\\s+${NAME})?$`, 'i');
 
+// "I told you to mute yourself": the same ask, said again because the first one was missed.
+const AGAIN = new RegExp(
+  /^(?:(?:and|but|so|okay|ok|hey|look),?\s+)*/.source
+  + `(?:${NAME},?\\s+)?`
+  + /i (?:already\s+)?(?:told|asked) you to (?:mute(?:\s+your\s?self)?|be quiet|shut up|stop listening|go quiet)(?:\s+(?:already|now))?/.source
+  + `(?:,?\\s+${NAME})?$`, 'i');
+const NAMED_FIRST = new RegExp(`^(?:(?:hey|ok|okay)\\s+)?${NAME}\\b`, 'i');
+
 export function asksToMute(text) {
   const sentences = String(text || '').replace(/’/g, "'").split(/[.!?]+/).map((s) => s.trim()).filter(Boolean);
-  if (!sentences.length || sentences.length > 4) return false;
+  if (!sentences.length) return false;
+  // Named and said first, as its own sentence: "Pan, mute yourself." followed by more talk was
+  // answered three times and never muted (Nov 21), because only the last sentence was checked.
+  const first = sentences[0];
+  if (NAMED_FIRST.test(first) && (COMMAND.test(first) || AGAIN.test(first))) return true;
+  if (sentences.length > 4) return false;
   if (String(text).trim().split(/\s+/).length > 16) return false;
-  return COMMAND.test(sentences[sentences.length - 1]);
+  const last = sentences[sentences.length - 1];
+  return COMMAND.test(last) || AGAIN.test(last);
 }

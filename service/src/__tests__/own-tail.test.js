@@ -61,14 +61,18 @@ console.log('mute-ask');
 test('told to mute', () => {
   for (const line of ['Mute yourself.', 'Pan, mute yourself.', 'Hey Pan, mute yourself.', 'Uh Pam, mute yourself.',
     'Pan, mute mute yourself, Pan.', 'Wait, hold on. Mute yourself.', 'Shut up.', 'Okay Pan, stop listening please.', 'mute',
-    'Can you mute yourself for a bit?', 'Pan, could you please be quiet for a minute.']) {
+    'Can you mute yourself for a bit?', 'Pan, could you please be quiet for a minute.',
+    'Pan, mute yourself. The car is somehow not connecting, the whole head unit keeps saying it is not connected and the internet is slow.',
+    'And I told you to mute yourself.', 'Pan, I told you to mute yourself.', 'I already told you to be quiet.']) {
     eq(asksToMute(line), true, line);
   }
 });
 
 test('not told to mute', () => {
   for (const line of ['My commute was long.', 'He told me to shut up.', 'Can you mute the television?', 'Mute yourself when the movie starts and tell me what time it is.',
-    'How do I mute a tab in Firefox?', 'I had to be quiet in there.', '']) {
+    'How do I mute a tab in Firefox?', 'I had to be quiet in there.', '',
+    'Mute yourself. Then tell me the time and the weather and what is on the calendar today, and read me my messages.',
+    'Pan, what time is it. Mute yourself when the movie starts.', 'She said I told you to mute yourself in the meeting yesterday.']) {
     eq(asksToMute(line), false, line);
   }
 });

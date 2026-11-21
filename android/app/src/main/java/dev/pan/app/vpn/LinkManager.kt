@@ -290,5 +290,50 @@ class LinkManager @Inject constructor(
         note("network: $why")
         netHandler.removeCallbacks(moveLink)
         netHandler.postDelayed(moveLink, 500)
+        changedAt = android.os.SystemClock.elapsedRealtime()
+        netHandler.removeCallbacks(recheck)
+        netHandler.postDelayed(recheck, LinkRecovery.CHECK_MS)
+    }
+
+    /** Debug builds only (TEST_NET_CHANGE): a network change, and with dead=true the next check sees no handshake. */
+    @Volatile private var testDeadOnce = false
+    fun testNetworkChange(dead: Boolean) {
+        testDeadOnce = dead
+        changed("test change${if (dead) " (link treated as dead)" else ""}")
+        if (dead) changedAt -= LinkRecovery.GRACE_MS
+    }
+
+    @Volatile private var changedAt = 0L
+    @Volatile private var restartedAt = 0L
+
+    /**
+     * After a network change: logs how the link stands, and restarts it when it has not shaken
+     * hands with the hub since the change (LinkRecovery). Runs every 15 s until a handshake
+     * comes or 10 minutes have passed.
+     */
+    private val recheck: Runnable = object : Runnable {
+        override fun run() {
+            if (_port.value <= 0) return
+            val now = android.os.SystemClock.elapsedRealtime()
+            val sinceChange = now - changedAt
+            val s = runCatching { org.json.JSONObject(status()) }.getOrNull() ?: return
+            val hs = if (testDeadOnce) { testDeadOnce = false; -1L } else s.optLong("since_handshake_s", -1)
+            if (LinkRecovery.shookHandsSince(hs, sinceChange)) {
+                note("link connected after the network change, ${s.optString("path")} path ${s.optString("via")}")
+                return
+            }
+            note("link: no handshake ${sinceChange / 1000} s after the network change (last ${if (hs < 0) "never" else "$hs s ago"}), via ${s.optString("via")}")
+            if (LinkRecovery.shouldRestart(hs, sinceChange, now - restartedAt)) {
+                restartedAt = now
+                note("link: restarting it on the new network")
+                synchronized(this@LinkManager) {
+                    runCatching { Panvpn.linkStop() }
+                    _port.value = 0
+                    lastCheck = 0L
+                }
+                startIfPaired()
+            }
+            if (sinceChange < LinkRecovery.GIVE_UP_MS) netHandler.postDelayed(this, LinkRecovery.CHECK_MS)
+        }
     }
 }
