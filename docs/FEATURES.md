@@ -770,6 +770,14 @@ asks for its notes every few seconds.
 
 ---
 
+## Voice picks and the smartness test (Nov 21 2026)
+
+- **`GET /api/v1/voice/picks`** (server.js, `voice-picks.js`): the hub model (`voice_world_model`), the voice reader (`voice_student_model`), the model choices for both (the hub's Ollama models plus any pinned in `model_hosts`), and per device the last 50 turns' average total, middle and slowest time. The time is the phone's own TOTAL from its `Stream (first=..ms total=..ms)` log line, never the first word. Changing a pick is `PUT /api/v1/settings`. Read by the app's Hub screen, Models tab.
+- **`voice_world_model_bench`** (router.js `worldModel`): the hub model a device whose id ends in `-bench` gets, while every other device keeps `voice_world_model`. Empty = off.
+- **Smartness test** (`service/src/evals/smartbench/smartbench.py`, gitignored: real lines): `lines` pulls his answered voice turns with their talk, `run --model X --tag T` replays them through the hub on `-bench` devices with that model (and clears the setting after), `judge --base phi --cand T` has Claude pick the smarter reply blind (A/B), by the owner's own complaints. Reports wins/ties/losses, quiet counts and the average TOTAL time. Claude only grades, it never writes training lines.
+- **Search again** (router.js `worldAsk`, `search-again.js`): with setting `web_lookup_again` = `all` or `bench`, the hub model may answer `[SEARCH: words]` when the looked-up notes miss a changing fact; the hub searches once more and asks again. Off while unset.
+
+---
 ## PAN Models page (what runs where)
 
 - **Purpose:** One page listing every model and service PAN uses, on the phone,
@@ -1066,6 +1074,8 @@ Write data in incognito scope → query from main scope → verify zero leakage.
 Fresh session start → ask about 5 things from previous sessions → score relevance
 of injected context.
 - **Floor:** 80% relevance, 80% coverage of asked topics
+
+**Nov 21 2026: the daily 3am run is OFF unless `PAN_ENABLE_BENCHMARKS_DAILY=1`** (profiles.js, opt-in). It ran all 12 suites by itself and was still going at 6:40 AM during the owner's drive, every answer failing. Benchmarks run when someone starts them.
 
 ### Benchmark Schedule (when no pipeline is active)
 
