@@ -1144,14 +1144,22 @@ class PanForegroundService : Service() {
     // native RemoteInput reply notification for each new message. The reply box
     // supports voice dictation natively — reply by typing OR speaking.
     private fun startSlackPolling() {
+        try { dev.pan.app.audio.Ringing.watch(getSystemService(AUDIO_SERVICE) as AudioManager) { panLog(it) } }
+        catch (e: Exception) { panLog("Ringing: cannot watch: ${e.message}") }
         serviceScope.launch {
             // In a call with someone on this ΠAN the hub answers fast = true, and the next ask is a
             // second away, not five: the other person's words are waiting to be read out.
             var fast = false
             while (isActive) {
-                delay(if (fast) 1000L else SLACK_POLL_INTERVAL_MS)
+                // A timer or alarm that starts or stops ringing here is told to the hub at once.
+                val ringSeen = dev.pan.app.audio.Ringing.changes
+                val waitUntil = android.os.SystemClock.elapsedRealtime() + (if (fast) 1000L else SLACK_POLL_INTERVAL_MS)
+                while (android.os.SystemClock.elapsedRealtime() < waitUntil && dev.pan.app.audio.Ringing.changes == ringSeen) delay(250)
                 try {
-                    val resp = serverClient.api.getSlackPending(getPanDeviceId())
+                    val ringingNow = dev.pan.app.audio.Ringing.now
+                    val resp = serverClient.api.getSlackPending(getPanDeviceId(),
+                        ringing = if (ringingNow) "1" else null, name = if (ringingNow) android.os.Build.MODEL else null)
+                    if (resp.body()?.stopRinging == true) dev.pan.app.audio.Ringing.stop(this@PanForegroundService) { panLog(it) }
                     callPollFailedAt = 0L
                     val nowFast = resp.body()?.fast == true
                     // A call opened or closed for this person, maybe from another of their devices:
@@ -3039,6 +3047,12 @@ class PanForegroundService : Service() {
         if (dev.pan.app.BuildConfig.DEBUG && intent?.action == "TEST_READ_BELOW") {
             dev.pan.app.stt.SherpaStreamingStt.readBelowGate = intent.getBooleanExtra("on", false)
             panLog("TEST_READ_BELOW: ${dev.pan.app.stt.SherpaStreamingStt.readBelowGate}")
+        }
+        // TEST_STOP_RINGING: what the hub's stop_ringing does, 3 s later so no start from adb is still
+        // in effect: proves the app can stop a ringing timer from the background (audio/Ringing.kt).
+        if (dev.pan.app.BuildConfig.DEBUG && intent?.action == "TEST_STOP_RINGING") {
+            panLog("TEST_STOP_RINGING: ringing=${dev.pan.app.audio.Ringing.now}")
+            mainHandler.postDelayed({ dev.pan.app.audio.Ringing.stop(this) { panLog(it) } }, 3000)
         }
         if (dev.pan.app.BuildConfig.DEBUG && intent?.action == "TEST_SPEAK") {
             val t = intent.getStringExtra("text") ?: "This is a test of the PAN voice system."

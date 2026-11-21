@@ -190,7 +190,9 @@ data class SlackPendingResponse(
     // The hub says to ask again in a second: this person is in a call or being called.
     val fast: Boolean = false,
     // This device carries its person's call and someone else is on: send and play the sound (CallAudio).
-    val voice: Boolean = false
+    val voice: Boolean = false,
+    // The person asked ΠAN to stop what rings here (audio/Ringing.kt).
+    @com.google.gson.annotations.SerializedName("stop_ringing") val stopRinging: Boolean = false
 )
 
 // Tolerant of BOTH queue shapes. Slack items fill channelId/sender/text/…;

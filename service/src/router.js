@@ -53,6 +53,8 @@ import { warmReader } from './voice-reader.js';
 import { asksForCamera } from './camera-ask.js';
 import { asksToMute } from './mute-ask.js';
 import { may, refusal } from './people.js';
+import { ringing, ringQuestion, wantsStop, stoppedWords } from './ringing.js';
+import { alone } from './alone.js';
 import { messageTurn, parseMessage } from './person-messages.js';
 
 // Recall-intent sniff — only when text matches this do we run a DB lookup on
@@ -3105,6 +3107,7 @@ export async function* routeStream(text, context = {}) {
     ...(readerProbe.pPan !== undefined ? { p_pan: readerProbe.pPan, to_top: readerProbe.top } : {}),
     ...(turnPlace ? { participation: turnPlace } : {}) });
   const _turnStart = Date.now();   // for the [routeStream] timing line
+  if (context.voice_his === false) alone.heardOther(context.device_id);
   // Someone other than the owner: their own short path, and none of what follows.
   if (context.person) { yield* personTurn(text, context, withProsody); return; }
   warmVectors();
@@ -3981,6 +3984,26 @@ answer an earlier question, and do not narrate what the context blocks mention.`
     if (standing) { yield* askAIStreamWithFallback(standingPrompt, streamOpts); return; }
     // Which path answered, for the nightly voice report (voice-report.js).
     const notePath = (p) => { try { recordTiming({ turn: context.turn_id, device: context.device_id, stage: 'path', path: p }); } catch {} };
+    // A timer or alarm rings on one of his devices (ringing.js, reported on each device's ask for
+    // notes). Only then, one yes or no to the hub model first: does he want it stopped? A yes sends
+    // the stop to every device of his that rings; a no, or no answer, goes on as any other turn.
+    // Asked to turn a ringing timer off, PAN said it could not search for that (Nov 21).
+    const ringNow = claudeQuiet ? [] : ringing.ringingFor(1);
+    if (ringNow.length) {
+      let ans = '';
+      const t0 = Date.now();
+      try {
+        const chain = [hubBig || worldModel(context.device_id), ...cloudFirst()].filter(Boolean).slice(0, 3);
+        for await (const c of askAIStreamWithFallback(ringQuestion(ringNow, safeText, historyBlock), { ...streamOpts, chain, maxTokens: 4, temperature: 0 })) ans += c;
+      } catch (e) { console.warn(`[routeStream] ringing question failed: ${e.message}`); }
+      console.log(`[routeStream] ringing on ${ringNow.map((r) => r.name || r.key).join(', ')}: stop? ${JSON.stringify(ans.slice(0, 40))} in ${Date.now() - t0} ms`);
+      if (wantsStop(ans)) {
+        if (!isTestTurn(context)) ringing.stopFor(1);
+        notePath('ring');
+        yield JSON.stringify({ intent: 'device', addressed: 0.9, action: 'stop_ringing', response: stoppedWords(ringNow) });
+        return;
+      }
+    }
     if (translatePrompt && !claudeQuiet) { notePath('translate'); yield* interpretStream(translatePrompt, localOneOff, oneOffLang?.code || null); return; }
     if (wordSearch && !claudeQuiet) { notePath('search'); yield* bigAsk(wordSearchPrompt, 'WORD', `He stopped mid-sentence: "${safeText}"`); return; }
     if (toolPrompt && !claudeQuiet) {
@@ -4322,7 +4345,11 @@ answer an earlier question, and do not narrate what the context blocks mention.`
         // something in view, else let the cloud model answer.
         const said = speakable(String(held || parsed.response || '')).trim();
         const named = saysPanName(text);
-        if ((!said || said.startsWith('[')) && named) {
+        // Also when it is his own voice and nobody else is in the talk (participation.js): no TV and
+        // no other person to answer it (alone.js). A plain question about his own day got silence
+        // while he was alone with PAN (Nov 21).
+        const aloneNow = !named && alone.aloneWithPan(context, part);
+        if ((!said || said.startsWith('[')) && (named || aloneNow)) {
           if (context.canCamera && looksVisual(text)) {
             console.log(`[routeStream] override -> camera: ${JSON.stringify(String(text).slice(0, 60))}`);
             yield { type: 'done', result: withProsody({ intent: 'query', addressed: 0.95, camera: true, response: '', importance: 0.5 }) };
@@ -4335,7 +4362,8 @@ answer an earlier question, and do not narrate what the context blocks mention.`
             'He said your name, so he is talking to you: answer him briefly, the way you would say it out loud.',
           ].filter(Boolean).join('\n\n');
           let again = '';
-          for await (const c of bigAsk(directPrompt, 'NAMED')) again += c;
+          // Not named: the model may still decide it was not for PAN ([AMBIENT]).
+          for await (const c of bigAsk(aloneNow ? directPrompt.replace('He said your name, so he is talking to you: answer him briefly, the way you would say it out loud.', 'Answer from his words alone, in one or two short spoken sentences. If he was not talking to you, reply {"intent":"ambient","addressed":0.1,"response":"[AMBIENT]"}.') : directPrompt, aloneNow ? 'WORDS_ALONE' : 'NAMED')) again += c;
           const r = (again.match(/"response"\s*:\s*"((?:[^"\\]|\\.)*)"/)?.[1] || '').replace(/\\"/g, '"').trim();
           console.log(`[routeStream] override re-asked the cloud model: ${JSON.stringify(r.slice(0, 80))}`);
           if (r && !r.startsWith('[')) parsed.response = r;

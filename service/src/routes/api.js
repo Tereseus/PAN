@@ -1,3 +1,4 @@
+import { ringing } from '../ringing.js';
 import express, { Router } from 'express';
 import { insert, all, get, run, db, logEvent, anonymize, anonymizeEventData, allScoped, getScoped, runScoped, insertScoped } from '../db.js';
 import { logEventScoped } from '../events.js';
@@ -960,7 +961,14 @@ router.get('/slack/pending', (req, res) => {
   // microphone's sound and plays the others' (call-voice.js).
   let voice = false;
   try { voice = voiceFor(person ? Number(person.id) : 1, dev); } catch {}
-  res.json({ ok: true, notifications, fast, voice });
+  // ringing: a timer or alarm goes off on this device (ringing.js). stop_ringing: the person asked
+  // PAN to stop it, so the device dismisses it now.
+  let stop_ringing = false;
+  try {
+    stop_ringing = ringing.report(person ? Number(person.id) : 1, key || dev.linkDevice,
+      { ringing: req.query.ringing === '1', name: String(req.query.name || req.headers['x-device-name'] || '') });
+  } catch {}
+  res.json({ ok: true, notifications, fast, voice, ...(stop_ringing ? { stop_ringing } : {}) });
 });
 
 // The People tab (person-messages.js): the other people on this hub with the newest message
@@ -2300,6 +2308,8 @@ router.post('/query/stream', async (req, res) => {
         since_pan_ms: Number.isFinite(req.body.since_pan_ms) ? req.body.since_pan_ms : undefined,
         // Voice ID (2026-11-12): true = his voice, false = someone else's; left out when unknown.
         wearer: person ? undefined : typeof req.body.wearer === 'boolean' ? req.body.wearer : voiceWearer,
+        // What voice ID thinks even while its gate only watches: true his, false someone else's (router.js aloneWithPan).
+        voice_his: person ? undefined : typeof req.body.voice_his === 'boolean' ? req.body.voice_his : (typeof voiceWho?.verdict === 'boolean' ? voiceWho.verdict : undefined),
         turn_id: turnId,
         heard_lang: heardLang,
       })) {

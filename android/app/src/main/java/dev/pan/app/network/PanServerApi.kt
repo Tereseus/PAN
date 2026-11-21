@@ -63,7 +63,10 @@ interface PanServerApi {
     // Draining is server-side (returned items are removed), so each is seen once.
     @GET("/api/v1/slack/pending")
     suspend fun getSlackPending(
-        @retrofit2.http.Query("device_id") deviceId: String
+        @retrofit2.http.Query("device_id") deviceId: String,
+        // A timer or alarm rings here now (audio/Ringing.kt), and this device's name for the hub to say.
+        @retrofit2.http.Query("ringing") ringing: String? = null,
+        @retrofit2.http.Query("name") name: String? = null
     ): Response<SlackPendingResponse>
 
     @POST("/api/v1/terminal/permissions/respond")
