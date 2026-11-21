@@ -57,7 +57,7 @@ const FEATURES = {
 
   // ── experiments / autonomous loops (OFF in core AND wearable) ──
   smart_steward:       ['full'],            // plain 60s steward suffices
-  benchmarks_daily:    ['full'],
+  benchmarks_daily:    'optin',             // the owner, 2026-11-21: benchmarks run when asked for, never by themselves
   personal_sync:       ['full'],            // T3 cross-node federation
 
   // ── voice-action executor — ON in wearable (north-star job 4) ──
