@@ -27,6 +27,9 @@ class PanApplication : Application() {
         // Catch uncaught exceptions and ship to PAN server before crashing
         val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            // Kept on the device for "Send a report": where it broke, no messages (LastCrash).
+            dev.pan.app.util.LastCrash.write(this, thread, throwable,
+                "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
             try {
                 logShipper.error("crash", "FATAL: ${throwable::class.simpleName}: ${throwable.message}",
                     mapOf("stack" to (throwable.stackTraceToString().take(1500)),

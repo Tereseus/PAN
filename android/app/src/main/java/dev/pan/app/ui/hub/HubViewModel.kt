@@ -1,9 +1,15 @@
 package dev.pan.app.ui.hub
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import dev.pan.app.network.PanServerClient
+import dev.pan.app.tts.PiperTtsEngine
+import dev.pan.app.tts.TtsManager
+import dev.pan.app.tts.VoicePace
+import dev.pan.app.tts.VoiceTiming
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -20,6 +26,19 @@ data class ReadLine(val label: String, val value: String, val why: String = "")
 /** `GET /api/v1/intuition/current`, as lines to show. at: when the hub last read it (ms). */
 data class IntuitionView(val at: Long, val trigger: String, val confidence: Int?, val now: List<ReadLine>, val from: List<ReadLine>, val next: List<String>, val note: String)
 
+/** A model the hub uses for every device: its settings key, what it is now, what it can be. */
+data class ModelPick(val key: String, val value: String, val choices: List<String>)
+
+/** How long this person's turns took on one device, from the hub's own record. ms. */
+data class DeviceTimes(val device: String, val turns: Int, val avgMs: Long, val medianMs: Long, val slowestMs: Long)
+
+/** `GET /api/v1/voice/picks`. */
+data class HubPicks(val hubModel: ModelPick?, val readerModel: ModelPick?, val hubAsr: String, val devices: List<DeviceTimes>,
+    val mintGpuAllowed: Boolean = false)
+
+/** This device's own side: its voice, the pace it talks at, how fast it builds lines, its ear. */
+data class DeviceVoice(val voice: String, val pace: VoicePace.Pick?, val liveSpeed: Float, val timing: VoiceTiming.Stats, val ear: String)
+
 /**
  * The hub, seen from the phone (the owner, 2026-11-18): what is running on it, and what ΠAN
  * reads about him right now. The app's own screens in place of the hub's web page. Read only.
@@ -27,7 +46,18 @@ data class IntuitionView(val at: Long, val trigger: String, val confidence: Int?
 @HiltViewModel
 class HubViewModel @Inject constructor(
     private val serverClient: PanServerClient,
+    @ApplicationContext private val context: Context,
+    private val tts: TtsManager,
 ) : ViewModel() {
+
+    /** null until the hub has answered once. */
+    private val _picks = MutableStateFlow<HubPicks?>(null)
+    val picks: StateFlow<HubPicks?> = _picks
+    /** The hub answered but has no picks list (an older hub): 404. */
+    private val _noPicks = MutableStateFlow(false)
+    val noPicks: StateFlow<Boolean> = _noPicks
+    private val _device = MutableStateFlow(deviceVoice())
+    val device: StateFlow<DeviceVoice> = _device
 
     /** null until the hub has answered once. */
     private val _services = MutableStateFlow<List<HubService>?>(null)
@@ -54,6 +84,78 @@ class HubViewModel @Inject constructor(
         }
         if (s != null && s.first == 200) _services.value = services(s.second.optJSONArray("services"))
         if (i != null && i.first == 200) i.second.optJSONObject("snapshot")?.let { _intuition.value = intuition(it) }
+        loadPicks()
+    }
+
+    private suspend fun loadPicks() {
+        _device.value = deviceVoice()
+        val p = serverClient.hubJson("GET", "/api/v1/voice/picks") ?: return
+        _noPicks.value = p.first == 404
+        if (p.first == 200) _picks.value = picks(p.second)
+    }
+
+    /** Change a model the hub uses, for every device, then read the list again. */
+    fun setHubModel(key: String, value: String) {
+        viewModelScope.launch {
+            val r = serverClient.hubJson("PUT", "/api/v1/settings", JSONObject().put(key, value))
+            _trouble.value = when {
+                r == null -> "ΠAN could not be reached."
+                r.first == 403 -> "Only the owner's devices can change this."
+                r.first !in 200..299 -> "The hub did not take it (${r.first})."
+                else -> ""
+            }
+            loadPicks()
+        }
+    }
+
+    /** His switch: ΠAN may take the Mint's graphics card when it needs it (hub setting pan_mint_gpu_allowed). */
+    fun setMintGpu(allowed: Boolean) {
+        viewModelScope.launch {
+            val r = serverClient.hubJson("PUT", "/api/v1/settings", JSONObject().put("pan_mint_gpu_allowed", allowed))
+            _trouble.value = when {
+                r == null -> "ΠAN could not be reached."
+                r.first == 403 -> "Only the owner's devices can change this."
+                r.first !in 200..299 -> "The hub did not take it (${r.first})."
+                else -> ""
+            }
+            loadPicks()
+        }
+    }
+
+    /** Voice pace on this device: null speed = Auto. Saved; the next line uses it. */
+    fun setPace(speed: Float?) {
+        VoicePace.save(context, speed)
+        _device.value = deviceVoice()
+    }
+
+    private fun deviceVoice(): DeviceVoice {
+        val q = tts.voiceQuality
+        val voice = PiperTtsEngine.VOICES[q]?.takeIf { tts.piper.isFullyReady(q) }
+        // The ear the service starts (PanForegroundService.sttEngine): the same saved choice.
+        val ear = if ((context.getSharedPreferences("pan_stt_prefs", Context.MODE_PRIVATE).getString("engine", "sherpa") ?: "sherpa") == "sherpa")
+            "Zipformer (sherpa-onnx), on this device" else "Android speech recognition"
+        return DeviceVoice(
+            voice = voice?.let { if (it.id == "supertonic3") "Supertonic 3" else it.name } ?: "The Android voice",
+            pace = voice?.let { VoicePace.current(context, it) },
+            liveSpeed = tts.piper.speedOverride,
+            timing = VoiceTiming.stats(context),
+            ear = ear,
+        )
+    }
+
+    private fun picks(o: JSONObject): HubPicks {
+        val choices = o.optJSONObject("choices")
+        fun list(key: String): List<String> = choices?.optJSONArray(key)?.let { a -> (0 until a.length()).map { a.optString(it) }.filter { it.isNotBlank() } } ?: emptyList()
+        fun pick(name: String): ModelPick? = o.optJSONObject(name)?.let {
+            val key = it.optString("key")
+            if (key.isBlank()) null else ModelPick(key, said(it, "value"), list(key))
+        }
+        val devices = o.optJSONArray("devices")?.let { a ->
+            (0 until a.length()).mapNotNull { a.optJSONObject(it) }.map {
+                DeviceTimes(it.optString("device"), it.optInt("turns"), it.optLong("avg_total_ms"), it.optLong("median_total_ms"), it.optLong("slowest_ms"))
+            }
+        } ?: emptyList()
+        return HubPicks(pick("hub_model"), pick("reader_model"), said(o, "hub_asr"), devices, o.optBoolean("mint_gpu_allowed", false))
     }
 
     private fun services(list: JSONArray?): List<HubService> {

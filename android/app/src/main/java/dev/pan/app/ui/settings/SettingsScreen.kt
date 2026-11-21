@@ -39,7 +39,7 @@ private val SETTINGS_PAGES = listOf(
     SettingsPage("voice", "Voice and sounds", "How ΠAN talks, where it reads reminders out, tones and vibration", Icons.Default.Notifications),
     SettingsPage("accessories", "Accessories", "Glasses, headphones, a watch", Icons.Default.Star),
     SettingsPage("privacy", "Privacy", "Incognito, the lock on Memory, what each device may use", Icons.Default.Lock),
-    SettingsPage("about", "Updates and about", "This version, new versions, credits", Icons.Default.Info),
+    SettingsPage("about", "Updates and about", "This version, new versions, credits, a report", Icons.Default.Info),
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -512,6 +512,29 @@ fun SettingsScreen(
             Text("\u03A0AN " + dev.pan.app.BuildConfig.VERSION_NAME, style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             Credits()
+            // Send a report: for everyone. The whole text is shown before anything leaves.
+            var report by remember { mutableStateOf<String?>(null) }
+            OutlinedButton(onClick = { report = PanReport.build(context) }, modifier = Modifier.fillMaxWidth()) { Text("Send a report") }
+            Text("Shows what it would send first: this app's version, the phone model, how fast it builds the voice, and the last crash. Nothing you said.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            report?.let { text ->
+                AlertDialog(
+                    onDismissRequest = { report = null },
+                    title = { Text("The report") },
+                    text = {
+                        Text(text, style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState()))
+                    },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            runCatching { PanReport.share(context, text) }
+                                .onFailure { scope.launch { snackbarHostState.showSnackbar("Could not open the share sheet") } }
+                            report = null
+                        }) { Text("Send") }
+                    },
+                    dismissButton = { TextButton(onClick = { report = null }) { Text("Cancel") } },
+                )
+            }
             SettingToggle(
                 title = "Developer options",
                 description = "Tools for building PAN: server address, backup route, voice picker, service controls",

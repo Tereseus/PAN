@@ -4,4 +4,6 @@
     <!-- Self-update: APK downloads land in cacheDir/updates/ and are exposed
          to the system package installer via FileProvider. -->
     <cache-path name="updates" path="updates/" />
+    <!-- "Send a report" (Settings): cacheDir/reports/pan-report.txt to the share sheet. -->
+    <cache-path name="reports" path="reports/" />
 </paths>

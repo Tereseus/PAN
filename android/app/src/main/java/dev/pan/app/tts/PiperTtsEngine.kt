@@ -247,6 +247,33 @@ class PiperTtsEngine(private val context: Context) {
         }
 
     /**
+     * A Supertonic engine for [voice]. From inside the app when the voice is there (read straight
+     * out of the app file through the asset manager, no copy on disk), else from the copy an older
+     * build downloaded. The bench opens its own the same way: it used to read only the download,
+     * which is not there since 0.5.38, and failed to make an engine at all.
+     */
+    private fun openSupertonic(voice: VoiceModel, threads: Int, provider: String): OfflineTts {
+        val voiceDir = File(modelsDir, voice.id)
+        val inApp = isBundled(voice.id)
+        val at = { name: String -> if (inApp) "$BUNDLED/${voice.id}/$name" else File(voiceDir, name).absolutePath }
+        val modelConfig = OfflineTtsModelConfig(
+            supertonic = OfflineTtsSupertonicModelConfig(
+                textEncoder = at("text_encoder.int8.onnx"),
+                durationPredictor = at("duration_predictor.int8.onnx"),
+                vectorEstimator = at("vector_estimator.int8.onnx"),
+                vocoder = at("vocoder.int8.onnx"),
+                voiceStyle = at("voice.bin"),
+                ttsJson = at("tts.json"),
+                unicodeIndexer = at("unicode_indexer.bin")
+            ),
+            numThreads = threads,
+            debug = false,
+            provider = provider
+        )
+        return OfflineTts(assetManager = if (inApp) context.assets else null, config = OfflineTtsConfig(model = modelConfig))
+    }
+
+    /**
      * Load a voice. ONLY call this when isFullyReady(quality) == true.
      * Will SIGSEGV if files are missing.
      */
@@ -264,29 +291,11 @@ class PiperTtsEngine(private val context: Context) {
         offlineTts = null
 
         val voiceDir = File(modelsDir, voice.id)
-        // From inside the app when the voice is there (read straight out of the app file, no copy
-        // on disk), else from the copy an older build downloaded.
         val inApp = isBundled(quality)
-        val at = { name: String -> if (inApp) "$BUNDLED/${voice.id}/$name" else File(voiceDir, name).absolutePath }
 
         return try {
-            val modelConfig = OfflineTtsModelConfig(
-                supertonic = OfflineTtsSupertonicModelConfig(
-                    textEncoder = at("text_encoder.int8.onnx"),
-                    durationPredictor = at("duration_predictor.int8.onnx"),
-                    vectorEstimator = at("vector_estimator.int8.onnx"),
-                    vocoder = at("vocoder.int8.onnx"),
-                    voiceStyle = at("voice.bin"),
-                    ttsJson = at("tts.json"),
-                    unicodeIndexer = at("unicode_indexer.bin")
-                ),
-                numThreads = voice.numThreads,
-                debug = false,
-                provider = "cpu"
-            )
-            val config = OfflineTtsConfig(model = modelConfig)
             val began = SystemClock.elapsedRealtime()
-            offlineTts = OfflineTts(assetManager = if (inApp) context.assets else null, config = config)
+            offlineTts = openSupertonic(voice, voice.numThreads, "cpu")
             currentVoice = voice
             Log.i(TAG, "Voice loaded: ${voice.name}, sampleRate=${offlineTts?.sampleRate()}, from ${if (inApp) "the app" else "a download"} in ${SystemClock.elapsedRealtime() - began} ms")
             // The copy an older build downloaded is not needed any more: 142 MB back.
@@ -341,7 +350,7 @@ class PiperTtsEngine(private val context: Context) {
         scope.launch {
             genLock.lock()
             try {
-                withContext(Dispatchers.IO) { synthesize(tts, "Hello, how are you today?", "en") }
+                withContext(Dispatchers.IO) { synthesize(tts, "Hello, how are you today?", "en", measure = false) }
             } finally {
                 genLock.unlock()
             }
@@ -362,7 +371,7 @@ class PiperTtsEngine(private val context: Context) {
         scope.launch {
             genLock.lock()
             try {
-                val a = withContext(Dispatchers.IO) { synthesize(tts, "Mm-hm.", "en") }
+                val a = withContext(Dispatchers.IO) { synthesize(tts, "Mm-hm.", "en", measure = false) }
                 val x = trimQuiet(a.samples, a.sampleRate)
                 var peak = 0f
                 for (s in x) { val v = abs(s); if (v > peak) peak = v }
@@ -498,22 +507,11 @@ class PiperTtsEngine(private val context: Context) {
      */
     fun benchSupertonic(threads: List<Int>, steps: List<Int>, provider: String, reps: Int) {
         val voice = currentVoice ?: return
-        val dir = File(modelsDir, voice.id)
         val texts = listOf("Paris.", "It depends on how you look at it,",
             "The panel is 0.8 mm, so the cover glass decides how thick it gets.")
         for (n in threads) {
             val engine = try {
-                OfflineTts(assetManager = null, config = OfflineTtsConfig(model = OfflineTtsModelConfig(
-                    supertonic = OfflineTtsSupertonicModelConfig(
-                        textEncoder = File(dir, "text_encoder.int8.onnx").absolutePath,
-                        durationPredictor = File(dir, "duration_predictor.int8.onnx").absolutePath,
-                        vectorEstimator = File(dir, "vector_estimator.int8.onnx").absolutePath,
-                        vocoder = File(dir, "vocoder.int8.onnx").absolutePath,
-                        voiceStyle = File(dir, "voice.bin").absolutePath,
-                        ttsJson = File(dir, "tts.json").absolutePath,
-                        unicodeIndexer = File(dir, "unicode_indexer.bin").absolutePath
-                    ),
-                    numThreads = n, debug = false, provider = provider)))
+                openSupertonic(voice, n, provider)
             } catch (e: Exception) {
                 Log.e(TAG, "BENCH provider=$provider threads=$n failed: ${e.message}")
                 continue
@@ -522,7 +520,7 @@ class PiperTtsEngine(private val context: Context) {
                 val ms = (0..reps).map {
                     CpuBoost.burst(context)
                     val t0 = SystemClock.elapsedRealtime()
-                    engine.generateWithConfig(t, GenerationConfig(silenceScale = silenceScale, speed = voice.speed, sid = voice.sid, numSteps = s))
+                    engine.generateWithConfig(t, GenerationConfig(silenceScale = silenceScale, speed = Quicken.plan(voice.speed).first, sid = voice.sid, numSteps = s))
                     (SystemClock.elapsedRealtime() - t0).also { CpuBoost.done(it) }
                 }.drop(1).sorted()
                 Log.i(TAG, "BENCH provider=$provider threads=$n steps=$s chars=${t.length} median=${ms[ms.size / 2]} min=${ms.first()} max=${ms.last()}")
@@ -532,7 +530,9 @@ class PiperTtsEngine(private val context: Context) {
         Log.i(TAG, "BENCH done")
     }
 
-    private fun synthesize(tts: OfflineTts, text: String, lang: String? = null, lineSid: Int? = null): GeneratedAudio {
+    // [measure] false for lines nobody hears that are not like the rest: the warm-up line (the first
+    // build takes far longer) and the "mm-hm".
+    private fun synthesize(tts: OfflineTts, text: String, lang: String? = null, lineSid: Int? = null, measure: Boolean = true): GeneratedAudio {
         val cleaned = text
             .replace(Regex("\\*\\*(.+?)\\*\\*"), "$1")
             .replace(Regex("\\*(.+?)\\*"), "$1")
@@ -561,30 +561,50 @@ class PiperTtsEngine(private val context: Context) {
         // because Supertonic rushes kanji: its 1.0 is 30% faster than the Android voice. At 0.8 it
         // is that voice's pace, and 1% (Android voice 2.8%), for about 10% more time to build
         // (evals/ears/voice_readback.py, 2026-11-06).
+        // The saved pace (Auto or by hand, VoicePace) sets plain lines; TEST_TTS's live override
+        // wins over everything. A short line is never said quicker than 1.0, nor quicker than the
+        // pace picked.
+        val pace = voice?.let { VoicePace.current(context, it) }
         val speed = when {
             speedOverride > 0f -> speedOverride
             lang == "ja" -> 0.8f
-            lang != null || short -> 1.0f
-            else -> voice?.speed ?: 1.0f
+            lang != null -> 1.0f
+            short -> minOf(1.0f, pace?.speed ?: 1.0f)
+            else -> pace?.speed ?: 1.0f
         }
+        val steps = if (supertonicSteps > 0) supertonicSteps else pace?.steps ?: voice?.steps ?: 0
         // Asked for more than its own pace, Supertonic drops the ends of clauses. It builds at its
         // own pace and the samples are shortened afterwards (Quicken, with the numbers).
         val (build, extra) = if (voice?.kind == "supertonic") Quicken.plan(speed) else speed to 1f
         val made: GeneratedAudio = if (voice?.kind == "supertonic") {
             tts.generateWithConfig(spoken, GenerationConfig(silenceScale = silenceScale, speed = build,
-                sid = lineSid ?: voice.sid, numSteps = if (supertonicSteps > 0) supertonicSteps else voice.steps,
+                sid = lineSid ?: voice.sid, numSteps = steps,
                 extra = if (lang != null) mapOf("lang" to lang) else emptyMap()))
         } else {
             tts.generate(text = spoken, sid = voice?.sid ?: 0, speed = speed)
         }
         val builtMs = SystemClock.elapsedRealtime() - genStart
-        val audio = if (extra > 1f) GeneratedAudio(Quicken.faster(trimQuiet(made.samples, made.sampleRate), made.sampleRate, extra), made.sampleRate)
-                    else made
+        // Supertonic's quiet either side is cut here (speak() cuts again, which changes nothing),
+        // so the length measured below is the sound heard.
+        val audio = when {
+            voice?.kind != "supertonic" -> made
+            extra > 1f -> GeneratedAudio(Quicken.faster(trimQuiet(made.samples, made.sampleRate), made.sampleRate, extra), made.sampleRate)
+            else -> GeneratedAudio(trimQuiet(made.samples, made.sampleRate), made.sampleRate)
+        }
         val genMs = SystemClock.elapsedRealtime() - genStart
         if (extra > 1f) Log.i(TAG, "built at $build in $builtMs ms, made ${extra}x quicker in ${genMs - builtMs} ms (${made.samples.size} to ${audio.samples.size} samples)")
         CpuBoost.done(genMs)
         VoiceEvents.emit("tts_gen_end", "ms" to genMs,
             "samples" to audio.samples.size, "rate" to audio.sampleRate)
+        if (measure && voice?.kind == "supertonic") {
+            val audioMs = VoiceTiming.audioMs(audio.samples.size, audio.sampleRate)
+            runCatching { VoiceTiming.record(context, genMs, audioMs) }
+            // One line per built line, for a logcat capture: build ms (all of it, and the model's
+            // part), how long it sounds, and the pace it was built at.
+            VoiceEvents.emit("tts_timing", "build_ms" to genMs, "model_ms" to builtMs, "audio_ms" to audioMs,
+                "speed" to speed, "steps" to steps, "quicken" to extra, "auto" to (pace?.auto ?: true),
+                "chars" to spoken.length)
+        }
         return audio
     }
 

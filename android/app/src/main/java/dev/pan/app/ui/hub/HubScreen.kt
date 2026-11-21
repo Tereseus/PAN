@@ -63,6 +63,9 @@ fun HubScreen(onBack: () -> Unit, viewModel: HubViewModel = hiltViewModel()) {
     val intuition by viewModel.intuition.collectAsState()
     val trouble by viewModel.trouble.collectAsState()
     val loading by viewModel.loading.collectAsState()
+    val picks by viewModel.picks.collectAsState()
+    val noPicks by viewModel.noPicks.collectAsState()
+    val device by viewModel.device.collectAsState()
     var tab by rememberSaveable { mutableIntStateOf(0) }
 
     BackHandler { onBack() }
@@ -87,16 +90,21 @@ fun HubScreen(onBack: () -> Unit, viewModel: HubViewModel = hiltViewModel()) {
             TabRow(selectedTabIndex = tab) {
                 Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("Services") })
                 Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("Intuition") })
+                Tab(selected = tab == 2, onClick = { tab = 2 }, text = { Text("Models") })
             }
             if (trouble.isNotEmpty()) Text(trouble, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp))
-            if (tab == 0) ServicesPart(services) else IntuitionPart(intuition)
+            when (tab) {
+                0 -> ServicesPart(services)
+                1 -> IntuitionPart(intuition)
+                else -> ModelsPart(picks, noPicks, device, viewModel::setHubModel, viewModel::setPace, viewModel::setMintGpu)
+            }
         }
     }
 }
 
 @Composable
-private fun Heading(text: String) {
+internal fun Heading(text: String) {
     Text(text, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.primary,
         modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 18.dp, bottom = 6.dp))
 }
