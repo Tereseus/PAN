@@ -2350,15 +2350,16 @@ router.post('/query/stream', async (req, res) => {
           // His notes follow him to the device he is talking to PAN on (phone-notes.js).
           if (!bench && !person && String(event.result?.response || '').trim() && !['ambient', 'cancelled'].includes(event.result?.intent)) noteOwnerSpokeOn(deviceName);
           // The situational state program's turn book: what it saw, what PAN did; the next
-          // turn labels this one (intuition/turn-book.js).
-          if (!bench && !person) {
+          // turn labels this one (intuition/turn-book.js). Not from a test device: its test lines
+          // ("what is seven times eight zebrafinch") were labeling PAN as if he had said them (Nov 22).
+          if (!bench && !person && !voiceTestDevice(realId)) {
             const r = event.result || {};
             const said = String(r.response || '').trim();
             import('../intuition/turn-book.js').then(({ noteTurn }) => noteTurn({
               orgId: req.org_id || 'org_personal', text, history: convoHistory, lang: heardLang,
               seen: { place: r.participation || null, since_pan_ms: Number.isFinite(req.body.since_pan_ms) ? req.body.since_pan_ms : null,
                 voice: voiceWho?.verdict === true ? 'his' : voiceWho?.verdict === false ? 'other' : null,
-                likeness: voiceWho?.likeness ?? null, p_pan: r.p_pan ?? null, named_other: r.reason === 'named_other' },
+                likeness: voiceWho?.likeness ?? null, p_pan: r.p_pan ?? null, named_other: r.reason === 'named_other', device: realId || null },
               did: { spoke: !['ambient', 'cancelled'].includes(r.intent) && !!said && said.toUpperCase() !== '[AMBIENT]',
                 reason: r.reason || null, held: !!r.hold_ms, response: said.slice(0, 300) },
             })).catch(() => {});

@@ -649,6 +649,25 @@ characters of the reply). The next turn labels the one before it:
 
 A turn in someone else's voice never labels anything. Turns older than 180 days are dropped.
 
+**Labels v2 (2026-11-22, live on the hub, Craft 49).** On his first 1,390 turns the table above
+called 123 turns `missed`, but 76 came while he dictated or music played and most of the rest were
+the same words heard twice or a song's chorus. Only "shh" counted as PAN talking over him (6
+turns). Now:
+
+| Label | PAN did | Then he | Window |
+|---|---|---|---|
+| `missed` | stayed quiet | called it ("hello?", "PAN?"), or said it again WITH the name added | 25 s |
+| `quiet_ok` | stayed quiet, and its own weighing decided (not music or dictating) | went on with the talk | 25 s |
+| `intruded` | spoke | said "not now"/"shh"; went on dictating (45 s); talked over it (next line under 0.4 s after PAN's voice stopped, laughing aside); or the line opened with another assistant ("Okay Google", "A google ...") | 15 to 45 s |
+| `wrong` | spoke, rightly | said the answer was wrong ("that's wrong") | 15 s |
+| `spoke_ok` | spoke | followed up on the answer | 45 s |
+
+A plain repeat gets no label. Test devices (`voice_test_devices`) stay out of the book, and each
+turn now keeps its device. `relabelAll()` redoes every stored label with the current rules; run
+once on the hub: 6 missed, 123 quiet_ok, 16 intruded, 1 wrong, 53 spoke_ok, 1,190 unlabeled.
+Most of PAN's replies get no clear reaction, so a checked set (turns judged one by one) is the
+scoreboard for `docs/CONVERSATION-CALCULUS.md`; it stays on his machines.
+
 ### 16.3 The nightly learner (`intuition/situation-learn.js`, steward service `situation-learner`)
 
 Checks every hour, runs once a day. It:

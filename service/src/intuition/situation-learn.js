@@ -21,7 +21,7 @@ const MIN_HELD = 20;
 const MIN_GAIN = 0.02;
 const TALK_MS = 45_000;
 const GRID = { shortQuestionWords: [3, 4, 5, 6, 7, 8, 10], longLineWords: [8, 10, 12, 15, 20, 25, 1000] };
-const SHOULD_SPEAK = { missed: true, spoke_ok: true, intruded: false, quiet_ok: false };
+const SHOULD_SPEAK = { missed: true, spoke_ok: true, wrong: true, intruded: false, quiet_ok: false };
 
 export function currentParams() {
   try {
