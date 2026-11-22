@@ -83,6 +83,9 @@ export function ensureThreadRelaySchema() {
   try { db.exec(`ALTER TABLE thread_relay_hosts ADD COLUMN owner_user_id INTEGER`); } catch {}
   try { db.exec(`ALTER TABLE thread_relay_hosts ADD COLUMN link_device_id TEXT`); } catch {}
   try { db.exec(`ALTER TABLE thread_relay_jobs ADD COLUMN asked_by INTEGER`); } catch {}
+  // not_before: a voice send waits a few seconds before the relay may take it, so a longer
+  // version of the same line (he is still talking) replaces it instead of going as a second job.
+  try { db.exec(`ALTER TABLE thread_relay_jobs ADD COLUMN not_before INTEGER`); } catch {}
   _schemaReady = true;
 }
 
@@ -470,6 +473,94 @@ const replyWaiters = new Map();   // job id → resolve (inline voice waits)
 
 function newId() { return 'tr_' + randomBytes(5).toString('hex'); }
 
+// ── One send per thing he says ───────────────────────────────────────────────
+// While he talks, the phone sends the line again each time it grows, and the hub's own recogniser
+// can send its own wording too. One thought went to the PAN thread seven times in 70 s (Nov 22).
+// A send waits HOLD_MS before the relay may take it; a later line from the same device to the same
+// thread within SAME_TALK_MS that holds most of the earlier line's words is the same talk: it
+// replaces the waiting send, or, if that one already went, is not sent again unless it adds a lot.
+export const HOLD_MS = 8_000;
+export const SAME_TALK_MS = 90_000;
+const MORE_WORDS = 8;
+const talkWords = (t) => new Set((String(t || '').toLowerCase().match(/[\p{L}\p{N}']+/gu) || []).filter(w => w.length > 2));
+
+/** True if `later` is the same talk as `earlier`: half or more of the earlier line's words are in it. */
+export function sameTalk(earlier, later) {
+  const a = talkWords(earlier), b = talkWords(later);
+  if (a.size < 3) return false;
+  let n = 0;
+  for (const w of a) if (b.has(w)) n++;
+  return n / a.size >= 0.5;
+}
+
+/** How many words the later line has that the earlier did not. */
+export function newWords(earlier, later) {
+  const a = talkWords(earlier);
+  let n = 0;
+  for (const w of talkWords(later)) if (!a.has(w)) n++;
+  return n;
+}
+
+/**
+ * What to do with a send, given the last send from this device to this thread (or null):
+ * 'new' (a job of its own), 'merge' (replace the waiting one's words), 'skip' (already sent,
+ * nothing much added) or 'again' (already sent, but he went on with a lot more: send the whole).
+ */
+export function sendPlan(prev, utterance, now = Date.now()) {
+  if (!prev || prev.kind === 'status' || now - Number(prev.created_at || 0) > SAME_TALK_MS) return 'new';
+  if (!sameTalk(prev.utterance || prev.text, utterance)) return 'new';
+  if (prev.status === 'queued') return 'merge';
+  return newWords(prev.utterance || prev.text, utterance) >= MORE_WORDS ? 'again' : 'skip';
+}
+
+function wakeHost(host) {
+  const ws = claimWaiters.get(host);
+  if (ws) for (const r of [...ws]) r();
+}
+
+/** enqueueJob for a voice send, one per thing he says (sendPlan). Returns { job, plan }. */
+export function sendOnce(args, now = Date.now()) {
+  ensureThreadRelaySchema();
+  if (args.kind === 'status' || !args.device_id) return { job: enqueueJob(args), plan: 'new' };
+  const said = args.utterance || args.text;
+  const prev = get(`SELECT * FROM thread_relay_jobs WHERE device_id = :d AND session_id = :s AND kind = 'send' AND created_at >= :since
+                    ORDER BY created_at DESC LIMIT 1`, { ':d': args.device_id, ':s': args.thread.session_id, ':since': now - SAME_TALK_MS });
+  const plan = sendPlan(prev, said, now);
+  if (plan === 'merge') {
+    const longer = String(said).length >= String(prev.utterance || prev.text || '').length;
+    run(`UPDATE thread_relay_jobs SET text = :x, utterance = :u, not_before = :nb WHERE id = :id AND status = 'queued'`, {
+      ':x': longer ? String(args.text).slice(0, 4000) : prev.text, ':u': longer ? String(said).slice(0, 4000) : prev.utterance,
+      ':nb': now + HOLD_MS, ':id': prev.id,
+    });
+    setTimeout(() => wakeHost(prev.host), HOLD_MS + 50).unref?.();
+    return { job: getJob(prev.id), plan };
+  }
+  if (plan === 'skip') return { job: prev, plan };
+  const text = plan === 'again' ? `(He kept talking after the part you already got; this is all of it.) ${args.text}` : args.text;
+  return { job: enqueueJob({ ...args, text, hold_ms: HOLD_MS }), plan };
+}
+
+// ── Named in passing: is he asking to send, or only talking about it? ────────
+// "the PAN thread" anywhere in a line used to send the whole line. On Nov 22 he described the
+// idea of sending to the PAN thread, and his description went there. The owner, same day: a trigger
+// phrase is fine as long as it reads the whole thing to decide. One yes or no to the hub model.
+export function sendQuestion(title, heard) {
+  const name = shortTitle(title);
+  const latin = /[Ͱ-Ͽ]/.test(name) ? ` (he says it "${name.replace(/[ΠΠπ]/g, 'P').replace(/[ΑΆα]/g, 'a').replace(/[Νν]/g, 'n')}", and the mic may mishear it)` : ' (the mic may mishear the name)';
+  return [
+    `He has an assistant thread called "${name}"${latin} that PAN can pass messages to.`,
+    `Mic heard: "${String(heard || '').slice(0, 1200)}"`,
+    // The first wording said Yes to a line quoting the phrase as an example (14 made up lines: 10
+    // right). This one: 14 of 14, and 8 of 8 of his real relay lines that name the thread mid-line (Nov 22).
+    'Does he want PAN to send a message to that thread right now, as an instruction? Yes only if he is giving that instruction now. No if he is talking ABOUT sending to the thread: quoting the words as an example of what he says, describing how it works or should work, wondering or complaining about it, or asking whether it was sent. Reply with one word, Yes or No.',
+  ].join('\n\n');
+}
+
+/** The model's answer to sendQuestion: only a plain yes sends. */
+export function wantsSend(answer) {
+  return /^\W*yes(?![a-z])/i.test(String(answer || ''));
+}
+
 export function getJob(id) {
   ensureThreadRelaySchema();
   return get(`SELECT * FROM thread_relay_jobs WHERE id = :id`, { ':id': id }) || null;
@@ -502,27 +593,29 @@ export function composeMessage(job, { fromOwner = false } = {}) {
     + `Handle it as if they typed it here. Your final message is read aloud to them, so open it with a short plain spoken answer (one to three sentences, no markdown); details can follow below that.`;
 }
 
-export function enqueueJob({ thread, text, utterance = null, source = null, device_id = null, kind = 'send', convo = null, asked_by = null }) {
+export function enqueueJob({ thread, text, utterance = null, source = null, device_id = null, kind = 'send', convo = null, asked_by = null, hold_ms = 0 }) {
   ensureThreadRelaySchema();
   const job = {
     id: newId(), host: thread.host, session_id: thread.session_id, title: thread.title,
     text: String(text).slice(0, 4000), utterance: utterance ? String(utterance).slice(0, 4000) : null,
     status: 'queued', source, device_id, created_at: Date.now(), kind: kind === 'status' ? 'status' : 'send',
     convo: convo ? String(convo).slice(-3000) : null, asked_by: asked_by == null ? null : Number(asked_by),
+    not_before: hold_ms > 0 ? Date.now() + hold_ms : null,
   };
-  run(`INSERT INTO thread_relay_jobs (id, host, session_id, title, text, utterance, status, source, device_id, created_at, kind, convo, asked_by)
-       VALUES (:id, :h, :s, :t, :x, :u, 'queued', :src, :d, :c, :k, :cv, :ab)`, {
-    ':ab': job.asked_by,
+  run(`INSERT INTO thread_relay_jobs (id, host, session_id, title, text, utterance, status, source, device_id, created_at, kind, convo, asked_by, not_before)
+       VALUES (:id, :h, :s, :t, :x, :u, 'queued', :src, :d, :c, :k, :cv, :ab, :nb)`, {
+    ':ab': job.asked_by, ':nb': job.not_before,
     ':id': job.id, ':h': job.host, ':s': job.session_id, ':t': job.title, ':x': job.text,
     ':u': job.utterance, ':src': source, ':d': device_id, ':c': job.created_at, ':k': job.kind, ':cv': job.convo,
   });
-  const ws = claimWaiters.get(job.host);
-  if (ws) for (const r of [...ws]) r();
+  wakeHost(job.host);
+  if (hold_ms > 0) setTimeout(() => wakeHost(job.host), hold_ms + 50).unref?.();
   return job;
 }
 
 function claimOne(host) {
-  const row = get(`SELECT * FROM thread_relay_jobs WHERE host = :h AND status = 'queued' ORDER BY created_at LIMIT 1`, { ':h': host });
+  const row = get(`SELECT * FROM thread_relay_jobs WHERE host = :h AND status = 'queued' AND (not_before IS NULL OR not_before <= :now)
+                   ORDER BY created_at LIMIT 1`, { ':h': host, ':now': Date.now() });
   if (!row) return null;
   const res = run(`UPDATE thread_relay_jobs SET status = 'claimed', claimed_at = :t WHERE id = :id AND status = 'queued'`,
     { ':t': Date.now(), ':id': row.id });
@@ -914,7 +1007,7 @@ function parseFor(utterance, person, st) {
   if (computer) return computer;
 
   const named = namedAnywhere(text, threads);
-  if (named?.ok) return { kind: 'send', thread: named.thread, text: text.replace(new RegExp(LEAD, 'i'), '').trim() };
+  if (named?.ok) return { kind: 'send', thread: named.thread, text: text.replace(new RegExp(LEAD, 'i'), '').trim(), via: 'anywhere' };
   if (named) {
     st.pending = { threads: offered(named.candidates, threads), text, utterance: text, at: Date.now() };
     return { kind: 'ambiguous', candidates: named.candidates };
@@ -991,8 +1084,14 @@ export async function* handleThreadCommand(cmd, utterance, context = {}, inlineW
   const alive = relayStatus().find(r => r.host === cmd.thread.host)?.alive;
   const said = cmd.utterance || utterance;
   const convo = !cmd.status && REFERS_BACK.test(cmd.text) ? recentConvo(context.conversation_history, said, cmd.text) : null;
-  const job = enqueueJob({ thread: cmd.thread, text: cmd.text, utterance: said, source: context.source || null, device_id: context.device_id || null, kind: cmd.status ? 'status' : 'send', convo,
+  const { job, plan } = sendOnce({ thread: cmd.thread, text: cmd.text, utterance: said, source: context.source || null, device_id: context.device_id || null, kind: cmd.status ? 'status' : 'send', convo,
     asked_by: context.person ? Number(context.person.id) : null });
+  if (plan === 'merge' || plan === 'skip') {
+    // The same talk, still growing: the send already made carries it. Say nothing new.
+    console.log(`[thread-relay] same talk as ${job.id} (${plan}), no second send`);
+    yield done('', { thread_job: job.id, thread: cmd.thread.title, same_talk: plan });
+    return;
+  }
   const ack = !alive ? `Queued for ${name}, but its relay looks offline.` : cmd.status ? `Checking.` : convo ? `Sent to ${name}, with what we were just talking about.` : `Sent to ${name}.`;
   yield { type: 'chunk', text: ack };
 

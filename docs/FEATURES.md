@@ -1487,6 +1487,15 @@ children can have adult-sounding voices and vice versa).
   "tell it ..." (last thread, 15 min), "which threads are open", "what did the X
   thread say", and a short answer to "Which thread, A or B?" (90 s). Benchmark and
   regression sources get the parse only and never touch a thread.
+- **Named in passing (Nov 22):** a thread named in the middle of a line (not "tell the X
+  thread ..." at the start) is sent only if the hub model (`voice_world_model`) says Yes to
+  `sendQuestion`: is he giving that instruction now, or only talking about sending to the
+  thread? A describing line ("when I say send it to the pan thread, how would it know?") stays PAN's.
+- **One send per thing he says (Nov 22):** a voice send waits `HOLD_MS` (8 s) before the
+  relay may take it (`not_before`). A longer version of the same line from the same device
+  to the same thread within 90 s replaces the waiting send (`sendOnce` / `sendPlan`); once
+  sent, it goes again only if he added 8 or more new words. The later turns say nothing.
+  Before, one growing line went to the PAN thread seven times in 70 s.
 - **Status asks:** "what is the X thread doing", "is the X thread done", "check on the
   X thread" queue a job with `kind:'status'`. `relay.js wait` answers it itself from
   the transcript tail (working or idle, current step, last thing it said) and keeps

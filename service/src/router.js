@@ -2479,6 +2479,21 @@ async function* _threadRelayFastPath(text, context) {
   let cmd;
   try { cmd = tr.parseThreadCommand(text); } catch (e) { console.warn('[PAN Router] thread parse failed:', e.message); return; }
   if (!cmd) return;
+  // A thread named in the middle of a line: the hub model reads the whole line and says whether he
+  // is asking to send, or only talking about it (thread-relay.js sendQuestion, Nov 22). Runs on
+  // bench turns too, so a replay of his lines shows the decision.
+  if (cmd.kind === 'send' && cmd.via === 'anywhere') {
+    const m = worldModel(context?.device_id);
+    if (m) {
+      let ans = '';
+      const t0 = Date.now();
+      try {
+        for await (const c of askAIStreamWithFallback(tr.sendQuestion(cmd.thread.title, text), { callerClass: 'voice', caller: 'router', maxTokens: 4, _skipAnonymize: true, chain: [m], temperature: 0 })) ans += c;
+      } catch (e) { console.warn(`[PAN Router] thread send question failed: ${e.message}`); ans = 'yes'; }
+      console.log(`[PAN Router] "${tr.shortTitle(cmd.thread.title)}" named in passing: send? ${JSON.stringify(ans.slice(0, 20))} in ${Date.now() - t0} ms`);
+      if (!tr.wantsSend(ans)) return;
+    }
+  }
   if (isTestTurn(context)) {
     const response = `[benchmark: thread relay parsed ${cmd.kind}${cmd.thread ? ' -> ' + cmd.thread.title : ''} — no thread touched]`;
     yield { type: 'chunk', text: response };
