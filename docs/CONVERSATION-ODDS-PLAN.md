@@ -189,3 +189,49 @@ Next: label the turns the fit cannot see (music, dictation, the newest days), th
 situation terms only earn a place in `p_for_pan` when they beat the odds alone on days left out.
 Files (local, his lines): scratchpad `step1_prompts.py`, `step1_run.py` (Mint), `step1_odds.jsonl`,
 `step1_fit.py`, `step1_weights.json`.
+
+## Step 1, second pass: every turn judged, and surprise (2026-11-22)
+
+All 1,390 turns are now judged one by one (the 250 checked turns plus 1,140 more, same rules; saved
+on the hub as `situation-dataset/checked.jsonl`). The 20 music-time lines that named PAN or that r24
+scored high were checked again by hand: all were lyrics, background or talk with someone else. The
+judges agree with the automatic labels v2 on 79% of the turns they share, so the judged labels are
+used. 1,335 turns count (412 for PAN, 923 not; unsure and interpreter turns left out).
+
+**What PAN still answers that was not for it** (r24's odds at the bar that misses as often as live
+PAN did): garbled fragments and background noise 74, songs the music check missed 64, talk to
+another person 38, dictation to Claude the dictation check missed about 40, talking to himself 12.
+
+**Surprise.** The two biggest groups are not language a person says to PAN. Information theory has
+the measure: the surprisal of each heard word piece under the voice model, `−log P(word | talk so
+far, words before it)`. Read in the reader's own prompt, piece by piece, for every line (Mint).
+Three numbers per line: mean surprisal, share of pieces outside the model's top 100 guesses, mean
+over the first six pieces.
+
+Each day left out in turn, 1,335 turns:
+
+| Terms | Log loss (lower is better) | AUC |
+|---|---|---|
+| r24's odds alone | 0.413 | 0.866 |
+| odds + time since PAN spoke | 0.400 | 0.874 |
+| odds + running mode of the talk | 0.411 | 0.873 |
+| **odds + time since PAN spoke + surprise** | **0.382** | **0.888** |
+| everything without surprise | 0.433 | 0.859 |
+
+Answers to lines not for PAN, at the same number of misses (music and dictation rules kept for all):
+
+| Misses allowed | Raw r24 odds | Odds + surprise |
+|---|---|---|
+| 30 (r24 today: 309 answered, 35 missed) | 389 | **324** |
+| 42 (live PAN as it was: 385 answered) | 275 | **255** |
+| 60 | 224 | **212** (189 with every term) |
+| 80 | 170 | **155** |
+
+Surprise is the first situation term that holds up on unseen days. Its weights point the right way:
+more pieces outside the top 100 and a higher mean surprisal, less likely for PAN.
+
+**Live cost is the open problem.** llama-server gives odds only for the words it writes, not for
+the prompt, so reading surprise in the reader costs one call per piece (about 40 for a long line).
+Next: test whether a tiny separate model that scores a whole line in one pass gives the same gain.
+Files (local): scratchpad `step2_fit.py`, `step2_curve.py`, `step2_what.py`, `step3_surprise.py`
+(Mint), `step3_surprise.jsonl`, `step3_fit.py`, `step3_curve.py`, `checked_all.jsonl`.
