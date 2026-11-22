@@ -1,6 +1,6 @@
 # Conversation as odds: plan
 
-Written 2026-11-22 for the owner to review. Nothing here is built yet.
+Written 2026-11-22 for the owner to review. Step 0 (labels) and step 1 (offline fit) done the same day; see the end.
 
 ## The idea
 
@@ -143,3 +143,49 @@ decisions. Each new round gets scored through the same fitted numbers.
 
 No new models, no cloud. The fit is plain arithmetic on the hub. The only extra work per turn is
 reading odds the model already computes.
+
+## Step 1 result (2026-11-22, offline, nothing live changed)
+
+Voice model round 24 went live the same day, so the fit used r24's odds: every one of the 1,390 turns
+in the turn book read again by r24 on the Mint (the reader's own call, who token only). Labels: the
+checked set (233 turns judged one by one) plus labels v2 where no judged label exists; 366 turns in
+all, 124 for PAN, 242 not. Twelve situation numbers: the reader's log odds, time since PAN spoke
+(fading, tau fitted), the two multiplied, the last turn's odds (fading), his voice, another voice,
+another person named, PAN named, another assistant named, dictating, music, line length. Logistic
+regression, settings picked inside the older 70% only.
+
+| Check | Fitted, all twelve | r24's odds alone |
+|---|---|---|
+| Newest 30% (110 turns): log loss, lower is better | 0.725 | **0.609** |
+| Newest 30%: AUC | 0.748 | **0.817** |
+| Each day left out in turn (366 turns): log loss | 0.465 | **0.445** |
+| Each day left out in turn: AUC | 0.847 | **0.852** |
+
+**The situation adds nothing that holds up yet.** r24's own odds alone are as good or better. Why:
+
+- **The labels do not cover the situations that matter.** All 242 music turns and 87 of 89 dictation
+  turns have no label: labels v2 skips them on purpose and the checked set did not reach them. So
+  the fit cannot learn what music or dictation means; its dictation weight came from two turns.
+- **The share of lines for PAN moves a lot from day to day** (Nov 14: 10 of 93; Nov 21: 29 of 48;
+  Nov 22: 6 of 31). A fit on older days carries their share into newer ones.
+
+What the odds alone already give, on the same 366 turns (live PAN as it was: answered 89 lines not
+for it, missed 13):
+
+| Bar on r24's odds of "pan" | Answers lines not for PAN | Misses lines for PAN |
+|---|---|---|
+| 0.5 | 80 | 13 |
+| 0.8 | 57 | 23 |
+| 0.9 | 49 | 29 |
+| 0.98 | 30 | 40 |
+| 0.99 | 23 | 46 |
+
+Every point on this curve trades one for the other: the cost ratio `c_I / c_M` (how much worse
+talking over him is than missing him) picks the point, and that is the owner's to set. At equal
+misses (13), r24's odds alone answer 80 lines not for PAN, against 89 for live PAN with all its
+rules.
+
+Next: label the turns the fit cannot see (music, dictation, the newest days), then fit again. The
+situation terms only earn a place in `p_for_pan` when they beat the odds alone on days left out.
+Files (local, his lines): scratchpad `step1_prompts.py`, `step1_run.py` (Mint), `step1_odds.jsonl`,
+`step1_fit.py`, `step1_weights.json`.
