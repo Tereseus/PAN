@@ -87,7 +87,7 @@ is guessing ("New York", "since dawn"), the odds are spread over many words.
 
 - Low `sure` on a fact word: stop, fetch the fact (lookup, memory, the shelf) and write again, or
   say plainly that it doesn't know.
-- This is what replaces the weather keyword list: "will I need a jacket tonight" makes the model
+- This is what replaces the weather keyword list: "should I bring a coat later" makes the model
   reach for a temperature it doesn't know, its odds drop, and the lookup runs. The same rule
   covers any question where facts are needed, in any wording and language.
 - Cost to check: reading odds while writing is nearly free on llama-server (`n_probs`); a second

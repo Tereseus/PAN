@@ -177,7 +177,7 @@ look it up      iff  (1 − sure) · c_G > c_L
 say "I don't know"  iff  the lookup has nothing either
 ```
 
-This replaces every keyword list for lookups. "Will I need a jacket tonight" makes the model reach
+This replaces every keyword list for lookups. "Should I bring a coat later" makes the model reach
 for a temperature it does not know; its odds spread; the lookup runs. Any wording, any language.
 
 ### 8.2 Worn: the same phrase again

@@ -49,7 +49,7 @@ function callsPan(text) {
   if (/\b(?:pan|pam|pa+h?n+d?)[\s?.!]*$/i.test(t)) return true;
   return /^(?:pan|pam)\b/i.test(t) && !/^(?:pan|pam)(?:['’]s\b|\s+(?:is|was|isn't|wasn't|replies|replied|says|said|should|does|doesn't|did|didn't|has|had|can't|could|keeps|kept|answers|answered|needs|thinks|knows|will|won't|would|seems|gets|got|just|still|always|never|app|thread|project|dashboard|hub|phone|voice)\b)/i.test(t);
 }
-// The line opens with another assistant's name: "Okay Google, ...", "A google put a timer" (the
+// The line opens with another assistant's name: "Okay Google, ...", "A google, set an alarm" (the
 // speech model drops the "Ok"), "Hey Siri", "Alexa, ...". Claude and ChatGPT only with hey/okay:
 // he talks ABOUT Claude all the time.
 const OTHER_AI = /^\W*(?:(?:ok(?:ay)?|hey|hi|a|o)[\s,.!]+)?(?:google|alexa|siri|gemini|bixby|cortana)\b|^\W*(?:ok(?:ay)?|hey|hi)[\s,.!]+(?:claude|chat ?gpt|copilot)\b/i;
