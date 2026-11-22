@@ -4091,12 +4091,20 @@ answer an earlier question, and do not narrate what the context blocks mention.`
           if (!r || (r.startsWith('[') && r.length < 3)) continue;
           if (r.startsWith('[CA')) { camera = true; break; }
           if (r.startsWith('[TH')) { think = true; break; }
+          // [MUTE]: he told PAN itself to go quiet, in any language; the voice model decides, not a
+          // phrase list (round 23, the owner, Nov 21). The device mutes; nothing is said.
+          if (r.startsWith('[MU')) { readerMuted = true; break; }
           if (worldQ && !r.startsWith('[') && /^(?:query|question|chat|)$/.test(head.match(/"intent"\s*:\s*"([^"]*)"/)?.[1] || '')) { world = true; break; }
           // voice_reader_alone: the voice model keeps only short talk and its own actions; every
           // other line goes to the hub model the [THINK] way (reader-alone.js, Nov 21).
           if (!r.startsWith('[') && readerAloneOn(context.device_id) && !readerMayAnswer(text, head.match(/"intent"\s*:\s*"([^"]*)"/)?.[1])) { think = true; break; }
           yield head;
           head = null;
+        }
+        if (readerMuted) {
+          console.log(`[routeStream] ${studentModel} says he told PAN to go quiet ([MUTE])`);
+          notePath('mute');
+          return;
         }
         if (world) {
           console.log(`[routeStream] a question about the world - ${worldHub || 'the bigger model'} answers, not ${studentModel} (first_chunk was ${Date.now() - _modelStart}ms)`);
@@ -4196,6 +4204,7 @@ answer an earlier question, and do not narrate what the context blocks mention.`
   let addressed = null;
   let spokenReply = null; // the reply minus a dropped trailing question, when one was dropped
   let personAsked = false; // the line was looked at once as a call or message for a person, after the gate
+  let readerMuted = false; // the voice model answered [MUTE] (voiceStream)
 
   // A cloud stream can die after it starts ("Failed to parse stream", 2026-11-05). With nothing
   // spoken yet there is no sequence to corrupt, so the student answers, not "Sorry, I ran into a
@@ -4286,6 +4295,11 @@ answer an earlier question, and do not narrate what the context blocks mention.`
         sawEnd = true;
         if (topLevelJsonEnd(fullBuf) > 0) break;
       }
+    }
+    if (readerMuted) {
+      insertRouterEvent(text, 'system', '', context);
+      yield { type: 'done', result: withProsody({ intent: 'system', mute: true, response: '', addressed: 0.95, importance: 0.3 }) };
+      return;
     }
     if (fullBuf) _lastVoiceAlertAt = 0; // stream produced output — backends healthy, re-arm
     // The head of the raw output is the only place that shows whether the
