@@ -3,6 +3,7 @@
 // Routes based on Settings > AI & Usage.
 
 import { insert, get, run, getOllamaUrl, getConfiguredOllamaUrl, getModelForPurpose, pickHealthyOllama, reportOllamaLatency, isOllamaDegraded } from './db.js';
+import { pinAllowed } from './compute-store.js';
 import { readerStream } from './voice-reader.js';
 import { describeWithPhotoReader } from './photo-reader.js';
 import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
@@ -74,7 +75,9 @@ function getCustomModelConfig(modelId) {
   try {
     // model_hosts pins one model to one machine. custom_models can't do that: every boot rebuilds it.
     const pin = JSON.parse(get("SELECT value FROM settings WHERE key = 'model_hosts'")?.value || '{}')[modelId];
-    if (pin) return { id: modelId, provider: 'ollama', url: pin, pinned: true };
+    // His switch per machine (compute.js): a machine he switched off gets none of ΠAN's models;
+    // the model runs on the hub's own Ollama instead.
+    if (pin && pinAllowed(pin)) return { id: modelId, provider: 'ollama', url: pin, pinned: true };
     const row = get("SELECT value FROM settings WHERE key = 'custom_models'");
     if (row) {
       const models = JSON.parse(row.value);

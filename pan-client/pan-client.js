@@ -179,10 +179,60 @@ function probeCapabilitiesWindows() {
   return Array.from(caps);
 }
 
+// ── Hardware (the hub's Models tab lists every machine ΠAN can run models on, 2026-11-22) ──────
+// Graphics cards with their memory, AI chips (NPUs), processor, memory, home network addresses.
+// Read once at start and with each capability refresh; sent with every register.
+let hardware = null;
+function _run(cmd, timeoutMs = 4000) {
+  try { return execSync(cmd, { timeout: timeoutMs, windowsHide: true, stdio: 'pipe' }).toString(); } catch { return ''; }
+}
+function probeHardware() {
+  const gpus = [];
+  // NVIDIA's own tool has the real card memory (Windows caps AdapterRAM at 4 GB).
+  for (const line of _run('nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits').split(/\r?\n/)) {
+    const [name, mb] = line.split(',').map(x => x.trim());
+    if (name) gpus.push({ name, vram_mb: Number(mb) || 0 });
+  }
+  const npus = [];
+  const skip = /basic display|basic render|parsec|virtual|remote|displaylink|mirage|idd/i;
+  if (IS_WINDOWS) {
+    for (const line of _ps(`Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue | ForEach-Object { $_.Name + '|' + $_.AdapterRAM }`).split(/\r?\n/)) {
+      const [name, bytes] = line.split('|').map(x => (x || '').trim());
+      if (!name || skip.test(name) || (/nvidia/i.test(name) && gpus.length)) continue;
+      const mb = Math.round((Number(bytes) || 0) / 1048576);
+      gpus.push({ name, vram_mb: mb >= 1024 ? mb : 0 });
+    }
+    // Windows 11 lists NPUs (Intel AI Boost, AMD Ryzen AI, Qualcomm Hexagon) as compute accelerators.
+    for (const line of _ps(`Get-PnpDevice -Class ComputeAccelerator -Status OK -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FriendlyName`).split(/\r?\n/)) {
+      if (line.trim()) npus.push(line.trim());
+    }
+  } else if (PLATFORM === 'linux') {
+    if (!gpus.length) {
+      for (const line of _run('lspci').split(/\n/)) {
+        const m = /(?:VGA compatible controller|3D controller|Display controller):\s*(.+)$/i.exec(line);
+        if (m && !skip.test(m[1])) gpus.push({ name: m[1].trim(), vram_mb: 0 });
+      }
+    }
+    // An NPU driver (intel_vpu, amdxdna) shows up as /sys/class/accel.
+    for (const dev of _run('ls /sys/class/accel 2>/dev/null').split(/\s+/).filter(Boolean)) {
+      const drv = _run(`basename "$(readlink -f /sys/class/accel/${dev}/device/driver)"`).trim();
+      npus.push(drv === 'intel_vpu' ? 'Intel NPU' : drv === 'amdxdna' ? 'AMD Ryzen AI NPU' : `AI chip (${drv || dev})`);
+    }
+  }
+  const ips = [];
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const a of list || []) if (a.family === 'IPv4' && !a.internal) ips.push(a.address);
+  }
+  const c = cpus();
+  hardware = { gpus, npus, cpu: c[0]?.model?.trim() || '', cores: c.length, ram_gb: Math.round(totalmem() / 1073741824), ips };
+  return hardware;
+}
+
 async function probeCapabilities() {
   try {
     let probed = [];
     if (IS_WINDOWS) probed = probeCapabilitiesWindows();
+    try { probeHardware(); } catch {}
     // macOS + Linux stubbed for v1 — they remain on the static base set.
     liveCapabilities = probed;
     return probed;
@@ -273,7 +323,7 @@ async function httpRegister() {
   const svc = detectServiceState();
   return httpRequest('POST', '/api/v1/client/register',
     { token: TOKEN, device_id: DEVICE_ID, name: NAME,
-      platform: PLATFORM, arch: arch(), version: VERSION, capabilities, hostname: hostname(),
+      platform: PLATFORM, arch: arch(), version: VERSION, capabilities, hostname: hostname(), hardware,
       service_state: svc.service_state, service_manager: svc.service_manager });
 }
 
@@ -389,7 +439,7 @@ function connect() {
       const svc = detectServiceState();
       send({ type: 'register', device_id: DEVICE_ID, name: NAME, version: VERSION,
              platform: PLATFORM, arch: arch(), capabilities,
-             hostname: hostname(), token: TOKEN,
+             hostname: hostname(), token: TOKEN, hardware,
              service_state: svc.service_state, service_manager: svc.service_manager });
     }
 

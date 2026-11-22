@@ -18,6 +18,7 @@ import { getDataDir } from './platform.js';
 import { identify as panLinkIdentify, linkDevice } from './pan-link-auth.js';
 import { decideClaim, LOCAL } from './client-claim.js';
 
+import { saveHardware } from './compute-store.js';
 // In-memory client registry: device_id → { ws, info }
 const clients = new Map();
 
@@ -438,6 +439,8 @@ function handleRegister(ws, deviceId, msg) {
     service_state: msg.service_state || null,
     service_manager: msg.service_manager || null,
   });
+  // Its chips, for the Models tab's machine list (compute.js).
+  try { saveHardware(deviceId, msg.hardware); } catch {}
   if (claim.bind) {
     run("UPDATE devices SET link_device_id = :l WHERE hostname = :h", { ':l': claim.bind, ':h': deviceId });
     console.log(`[PAN Clients] Name ${deviceId} now belongs to ${from}${holder ? ` (was ${holder})` : ''}`);

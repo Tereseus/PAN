@@ -36,8 +36,10 @@ import java.util.Locale
 
 /**
  * Models (the owner, 2026-11-21): which models the hub uses for every device, with a picker for
- * each; what this device hears and speaks with; how fast it builds the voice; and how long his
- * turns took on each device. The hub's part comes from `GET /api/v1/voice/picks`.
+ * each; the machines ΠAN can run models on (the owner 2026-11-22: every computer, its chips, its
+ * measured speed, what runs there, a switch each); what this device hears and speaks with; how fast
+ * it builds the voice; and how long his turns took on each device. The hub's part comes from
+ * `GET /api/v1/voice/picks` and `GET /api/v1/compute`.
  */
 @Composable
 internal fun ModelsPart(
@@ -46,7 +48,10 @@ internal fun ModelsPart(
     device: DeviceVoice,
     onSetHubModel: (key: String, value: String) -> Unit,
     onSetPace: (Float?) -> Unit,
-    onSetMintGpu: (Boolean) -> Unit = {},
+    machines: List<Machine>? = null,
+    timing: String = "",
+    onSetAllowed: (id: String, allowed: Boolean) -> Unit = { _, _ -> },
+    onTestSpeed: (id: String) -> Unit = {},
 ) {
     // A hub model change waits here for a yes.
     var asked by remember { mutableStateOf<Pair<String, String>?>(null) }
@@ -58,9 +63,15 @@ internal fun ModelsPart(
             else -> {
                 picks.hubModel?.let { p -> item { PickRow("Answer model (hub)", "The smart one. Answers every line the voice reader hands up: questions, opinions, facts, anything that needs thought.", p) { asked = p.key to it } } }
                 picks.readerModel?.let { p -> item { PickRow("Voice reader (hub)", "Reads each line first. Decides if you are talking to ΠAN, answers short things itself, hands the rest to the answer model.", p) { asked = p.key to it } } }
-                item { MintGpuRow(picks.mintGpuAllowed, onSetMintGpu) }
                 if (picks.hubAsr.isNotBlank()) item { Line("Speech to text (hub)", picks.hubAsr, "Transcribes your recording again on the hub, more accurately than the device. ΠAN answers from this text.") }
             }
+        }
+
+        item { Heading("Machines") }
+        when {
+            machines == null -> item { Note(if (picks == null) "" else "Asking the hub.") }
+            machines.isEmpty() -> item { Note("This hub has no machine list yet.") }
+            else -> items(machines, key = { "m-${it.id}" }) { m -> MachineRow(m, timing, onSetAllowed, onTestSpeed) }
         }
 
         item { Heading("On this device") }
@@ -187,16 +198,37 @@ private fun TimesRow(device: String, avg: String, middle: String, slowest: Strin
     }
 }
 
-/** His switch: ΠAN may take the Mint's graphics card for a while (WoE's jobs finish first and wait). */
+/** One machine: name and switch, its chips, its measured speed with a test button, what runs there. */
 @Composable
-private fun MintGpuRow(allowed: Boolean, onSet: (Boolean) -> Unit) {
-    Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text("Use the Mint's graphics card", style = MaterialTheme.typography.bodyLarge)
-            Text("ΠAN may borrow it to run bigger models. Running WoE jobs finish first, new ones wait until ΠAN gives it back.",
-                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+private fun MachineRow(m: Machine, timing: String, onSetAllowed: (String, Boolean) -> Unit, onTestSpeed: (String) -> Unit) {
+    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(if (m.hub) "${m.name} (the hub)" else m.name, style = MaterialTheme.typography.bodyLarge)
+                val state = when {
+                    m.hub -> "Always on. Everything falls back here."
+                    !m.online -> "Offline"
+                    !m.allowed -> "Switched off. Its models run on the hub."
+                    m.sharesCard -> "ΠAN may use it. WoE's running jobs finish first, new ones wait."
+                    else -> "ΠAN may use it."
+                }
+                Text(state, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            if (!m.hub) Switch(checked = m.allowed, onCheckedChange = { onSetAllowed(m.id, it) })
         }
-        Switch(checked = allowed, onCheckedChange = onSet)
+        Text(m.chips.ifBlank { "Its chips are not reported yet (an older ΠAN on that computer)." }, style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(top = 4.dp))
+        if (m.ollama) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 4.dp)) {
+                Text(MachineText.speed(m.tokS, m.speedModel, m.speedAt), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                TextButton(onClick = { onTestSpeed(m.id) }, enabled = timing.isEmpty() && m.allowed && m.online) {
+                    Text(if (timing == m.id) "Testing" else "Test speed")
+                }
+            }
+            m.loaded.forEach { Text("Loaded: " + MachineText.loaded(it), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        } else {
+            Text("No models run here.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        m.runs.forEach { Text("Runs here now: " + MachineText.run(it), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 2.dp)) }
     }
 }

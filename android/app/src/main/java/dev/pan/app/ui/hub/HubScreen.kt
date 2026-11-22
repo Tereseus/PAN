@@ -66,6 +66,8 @@ fun HubScreen(onBack: () -> Unit, viewModel: HubViewModel = hiltViewModel()) {
     val picks by viewModel.picks.collectAsState()
     val noPicks by viewModel.noPicks.collectAsState()
     val device by viewModel.device.collectAsState()
+    val machines by viewModel.machines.collectAsState()
+    val timing by viewModel.timing.collectAsState()
     var tab by rememberSaveable { mutableIntStateOf(0) }
 
     BackHandler { onBack() }
@@ -97,7 +99,7 @@ fun HubScreen(onBack: () -> Unit, viewModel: HubViewModel = hiltViewModel()) {
             when (tab) {
                 0 -> ServicesPart(services)
                 1 -> IntuitionPart(intuition)
-                else -> ModelsPart(picks, noPicks, device, viewModel::setHubModel, viewModel::setPace, viewModel::setMintGpu)
+                else -> ModelsPart(picks, noPicks, device, viewModel::setHubModel, viewModel::setPace, machines, timing, viewModel::setAllowed, viewModel::testSpeed)
             }
         }
     }

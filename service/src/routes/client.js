@@ -30,6 +30,7 @@ import os from 'os';
 import { execSync, spawn } from 'child_process';
 import { getTunnelURL } from '../cloudflare-tunnel.js';
 
+import { saveHardware } from '../compute-store.js';
 // Returns the best IP for a NEW device to reach this hub over LAN.
 // LAN IPs (192.168.x, 10.x, 172.16-31.x) are preferred because new devices
 // aren't on Tailscale yet — they must be on the same local network.
@@ -514,6 +515,9 @@ router.post('/register', (req, res) => {
     if (!alreadyApproved && !checkInviteToken(token)) {
       return res.status(401).json({ ok: false, error: 'Invalid or expired token' });
     }
+
+    // Its chips, for the Models tab's machine list (compute.js). Never blocks the register.
+    try { saveHardware(deviceId, req.body?.hardware); } catch {}
 
     // #497: register-time service_state stamp. We also set service_installed_at
     // only on first observation (or first non-null) so it represents "when this

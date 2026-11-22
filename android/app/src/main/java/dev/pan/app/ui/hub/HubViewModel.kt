@@ -33,8 +33,21 @@ data class ModelPick(val key: String, val value: String, val choices: List<Strin
 data class DeviceTimes(val device: String, val turns: Int, val avgMs: Long, val medianMs: Long, val slowestMs: Long)
 
 /** `GET /api/v1/voice/picks`. */
-data class HubPicks(val hubModel: ModelPick?, val readerModel: ModelPick?, val hubAsr: String, val devices: List<DeviceTimes>,
-    val mintGpuAllowed: Boolean = false)
+data class HubPicks(val hubModel: ModelPick?, val readerModel: ModelPick?, val hubAsr: String, val devices: List<DeviceTimes>)
+
+/** A model loaded on a machine now: its size and how much of it is on the graphics card. */
+data class LoadedModel(val name: String, val gb: Double, val onCardPct: Int)
+
+/** A job ΠAN runs on a machine now (answer model, voice reader); note says where it goes otherwise. */
+data class MachineRun(val what: String, val model: String, val note: String)
+
+/**
+ * A machine ΠAN can run models on (`GET /api/v1/compute`, the owner 2026-11-22): its chips as one
+ * line, its measured speed, what runs there, and his switch. Speed is tokens a second, 0 = not tested.
+ */
+data class Machine(val id: String, val name: String, val hub: Boolean, val online: Boolean, val chips: String,
+    val ollama: Boolean, val loaded: List<LoadedModel>, val tokS: Double, val speedModel: String, val speedAt: String,
+    val allowed: Boolean, val sharesCard: Boolean, val runs: List<MachineRun>)
 
 /** This device's own side: its voice, the pace it talks at, how fast it builds lines, its ear. */
 data class DeviceVoice(val voice: String, val pace: VoicePace.Pick?, val liveSpeed: Float, val timing: VoiceTiming.Stats, val ear: String)
@@ -56,6 +69,12 @@ class HubViewModel @Inject constructor(
     /** The hub answered but has no picks list (an older hub): 404. */
     private val _noPicks = MutableStateFlow(false)
     val noPicks: StateFlow<Boolean> = _noPicks
+    /** null until the hub has answered; empty on an older hub with no machine list. */
+    private val _machines = MutableStateFlow<List<Machine>?>(null)
+    val machines: StateFlow<List<Machine>?> = _machines
+    /** The machine whose speed test is running ("" none). */
+    private val _timing = MutableStateFlow("")
+    val timing: StateFlow<String> = _timing
     private val _device = MutableStateFlow(deviceVoice())
     val device: StateFlow<DeviceVoice> = _device
 
@@ -92,6 +111,12 @@ class HubViewModel @Inject constructor(
         val p = serverClient.hubJson("GET", "/api/v1/voice/picks") ?: return
         _noPicks.value = p.first == 404
         if (p.first == 200) _picks.value = picks(p.second)
+        loadMachines()
+    }
+
+    private suspend fun loadMachines() {
+        val m = serverClient.hubJson("GET", "/api/v1/compute") ?: return
+        _machines.value = if (m.first == 200) machines(m.second.optJSONArray("machines")) else emptyList()
     }
 
     /** Change a model the hub uses, for every device, then read the list again. */
@@ -108,18 +133,32 @@ class HubViewModel @Inject constructor(
         }
     }
 
-    /** His switch: ΠAN may take the Mint's graphics card when it needs it (hub setting pan_mint_gpu_allowed). */
-    fun setMintGpu(allowed: Boolean) {
+    /** His switch for one machine: ΠAN may use it. Off sends its models to the hub. */
+    fun setAllowed(id: String, allowed: Boolean) {
         viewModelScope.launch {
-            val r = serverClient.hubJson("PUT", "/api/v1/settings", JSONObject().put("pan_mint_gpu_allowed", allowed))
-            _trouble.value = when {
-                r == null -> "ΠAN could not be reached."
-                r.first == 403 -> "Only the owner's devices can change this."
-                r.first !in 200..299 -> "The hub did not take it (${r.first})."
-                else -> ""
-            }
-            loadPicks()
+            val r = serverClient.hubJson("PUT", "/api/v1/compute/allow", JSONObject().put("id", id).put("allowed", allowed))
+            _trouble.value = said(r)
+            loadMachines()
         }
+    }
+
+    /** Time one machine: a short reply from a model ΠAN uses there. Takes a few seconds, longer on a processor. */
+    fun testSpeed(id: String) {
+        if (_timing.value.isNotEmpty()) return
+        viewModelScope.launch {
+            _timing.value = id
+            val r = serverClient.hubJson("POST", "/api/v1/compute/speed", JSONObject().put("id", id))
+            _timing.value = ""
+            _trouble.value = if (r != null && r.first in 400..499 && r.first != 403) r.second.optString("error") else said(r)
+            loadMachines()
+        }
+    }
+
+    private fun said(r: Pair<Int, JSONObject>?): String = when {
+        r == null -> "ΠAN could not be reached."
+        r.first == 403 -> "Only the owner's devices can change this."
+        r.first !in 200..299 -> "The hub did not take it (${r.first})."
+        else -> ""
     }
 
     /** Voice pace on this device: null speed = Auto. Saved; the next line uses it. */
@@ -155,7 +194,20 @@ class HubViewModel @Inject constructor(
                 DeviceTimes(it.optString("device"), it.optInt("turns"), it.optLong("avg_total_ms"), it.optLong("median_total_ms"), it.optLong("slowest_ms"))
             }
         } ?: emptyList()
-        return HubPicks(pick("hub_model"), pick("reader_model"), said(o, "hub_asr"), devices, o.optBoolean("mint_gpu_allowed", false))
+        return HubPicks(pick("hub_model"), pick("reader_model"), said(o, "hub_asr"), devices)
+    }
+
+    private fun machines(a: JSONArray?): List<Machine> = a?.let { (0 until it.length()).mapNotNull { i -> it.optJSONObject(i) } }.orEmpty().map { m ->
+        val speed = m.optJSONObject("speed")
+        fun objs(key: String) = m.optJSONArray(key)?.let { l -> (0 until l.length()).mapNotNull { l.optJSONObject(it) } }.orEmpty()
+        Machine(
+            id = m.optString("id"), name = m.optString("name"), hub = m.optBoolean("hub"), online = m.optBoolean("online"),
+            chips = m.optString("chips"), ollama = m.optBoolean("ollama"),
+            loaded = objs("loaded").map { LoadedModel(it.optString("name"), it.optDouble("gb", 0.0), it.optInt("on_card_pct")) },
+            tokS = speed?.optDouble("tok_s", 0.0) ?: 0.0, speedModel = speed?.optString("model").orEmpty(), speedAt = speed?.optString("at").orEmpty(),
+            allowed = m.optBoolean("allowed", true), sharesCard = m.optBoolean("shares_card"),
+            runs = objs("runs").map { MachineRun(it.optString("what"), it.optString("model"), it.optString("note")) },
+        )
     }
 
     private fun services(list: JSONArray?): List<HubService> {

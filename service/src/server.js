@@ -83,7 +83,7 @@ import { PAN_MODE, IS_USER_MODE, IS_SERVICE_MODE, MODE_INFO } from './mode.js';
 import { getDataDir, raiseProcessPriority } from './platform.js';
 import { identify as panLinkIdentify } from './pan-link-auth.js';
 import { imageExt, safeTag, insideDir } from './safe-files.js';
-import { syncProjects, get, all, insert, run, indexEventFTS, db, getOllamaUrl, invalidateOllamaUrlCache, logDecision } from './db.js';
+import { syncProjects, get, all, insert, run, indexEventFTS, db, getOllamaUrl, getConfiguredOllamaUrl, invalidateOllamaUrlCache, logDecision } from './db.js';
 import { searchMemory, backfillEmbeddings, backfillStatus, abortBackfill } from './memory-search.js';
 import { listScopes, wipeScope } from './db-registry.js';
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync } from 'fs';
@@ -6671,11 +6671,110 @@ app.get('/api/v1/voice/picks', async (req, res) => {
       hub_model: { key: 'voice_world_model', value: setting('voice_world_model') },
       reader_model: { key: 'voice_student_model', value: setting('voice_student_model') },
       hub_asr: 'Parakeet',
-      // His switch: PAN may take the Mint's graphics card (WoE's pan-gpu.sh reads it). Off unless 'true'.
-      mint_gpu_allowed: setting('pan_mint_gpu_allowed') === 'true',
       choices: pickChoices(names, pinned),
       devices: deviceTimes(rows),
     });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// The machines ΠAN can run models on (compute.js): each PC's chips, its measured speed, what runs
+// there now, and his switch per machine. For the app's Hub screen, Models tab.
+async function computeFacts() {
+  const C = await import('./compute.js');
+  const S = await import('./compute-store.js');
+  const { devices, hubId } = S.machinesFacts();
+  let pinned = {};
+  try { pinned = JSON.parse(S.setting('model_hosts') || '{}'); } catch {}
+  const defaultUrl = (getConfiguredOllamaUrl() || 'http://localhost:11434').replace(/\/$/, '');
+  // One Ollama URL per machine: the hub's own, then every pin.
+  const urls = {};
+  const hubMachine = C.machineForUrl(devices, defaultUrl, hubId) || hubId;
+  urls[hubMachine] = defaultUrl;
+  for (const u of Object.values(pinned)) {
+    const id = C.machineForUrl(devices, u, hubId);
+    if (id && !urls[id]) urls[id] = String(u).replace(/\/$/, '');
+  }
+  const ollama = {};
+  await Promise.all(Object.entries(urls).map(async ([id, url]) => {
+    try {
+      const [ps, tags] = await Promise.all(['ps', 'tags'].map(p => fetch(`${url}/api/${p}`, { signal: AbortSignal.timeout(2500) }).then(r => r.json())));
+      ollama[id] = {
+        url,
+        loaded: (ps.models || []).map(m => ({ name: m.name, gb: Math.round((m.size || 0) / 1e8) / 10,
+          on_card_pct: m.size ? Math.round(100 * (m.size_vram || 0) / m.size) : 0, expires_at: m.expires_at || '' })),
+        installed: (tags.models || []).map(m => m.name),
+      };
+    } catch {}
+  }));
+  const bare = v => String(v || '').replace(/^ollama:/, '');
+  const answer = S.setting('voice_world_model');
+  const uses = [
+    { what: 'Answer model', model: answer, pinnedUrl: pinned[bare(answer)] || '', defaultUrl },
+    { what: 'Voice reader', model: S.setting('voice_student_model'), pinnedUrl: '', defaultUrl },
+  ];
+  const machines = C.machineList({ devices, hubId, ollama, speeds: S.speeds(), switches: S.switches(hubId), uses });
+  return { C, S, machines, ollama, hubId, answer };
+}
+
+app.get('/api/v1/compute', async (req, res) => {
+  try {
+    const { machines, S } = await computeFacts();
+    const share = S.setting('gpu_share_device');
+    res.json({ machines: machines.map(({ hardware, ...m }) => ({ ...m, shares_card: !!share && m.id === share })) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// His switch for one machine: { id, allowed }. The machine WoE shares its card from writes WoE's own
+// switch (pan_mint_gpu_allowed, which pan-gpu.sh reads).
+app.put('/api/v1/compute/allow', async (req, res) => {
+  if (!isOwner(req)) return res.status(403).json({ error: 'Owner only' });
+  try {
+    const S = await import('./compute-store.js');
+    const id = String(req.body?.id || ''), allowed = !!req.body?.allowed;
+    const { hubId } = S.machinesFacts();
+    if (!id || id === hubId) return res.status(400).json({ error: 'The hub is always on' });
+    const set = (k, v) => run(`INSERT INTO settings (key, value) VALUES (:k, :v) ON CONFLICT(key) DO UPDATE SET value = :v`, { ':k': k, ':v': v });
+    if (id === S.setting('gpu_share_device')) set('pan_mint_gpu_allowed', allowed ? 'true' : 'false');
+    else {
+      let map = {};
+      try { map = JSON.parse(S.setting('compute_allowed') || '{}') || {}; } catch {}
+      map[id] = allowed;
+      set('compute_allowed', JSON.stringify(map));
+    }
+    S.forgetCache();
+    res.json({ ok: true, id, allowed });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Time one machine: a short reply from a model ΠAN uses there, tokens a second. Never on a machine he
+// switched off; never loads a new model on a machine that already has one loaded (a shared card).
+app.post('/api/v1/compute/speed', async (req, res) => {
+  if (!isOwner(req)) return res.status(403).json({ error: 'Owner only' });
+  try {
+    const { C, S, machines, ollama, answer } = await computeFacts();
+    const id = String(req.body?.id || '');
+    const m = machines.find(x => x.id === id);
+    const o = ollama[id];
+    if (!m || !o) return res.status(404).json({ error: 'No models run on that machine' });
+    if (!m.allowed) return res.status(409).json({ error: 'That machine is switched off' });
+    const model = C.modelToTime({ answerModel: answer, loaded: o.loaded.map(l => l.name), installed: o.installed });
+    if (!model) return res.status(409).json({ error: 'No model there to time' });
+    const keep = C.keepAliveFor(o.loaded.find(l => l.name === model || l.name === `${model}:latest`)?.expires_at);
+    const r = await fetch(`${o.url}/api/generate`, { method: 'POST', signal: AbortSignal.timeout(120_000), headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, stream: false, think: false, prompt: 'Describe a quiet harbour town in the early morning, in about sixty words.',
+        options: { num_predict: 64, temperature: 0 }, ...(keep !== undefined ? { keep_alive: keep } : {}) }) });
+    const tok_s = C.tokensPerSecond(await r.json());
+    if (!tok_s) return res.status(502).json({ error: 'The machine did not answer the test' });
+    const speeds = S.speeds();
+    speeds[id] = { tok_s, model, at: new Date().toISOString() };
+    run(`INSERT INTO settings (key, value) VALUES ('compute_speeds', :v) ON CONFLICT(key) DO UPDATE SET value = :v`, { ':v': JSON.stringify(speeds) });
+    res.json({ ok: true, id, ...speeds[id] });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
