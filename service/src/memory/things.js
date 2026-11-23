@@ -400,7 +400,7 @@ export function pauseForTalk() {
 
 /** True when the note shows a public topic he only talked about, not a thing in his own life. */
 async function onlyATopic(obj) {
-  const q = `A note PAN wrote from one person's own words:\n${renderThing(obj)}\n\nIs "${obj.name}" part of this person's own life (their plan, work, purchase, trip, people, home or belongings), or only a public topic they talked about (a country, a region, a team, a brand, a news story)?\nAnswer with one word, MINE or TOPIC:`;
+  const q = `A note PAN wrote from one person's own words:\n${renderThing(obj)}\n\nIs "${obj.name}" part of this person's own life (their plan, work, purchase, trip, people, home or belongings), or only a public topic they talked about (a country, a region, a team, a brand, a news story)? Something they use, build, buy, or work on or with is MINE, even when it is well known (an operating system they develop for, a shop they order from).\nAnswer with one word, MINE or TOPIC:`;
   let a = '';
   try {
     for await (const c of askAIStream(q, { model: recordModel(), maxTokens: 4, timeout: 60000, caller: 'memory-things', temperature: 0 })) a += typeof c === 'string' ? c : (c?.text || '');
@@ -440,7 +440,12 @@ export async function writeRecord(thing, { dry = false } = {}) {
   if (!obj) return null;
   // The PUBLIC rule above, inside the long note prompt, was not followed: Lithuania was written up
   // again (2026-11-23). Asked alone, about the short note just written, it is one easy question.
-  if (!['project', 'job', 'conversation', 'app', 'person'].includes(obj.kind) && await onlyATopic(obj)) {
+  // Only for the kinds a public topic comes as (a country, a group of people, a news event, a
+  // company he has no dealings with): asked about everything, the same model called Linux, which he
+  // builds PAN for, a topic, even when told a thing he works with is his.
+  const dealings = obj.who?.length || obj.next?.length || obj.needs?.length;
+  const topicKind = ['place', 'group', 'event'].includes(obj.kind) || (obj.kind === 'organization' && !dealings);
+  if (topicKind && await onlyATopic(obj)) {
     if (!dry) run(`UPDATE memory_things SET record = NULL, obj = NULL, embedding = NULL, written_at = datetime('now','localtime'), written_mentions = mentions WHERE id = :id`, { ':id': thing.id });
     return { record: null, public: true };
   }

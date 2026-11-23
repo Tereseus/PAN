@@ -458,6 +458,26 @@ scored 0.67 against 0.60 for an unrelated one. So the shelf holds **notes on thi
 - **Private notes** (health, money) are not put in a reply while two or more other voices were
   heard in the last 2 minutes.
 
+### 11.2 Built (2026-11-23): the brief
+
+What a person in the room already knows when he starts talking, kept ready ahead of his words
+(`intuition/brief.js`). The owner asked for it: the hub keeps the small voice model up to date in
+the background instead of it working out the moment on each turn, about 500 tokens of the
+reader's 4,096.
+
+- **What it holds:** the situation line (place, daylight, weather, screens, camera, the talk's
+  topic, other voices), then his threads (the newest ask to each in the last 3 hours: what he
+  sent, what it answered, or that it has not), the things in play (the notes on the shelf, with
+  where each stands and what is next), and the talk (its summary, the topics before this one).
+- **Same words minute to minute:** clock times only, never "5 minutes ago", so the read ahead of
+  it (`warmStudent`, `voice-reader.js`) still counts when his words arrive.
+- **Size:** at most 2,000 characters; over that, the talk, then the things in play, give way.
+- **Where it goes:** in place of the situation line, in every prompt the line goes into, but only
+  where the setting `voice_brief` allows: `bench` (bench turns only, the default) until the voice
+  model is trained to read it, then `on`; `off` turns it off.
+- **The phone:** `GET /api/v1/brief` returns `{ text, parts, tokens, mode, built_at }`, so the
+  phone can keep a copy for its own model.
+
 ## 12. The knowledge library
 
 So that facts do not depend on a search engine that blocks the hub or costs money:

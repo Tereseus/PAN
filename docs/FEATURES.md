@@ -1659,6 +1659,16 @@ children can have adult-sounding voices and vice versa).
   people: his lines 0.63 to 0.81, the others 0.06 to 0.17. The ambient veto now also counts a
   line that starts with PAN's name (`saysPanName`), so a named line in a language without English
   question words or "?" (Thai) is answered.
+- **The brief** (2026-11-23, `intuition/brief.js`, docs/INTUITION-STATE.md section 11.2): the
+  situation line plus his threads (newest ask to each in 3 hours, its answer or none yet), the
+  things in play (shelf notes with state and next) and the talk's summary, clock times only, at
+  most 2,000 characters (about 500 tokens). Replaces the situation line in the turn's prompts and
+  the reader's read ahead where setting `voice_brief` allows: `bench` (default, bench turns only),
+  `on`, `off`. `GET /api/v1/brief` returns `{ text, parts, tokens, mode, built_at }` for the
+  phone. Test: `service/src/__tests__/brief.test.js`.
+- **Notes endpoints** (`memory/things.js`): `GET /api/v1/things` (`q` filters by name, `all=1`
+  includes things with no note yet), `GET /api/v1/things/:name`, `POST /api/v1/things/write
+  { name, dry }` writes one now (`dry` returns it unsaved).
 - **Participation** (2026-11-13, `intuition/participation.js`, plain rules, no model, about
   0.01 ms): every turn gets PAN's place in the talk (partner, on_call, observer, interpreter),
   logged as `[participation]` and returned as `participation`. A line said to someone in the talk

@@ -31,6 +31,7 @@ import { getConversationState, getConversationBuffer, dictatingToClaude, panSpok
 import { recentThoughts } from './intuition/mind.js';
 import { loadModes, saveMode, dropMode } from './intuition/world.js';
 import { hisTimeZone, utcOffsetHours } from './intuition/time.js';
+import { buildBrief, briefMode } from './intuition/brief.js';
 import { notePhoneGps, placeLine, daylightLine, weatherLine } from './intuition/place.js';
 import { followUpOf, followUpLine, historyLines } from './intuition/conversation.js';
 import { shelfForTurn, notesNamedIn } from './intuition/shelf.js';
@@ -222,8 +223,8 @@ export function warmStudent(history, context = {}) {
   if (!studentChain(model, backup)[0]?.startsWith('reader:')) return;
   // The turn's prompt opens with the situation line (studentPrompt, routeStream). Without it here
   // the read never matched the turn whenever a line existed, which is nearly always (2026-11-12).
-  const situation = situationOnEveryTurn() ? buildSituationLine(context) : '';
-  _warmSituation = { org: context.org_id || 'org_personal', line: situation, at: Date.now() };
+  const situation = situationOnEveryTurn() ? situationFor(context) : '';
+  _warmSituation = { org: context.org_id || 'org_personal', line: situation, at: Date.now(), brief: briefApplies(context) };
   const block = [situation, voiceHistoryBlock(history).trim()].filter(Boolean).join('\n\n');
   warmReader(block, `${block ? '\n\n' : ''}${nowLine()}\n\nMic heard: "`);
 }
@@ -530,13 +531,32 @@ let _warmSituation = null;
 const WARM_SITUATION_MS = 2 * 60_000;
 function warmedSituation(context = {}) {
   const w = _warmSituation;
-  if (!w || w.org !== (context.org_id || 'org_personal') || Date.now() - w.at > WARM_SITUATION_MS) return null;
+  if (!w || w.org !== (context.org_id || 'org_personal') || Date.now() - w.at > WARM_SITUATION_MS || !!w.brief !== briefApplies(context)) return null;
   // He moved: the turn's fix names a place the read ahead's line does not (Nov 14, one town read
   // out while the phone said another).
   const addr = context.sensors?.phone?.gps?.address;
   if (addr && !w.line.includes(String(addr).slice(0, 60))) return null;
   try { notePhoneGps(context.sensors?.phone?.gps); } catch {}
   return w.line;
+}
+
+// The brief (intuition/brief.js): the situation line plus his threads, the things in play and the
+// talk, about 500 tokens. Only where voice_brief allows it: bench turns by default, until the voice
+// model is trained to read it.
+function briefApplies(context = {}) {
+  const mode = briefMode();
+  return mode === 'on' || (mode === 'bench' && isTestTurn(context));
+}
+function situationFor(context = {}) {
+  const line = buildSituationLine(context);
+  if (!briefApplies(context)) return line;
+  try { return buildBrief(line, { org: context.org_id || 'org_personal' }).text || line; } catch { return line; }
+}
+/** The brief as it stands now, for GET /api/v1/brief (the phone keeps a copy). */
+export function briefNow(context = {}) {
+  const line = buildSituationLine(context);
+  const b = buildBrief(line, { org: context.org_id || 'org_personal' });
+  return { text: b.text || line, parts: b.parts, tokens: Math.round(estTokens(b.text || line)), mode: briefMode(), built_at: Date.now() };
 }
 
 function buildSituationLine(context = {}) {
@@ -3744,7 +3764,7 @@ answer an earlier question, and do not narrate what the context blocks mention.`
   // The line the read ahead used, when it is fresh: the prompt opens with it, so one changed word
   // (a GPS fix with the turn, a minute on the camera's age, a new topic after his words) made the
   // reader start over, about 3 s on every turn on Nov 14. The turn's fix is still recorded.
-  const situationLine = warmedSituation(context) ?? buildSituationLine(context);
+  const situationLine = warmedSituation(context) ?? situationFor(context);
   // Given it on every turn (hub bench, 2026-11-03), Syrinx used it well when asked ("You're in
   // Firefox, working on a map creation project" against "I don't have a record") but called
   // "How's it going?" room talk. So until a retrain includes the line: only when he asks about

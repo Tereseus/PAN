@@ -2010,6 +2010,13 @@ router.post('/things/write', async (req, res) => {
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// The brief (intuition/brief.js): what the voice model should already know before he talks,
+// about 500 tokens. The phone pulls it to keep its own copy for its on-device model.
+router.get('/brief', async (req, res) => {
+  try { res.json((await import('../router.js')).briefNow({ org_id: req.query.org || 'org_personal' })); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 router.get('/voice/profile', async (req, res) => {
   try { res.json((await import('../voice-id.js')).profileState()); } catch (e) { res.status(500).json({ error: e.message }); }
 });

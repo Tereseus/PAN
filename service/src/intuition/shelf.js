@@ -118,6 +118,23 @@ export function notesForQuery(query, max = 2) {
     .slice(0, max).map((t) => ({ name: t.name, record: t.record }));
 }
 
+/**
+ * For the brief (intuition/brief.js): the things on the shelf now, freshest first, each as its
+ * note's first line plus where it stands and what is next. A private note is left out while other
+ * voices are around.
+ */
+export function onShelf({ othersNearby = false, max = 3 } = {}) {
+  load();
+  const now = Date.now();
+  return [..._shelf.entries()].filter(([, e]) => now - e.at < FADE_MS).sort((a, b) => b[1].at - a[1].at)
+    .map(([id]) => _things.find((t) => t.id === id)).filter((t) => t && !(othersNearby && t.private)).slice(0, max)
+    .map((t) => {
+      const lines = String(t.record).split('\n');
+      const field = (k) => (lines.find((l) => l.trim().startsWith(`${k}:`)) || '').trim().slice(k.length + 1).trim();
+      return [firstSentence(lines[0], 140), field('state') && `now ${field('state')}`, field('next') && `next ${field('next')}`].filter(Boolean).join('; ');
+    });
+}
+
 export function shelfState() {
   load();
   const now = Date.now();
