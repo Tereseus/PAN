@@ -2355,19 +2355,21 @@ router.post('/query/stream', async (req, res) => {
           if (!bench && !person && !voiceTestDevice(realId)) {
             const r = event.result || {};
             const said = String(r.response || '').trim();
-            // The line's surprise and the shadow p_for_pan go in with it (intuition/surprise.js,
-            // for-pan.js): worked out after the turn, so nothing PAN says waits on them.
+            // The line's surprise and the shadow p_for_pan (v1, and v2 as p_for_pan2) go in with it
+            // (intuition/surprise.js, for-pan.js): worked out after the turn, so nothing PAN says waits on them.
             const sincePan = Number.isFinite(req.body.since_pan_ms) ? req.body.since_pan_ms : null;
             Promise.all([import('../intuition/turn-book.js'), import('../intuition/surprise.js'), import('../intuition/for-pan.js')])
-              .then(async ([{ noteTurn }, { lineSurprise }, { forPan, FOR_PAN_V }]) => {
-                const surprise = await lineSurprise(convoHistory, text).catch(() => null);
-                const pFor = forPan({ pPan: r.p_pan, pRoom: r.p_room, sincePanMs: sincePan, surprise });
+              .then(async ([{ noteTurn }, { lineSurprise }, { forPan, FOR_PAN_V, forPanV2 }]) => {
+                const full = await lineSurprise(convoHistory, text).catch(() => null);
+                const pFor = forPan({ pPan: r.p_pan, pRoom: r.p_room, sincePanMs: sincePan, surprise: full });
+                const pFor2 = forPanV2({ pPan: r.p_pan, pRoom: r.p_room, sincePanMs: sincePan, surprise: full });
+                const { mid, ...surprise } = full || {};   // the 576 number reading is not kept
                 noteTurn({
                   orgId: req.org_id || 'org_personal', text, history: convoHistory, lang: heardLang,
                   seen: { place: r.participation || null, since_pan_ms: sincePan,
                     voice: voiceWho?.verdict === true ? 'his' : voiceWho?.verdict === false ? 'other' : null,
                     likeness: voiceWho?.likeness ?? null, p_pan: r.p_pan ?? null, p_room: r.p_room ?? null, named_other: r.reason === 'named_other', device: realId || null,
-                    surprise, p_for_pan: pFor, for_pan_v: pFor == null ? null : FOR_PAN_V },
+                    surprise: full ? surprise : null, p_for_pan: pFor, for_pan_v: pFor == null ? null : FOR_PAN_V, p_for_pan2: pFor2 },
                   did: { spoke: !['ambient', 'cancelled'].includes(r.intent) && !!said && said.toUpperCase() !== '[AMBIENT]',
                     reason: r.reason || null, held: !!r.hold_ms, response: said.slice(0, 300) },
                 });

@@ -247,3 +247,23 @@ Node and Python agree to 0.0007 on all 1,390 lines; the JS formula matches the f
 
 Every real turn now stores `p_for_pan` next to what PAN actually did. After 2 to 3 days of his talk:
 score it against the next judged labels, then decide on step 3 (acting on it) with the benches.
+
+## Step 2, second term that holds: the tiny model's own reading (2026-11-23, hub Craft 52, shadow)
+
+**Claude prompt timing: no help.** From the hub's own log of every Claude prompt (`events`, `UserPromptSubmit`; its `created_at` is US Eastern local time, not UTC), three terms known at the moment of the line: time since the last prompt, prompts in the last ten minutes, and how recently a heard line was matched by a prompt already sent. Each day left out, log loss 0.386 to 0.391 against 0.385 without them. Lines within a minute of a Claude prompt were for PAN 44% of the time: he talks to both in the same stretch.
+
+**The reading.** The same single SmolLM2-135M pass that gives the surprise also gives its hidden state. Averaged over the line's word pieces after layer 15 of 30 (576 numbers), cut to its 64 main directions (fitted inside each training fold), and added to odds, talk and surprise:
+
+| Test | Log loss | AUC | Answers to lines not for PAN, misses held at 30 of 412 |
+|---|---|---|---|
+| v1 (odds + talk + surprise), each day left out | 0.385 | 0.886 | 362 of 923 |
+| v2 (+ reading), each day left out | 0.285 | 0.940 | 165 |
+| v2, training drops any line whose text occurs on the held-out day | 0.285 | 0.939 | 179 (v1: 372) |
+| v2, trained on earlier days only, scored on the next (787 turns, 20 misses) | 0.294 | 0.941 | 79 of 506 (v1: 140) |
+
+The last layer does about as well (0.282), the last piece alone worse (0.315), and the line read with no talk before it worse again (0.309), so the talk before the line matters. 128 directions overfit (0.303). By the judge's note, at 30 misses: songs 91 to 35, garbled 61 to 21, talk to Claude 60 to 35, talk to other people 42 to 29, other TV or video 11 to 2.
+
+**On the hub.** `model.onnx` got a second output (`/model/layers.14/Add_1_output_0`) added to the same file; logits unchanged (0.0005 apart), the reading 0.00005 from PyTorch. `surprise.js` returns it as `mid` when the file has it. `for-pan.js` `forPanV2` folds the scaler, the 64 directions and the logistic weights back into one weight per number (`for-pan-v2.json`) plus the six v1 terms, so it is one dot product; it matches the fit to 0.0006 on all 1,335 turns through the hub's own code. Logged as `seen.p_for_pan2` next to v1; the 576 numbers are not stored. About 100 ms on the hub, after the turn. Rollback: hub `*.pre-v2` (routes/api.js, intuition/for-pan.js, intuition/surprise.js) and `model.pre-mid.onnx`, Craft swap.
+
+Next: score v1 and v2 on the turns that come in now (never seen by either fit). Scripts in the session scratchpad: `step5_fit.py` (Claude timing), `step6_hidden.py` (Mint), `step6_fit.py`, `step6_check.py`, `step6_cats.py`, `step7_surgery.py` (Mint), `step7_weights.py`.
+

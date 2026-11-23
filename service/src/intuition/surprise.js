@@ -4,9 +4,15 @@
 // model's odds was the first situation term that held up on days left out: log loss 0.413 to 0.388,
 // and at the same misses about 10% fewer answers to lines not meant for PAN.
 //
-// Model: SmolLM2-135M (Hugging Face, Apache 2.0), exported to ONNX and quantized to 8 bits (165 MB),
-// in <models>/smollm2-135m/ (model_int8.onnx, tokenizer.json, tokenizer_config.json). About 15 ms a
-// line on two CPU threads. No model there: lineSurprise returns null and nothing else changes.
+// Model: SmolLM2-135M (Hugging Face, Apache 2.0), exported to ONNX at full precision (650 MB; the 8 bit
+// copy gave different numbers on different CPUs), in <models>/smollm2-135m/ (model.onnx, tokenizer.json,
+// tokenizer_config.json). About 75 ms a line on the hub on two CPU threads. No model there:
+// lineSurprise returns null and nothing else changes.
+//
+// The same pass also gives the model's own reading of the line: the hidden state after layer 15 of 30,
+// averaged over the line's word pieces (`mid`, 576 numbers). p_for_pan v2 uses it (for-pan.js). It is
+// there only when model.onnx has that second output (added 2026-11-23 to the same file; the logits did
+// not change).
 import { createRequire } from 'module';
 import { existsSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
@@ -27,7 +33,8 @@ async function load() {
   const tok = new Tokenizer(JSON.parse(readFileSync(join(SURPRISE_DIR, 'tokenizer.json'), 'utf8')),
     JSON.parse(readFileSync(join(SURPRISE_DIR, 'tokenizer_config.json'), 'utf8')));
   const session = await ort.InferenceSession.create(onnx, { intraOpNumThreads: 2, interOpNumThreads: 1, executionProviders: ['cpu'] });
-  return { ort, tok, session };
+  const midName = session.outputNames.find((n) => n !== 'logits') || null;
+  return { ort, tok, session, midName };
 }
 
 function ready() {
@@ -40,7 +47,8 @@ const ids = (tok, text) => Array.from(tok.encode(text, { add_special_tokens: fal
 /**
  * The line's surprise, as the turn book and the fit use it:
  * mean = average surprisal in nats per word piece, floor = share of pieces outside the model's top
- * 100 guesses, first = average surprisal over the first six pieces. Null when the model is missing.
+ * 100 guesses, first = average surprisal over the first six pieces; mid = the layer 15 reading (or null).
+ * Null when the model is missing.
  */
 export async function lineSurprise(history, line) {
   const m = await ready();
@@ -70,8 +78,15 @@ export async function lineSurprise(history, line) {
     lps.push(got - max - Math.log(sum));
     ranks.push(rank);
   }
+  let mid = null;
+  const h = m.midName ? out[m.midName] : null;
+  if (h) {
+    const D = h.dims[2];
+    mid = new Array(D).fill(0);
+    for (let k = n - nb; k < n; k++) for (let d = 0; d < D; d++) mid[d] += h.data[k * D + d] / nb;
+  }
   const mean = -lps.reduce((s, x) => s + x, 0) / nb;
   const first = -lps.slice(0, 6).reduce((s, x) => s + x, 0) / Math.min(6, nb);
   const floor = ranks.filter((r) => r >= 100).length / nb;
-  return { mean: +mean.toFixed(3), floor: +floor.toFixed(3), first: +first.toFixed(3), n: nb, ms: Date.now() - t0 };
+  return { mean: +mean.toFixed(3), floor: +floor.toFixed(3), first: +first.toFixed(3), n: nb, ms: Date.now() - t0, mid };
 }
