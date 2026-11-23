@@ -5655,6 +5655,15 @@ function start() {
         console.error('[PAN] router.js pre-warm failed:', err?.message || err);
       });
 
+      // The memory vectors (memory-vector-worker.js) loaded at the first voice turn after a start:
+      // 198,506 x 3,072 through the database's encryption took 49 s of the hub's CPU, the voice
+      // model missed its time and the cloud model answered with a bad reply (first turn after a
+      // Craft swap, 2026-11-23). Loaded 20 s after the start instead: swaps are made while nobody
+      // is talking, so the load is done before he speaks.
+      setTimeout(() => {
+        import('./memory-search.js').then((m) => m.warmVectors()).catch((err) => console.warn('[PAN] vector warm failed:', err?.message || err));
+      }, 20_000).unref();
+
       // ── SHARED BOOT (prod + dev) ─────────────────────────────────
       // Dev is an exact copy of prod on a different port + database.
       // Only system-wide singletons (steward, device heartbeat) are
