@@ -3119,7 +3119,7 @@ export async function* routeStream(text, context = {}) {
   const readerProbe = {};
   let turnPlace = null;   // PAN's place in the talk (intuition/participation.js), once known
   const withProsody = (result) => ({ ...result, prosody: planProsody(result),
-    ...(readerProbe.pPan !== undefined ? { p_pan: readerProbe.pPan, to_top: readerProbe.top } : {}),
+    ...(readerProbe.pPan !== undefined ? { p_pan: readerProbe.pPan, p_room: readerProbe.pRoom, to_top: readerProbe.top } : {}),
     ...(turnPlace ? { participation: turnPlace } : {}) });
   const _turnStart = Date.now();   // for the [routeStream] timing line
   if (context.voice_his === false) alone.heardOther(context.device_id);

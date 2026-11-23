@@ -97,7 +97,8 @@ export async function* readerStream(prompt, maxTokens, signal, usageOut = null, 
   const odds = who.completion_probabilities?.[0]?.top_logprobs || [];
   const pPan = Math.exp(odds.find((t) => t.token === 'pan')?.logprob ?? -Infinity);
   // probe: the caller's object gets the odds, so a bench can replay other thresholds (2026-11-12).
-  if (probe) { probe.pPan = Math.round(pPan * 1000) / 1000; probe.top = who.content; }
+  // pRoom: the other word, for the shadow p_for_pan (intuition/for-pan.js, 2026-11-22).
+  if (probe) { probe.pPan = Math.round(pPan * 1000) / 1000; probe.top = who.content; probe.pRoom = Math.round(Math.exp(odds.find((t) => t.token === 'room')?.logprob ?? -Infinity) * 10000) / 10000; }
   // needPan: a stricter bar than the top token (router.js, while he dictates to Claude).
   const head = needPan != null ? (pPan >= needPan ? HEAD : TO) : who.content === 'pan' || pPan >= minPan ? HEAD : TO;
   yield head;

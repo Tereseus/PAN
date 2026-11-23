@@ -235,3 +235,15 @@ the prompt, so reading surprise in the reader costs one call per piece (about 40
 Next: test whether a tiny separate model that scores a whole line in one pass gives the same gain.
 Files (local): scratchpad `step2_fit.py`, `step2_curve.py`, `step2_what.py`, `step3_surprise.py`
 (Mint), `step3_surprise.jsonl`, `step3_fit.py`, `step3_curve.py`, `checked_all.jsonl`.
+
+## Step 2 started: shadow (2026-11-22, hub Craft 51)
+
+The surprise is read by a tiny separate model in one pass instead of the voice model piece by piece:
+SmolLM2-135M (Apache 2.0) scores a line in about 75 ms on the hub CPU, with nearly the same gain
+(each day left out: log loss 0.385, against 0.382 with the voice model's own surprise and 0.413 with
+none). Full precision, not 8 bits: the 8-bit copy gave different numbers on different processors
+(up to 1.4 nats on one line between the Mint and the G16), and live numbers must match the fit.
+Node and Python agree to 0.0007 on all 1,390 lines; the JS formula matches the fitted model to 0.0007.
+
+Every real turn now stores `p_for_pan` next to what PAN actually did. After 2 to 3 days of his talk:
+score it against the next judged labels, then decide on step 3 (acting on it) with the benches.
