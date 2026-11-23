@@ -265,5 +265,7 @@ The last layer does about as well (0.282), the last piece alone worse (0.315), a
 
 **On the hub.** `model.onnx` got a second output (`/model/layers.14/Add_1_output_0`) added to the same file; logits unchanged (0.0005 apart), the reading 0.00005 from PyTorch. `surprise.js` returns it as `mid` when the file has it. `for-pan.js` `forPanV2` folds the scaler, the 64 directions and the logistic weights back into one weight per number (`for-pan-v2.json`) plus the six v1 terms, so it is one dot product; it matches the fit to 0.0006 on all 1,335 turns through the hub's own code. Logged as `seen.p_for_pan2` next to v1; the 576 numbers are not stored. About 100 ms on the hub, after the turn. Rollback: hub `*.pre-v2` (routes/api.js, intuition/for-pan.js, intuition/surprise.js) and `model.pre-mid.onnx`, Craft swap.
 
+SmolLM2-360M (same test, its own layer 16 reading): log loss 0.265, but answers to lines not for PAN at 30 misses 173, no better than the 135M's 165, for about three times the compute and a second model file. The hub stays on 135M.
+
 Next: score v1 and v2 on the turns that come in now (never seen by either fit). Scripts in the session scratchpad: `step5_fit.py` (Claude timing), `step6_hidden.py` (Mint), `step6_fit.py`, `step6_check.py`, `step6_cats.py`, `step7_surgery.py` (Mint), `step7_weights.py`.
 
