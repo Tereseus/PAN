@@ -6,6 +6,7 @@ import { askAIWithFallback, askAIStreamWithFallback, readChain } from './llm-fal
 import { buildToolBlocks } from './tools.js';
 import { outLoud, keepFigures } from './sums.js';
 import { lookupNotes, searchQuery, DEFAULT_ENGINE, ENGINES } from './web-lookup.js';
+import { wikiNotes } from './library/zim.js';
 import { peekSearch } from './search-again.js';
 import { readerMayAnswer } from './reader-alone.js';
 import { buildSelfBlock, buildSelfLine } from './self.js';
@@ -257,6 +258,16 @@ const WEB_LOOKUP_MS = 3000;   // the longest a turn waits for the page; past it 
 function webLookupOn(deviceId) {
   try {
     const v = String(get("SELECT value FROM settings WHERE key = 'web_lookup'")?.value || '').replace(/^"|"$/g, '').trim().toLowerCase();
+    return v === 'all' || (v === 'bench' && /-bench$/.test(String(deviceId || '')));
+  } catch { return false; }
+}
+// wiki_lookup: world questions ask offline Wikipedia first (library/zim.js wikiNotes) and the web only
+// when Wikipedia does not hold it; with Wikipedia notes the hub model may still ask for a web search
+// for something that changes (owner, 2026-11-23). 'all', 'bench' (benchmark devices only, the
+// default until the answer bench says so) or 'off'.
+function wikiLookupOn(deviceId) {
+  try {
+    const v = String(get("SELECT value FROM settings WHERE key = 'wiki_lookup'")?.value || 'bench').replace(/^"|"$/g, '').trim().toLowerCase();
     return v === 'all' || (v === 'bench' && /-bench$/.test(String(deviceId || '')));
   } catch { return false; }
 }
@@ -3901,16 +3912,25 @@ answer an earlier question, and do not narrate what the context blocks mention.`
   // The notes go right above his line, after everything that stays the same from turn to turn.
   const worldPromptHub = (gate, notes, again = false) => hubPrompt((askedFor ? 'ASKED' : notes ? (again ? 'LOOKED_SEARCH' : 'LOOKED') : 'WORLD') + (gate ? '_MAYBE' : ''), [studentHistory, nowLine(),
     shelf.block,
-    notes ? 'Notes, looked up on the web just now:\n' + notes.map((n) => '- ' + n).join('\n') : '',
+    notes ? (notesFrom === 'wikipedia' ? 'Notes, from Wikipedia:\n' : 'Notes, looked up on the web just now:\n') + notes.map((n) => '- ' + n).join('\n') : '',
     `${isDash ? 'User typed' : 'Mic heard'}: "${safeText}"`].filter(Boolean), hubSelf());
   // The lookup starts once per turn: at once while PAN is in the talk, else the moment the voice
   // model starts a spoken answer (a question on the TV is not searched for).
   let lookedUp = null;
+  let notesFrom = '';
   const startLookup = () => {
     // A question about one of his own things (the shelf has its notes) is not searched on the web:
     // "what is Elipsis" would find the punctuation mark, not his project.
-    if (!lookedUp) lookedUp = worldHub && !askedFor && !shelf.named.length && webLookupOn(context.device_id)
-      ? lookupNotes(followsWorld ? searchQuery(`${followUp.asked} ${text}`) : searchQuery(text, talkBefore(context, text)), { engine: webLookupEngine(), deadlineMs: WEB_LOOKUP_MS, talk: String(context.device_id || '') }).catch(() => null)
+    // Offline Wikipedia first (a few ms, no internet, no day limit); the web when it holds nothing.
+    const wiki = wikiLookupOn(context.device_id);
+    const web = webLookupOn(context.device_id);
+    if (!lookedUp) lookedUp = worldHub && !askedFor && !shelf.named.length && (wiki || web)
+      ? (async () => {
+        const q = followsWorld ? searchQuery(`${followUp.asked} ${text}`) : searchQuery(text, talkBefore(context, text));
+        const w = wiki ? await wikiNotes(followsWorld ? `${followUp.asked} ${text}` : text).catch(() => null) : null;
+        if (w) { notesFrom = 'wikipedia'; return w; }
+        return web ? lookupNotes(q, { engine: webLookupEngine(), deadlineMs: WEB_LOOKUP_MS, talk: String(context.device_id || '') }).catch(() => null) : null;
+      })()
       : Promise.resolve(null);
     return lookedUp;
   };
@@ -3921,7 +3941,9 @@ answer an earlier question, and do not narrate what the context blocks mention.`
     if (found) console.log(`[routeStream] looked it up on ${found.engine}: ${found.notes.length} lines in ${found.ms} ms${found.cached ? ' (kept from before)' : ''}`);
     const hubOpts = { ...streamOpts, chain: [worldHub, ...cloudFirst()].slice(0, 3), firstTokenMs: WORLD_LOCAL_MS, temperature: HUB_TEMPERATURE };
     const notes = found ? found.notes : null;
-    if (!notes || askedFor || !lookAgainOn(context.device_id)) { yield* plainAsReply(askAIStreamWithFallback(worldPromptHub(gate, notes), hubOpts), HUB_SENTENCES); return; }
+    // Wikipedia notes are a snapshot: for something that changes the model may still search the web.
+    const mayLookAgain = lookAgainOn(context.device_id) || (notesFrom === 'wikipedia' && webLookupOn(context.device_id));
+    if (!notes || askedFor || !mayLookAgain) { yield* plainAsReply(askAIStreamWithFallback(worldPromptHub(gate, notes), hubOpts), HUB_SENTENCES); return; }
     // The notes may miss it: the model may ask for one more search in its own words, once.
     const first = await peekSearch(askAIStreamWithFallback(worldPromptHub(gate, notes, true), hubOpts));
     if (!first.query) { yield* plainAsReply(first.stream, HUB_SENTENCES); return; }

@@ -1997,6 +1997,16 @@ router.post('/reading', async (req, res) => {
 // His voice profile for voice-id.js: how many lines it has learned, and a way to start again.
 // His notes on things (memory/things.js): GET lists them (q filters by name), GET /things/:name
 // reads one, POST /things/write writes one now ({ name, dry }: dry returns it without saving).
+// The offline library (library/zim.js): Wikipedia's opening for a name, from the file in
+// <PAN>/library, no internet. 404 when the name has no article, 503 when there is no file.
+router.get('/library/lookup', async (req, res) => {
+  try {
+    const { wikiLookup, wikipediaFile } = await import('../library/zim.js');
+    if (!(await wikipediaFile())) return res.status(503).json({ error: 'no Wikipedia file in the library' });
+    const r = await wikiLookup(String(req.query.name || ''), { max: Math.min(+req.query.max || 1200, 5000) });
+    r ? res.json(r) : res.status(404).json({ error: 'no article with that name' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 router.get('/things', (req, res) => {
   try { res.json({ things: listThings({ q: req.query.q || '', limit: req.query.limit, withNotes: req.query.all !== '1' }) }); }
   catch (e) { res.status(500).json({ error: e.message }); }

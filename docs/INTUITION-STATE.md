@@ -487,6 +487,11 @@ So that facts do not depend on a search engine that blocks the hub or costs mone
   check the current size and the hub's free disk before downloading, and ask him first.
 - Searched locally by title and full text; the shelf uses it for the names, places and things
   it hears.
+- **Built 2026-11-23:** the mini edition (13 GB, the opening of every article) is on the hub, and
+  `library/zim.js` reads it with no outside code. World questions ask it first and the web only when
+  it holds nothing, or when the hub model asks for a search because the fact changes (setting
+  `wiki_lookup`, bench only until the answer bench passes; docs/FEATURES.md). Title lookup only, no
+  full text index yet; the shelf does not use it yet.
 - Facts a person works out rather than looks up (sunrise, the time somewhere else, distances,
   units, arithmetic) are code in the world, never searches.
 

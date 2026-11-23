@@ -5663,6 +5663,17 @@ function start() {
       setTimeout(() => {
         import('./memory-search.js').then((m) => m.warmVectors()).catch((err) => console.warn('[PAN] vector warm failed:', err?.message || err));
       }, 20_000).unref();
+      // The offline Wikipedia's title list (about 26 MB, under a second) is read once, here, so the
+      // first world question after a swap doesn't wait for it (library/zim.js).
+      setTimeout(() => {
+        import('./library/zim.js').then(async (m) => {
+          const f = await m.wikipediaFile();
+          if (!f) return;
+          const t0 = Date.now();
+          await (await m.library(f)).titleList();
+          console.log(`[PAN] offline Wikipedia ready in ${Date.now() - t0}ms`);
+        }).catch((err) => console.warn('[PAN] Wikipedia warm failed:', err?.message || err));
+      }, 25_000).unref();
 
       // ── SHARED BOOT (prod + dev) ─────────────────────────────────
       // Dev is an exact copy of prod on a different port + database.
