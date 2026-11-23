@@ -5674,6 +5674,8 @@ function start() {
           console.log(`[PAN] offline Wikipedia ready in ${Date.now() - t0}ms`);
         }).catch((err) => console.warn('[PAN] Wikipedia warm failed:', err?.message || err));
       }, 25_000).unref();
+      // A newer Wikipedia edition is fetched at night by the hub only (library/update.js).
+      if (!IS_DEV) import('./library/update.js').then((m) => m.startUpdates()).catch((err) => console.warn('[PAN] Wikipedia updates off:', err?.message || err));
 
       // ── SHARED BOOT (prod + dev) ─────────────────────────────────
       // Dev is an exact copy of prod on a different port + database.

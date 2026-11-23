@@ -98,6 +98,15 @@ ok(JSON.stringify(titleForms('eiffel tower')) === JSON.stringify(['eiffel tower'
 const long = plainText('<p>' + 'One sentence here. '.repeat(100) + '</p>', 100);
 ok(long.length <= 100 && long.endsWith('.'), 'long text is cut at a sentence end');
 
+process.env.PAN_DATA_DIR = mkdtempSync(join(tmpdir(), 'pan-zim-db-'));   // update.js opens the database
+process.env.PAN_DEV = '1';
+const { newestEdition, isNewer } = await import('../library/update.js');
+const listing = '<a href="wikipedia_en_all_mini_2026-06.zim">x</a> <a href="wikipedia_en_all_mini_2026-09.zim">y</a> ' +
+  '<a href="wikipedia_en_all_mini_2026-11.zim.sha256">z</a> <a href="wikipedia_en_all_nopic_2026-12.zim">n</a> <a href="wikipedia_fr_all_mini_2026-12.zim">f</a>';
+ok(newestEdition(listing) === 'wikipedia_en_all_mini_2026-09.zim', 'newest English mini edition picked; checksum files, other editions and languages ignored');
+ok(isNewer('wikipedia_en_all_mini_2026-09.zim', 'wikipedia_en_all_mini_2026-06.zim') && !isNewer('wikipedia_en_all_mini_2026-09.zim', 'wikipedia_en_all_mini_2026-09.zim'), 'only a later edition counts as newer');
+ok(isNewer('wikipedia_en_all_mini_2026-09.zim', null), 'nothing installed: any edition is newer');
+
 await z.close();
 console.log(failed ? `${failed} failed` : 'all passed');
 process.exit(failed ? 1 : 0);

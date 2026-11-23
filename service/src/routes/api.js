@@ -2007,6 +2007,22 @@ router.get('/library/lookup', async (req, res) => {
     r ? res.json(r) : res.status(404).json({ error: 'no article with that name' });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
+// The library's update (library/update.js): status, and a check now ({force: true} downloads even by
+// day, owner only, for testing).
+router.get('/library/status', async (req, res) => {
+  try {
+    const { updateState } = await import('../library/update.js');
+    const { wikipediaFile } = await import('../library/zim.js');
+    res.json({ file: await wikipediaFile(), update: updateState() });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+router.post('/library/check', async (req, res) => {
+  try {
+    const { checkOnce } = await import('../library/update.js');
+    const force = !!req.body?.force && !req.user?.person;   // the owner's devices only
+    res.json(await checkOnce({ force }));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 router.get('/things', (req, res) => {
   try { res.json({ things: listThings({ q: req.query.q || '', limit: req.query.limit, withNotes: req.query.all !== '1' }) }); }
   catch (e) { res.status(500).json({ error: e.message }); }
