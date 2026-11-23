@@ -59,10 +59,33 @@ test('a second ask that starts with also or and', () => {
   eq(sent('Also, ask them why the voice sounds the way it sounds.'), 'PAN: why the voice sounds the way it sounds.', 'also, ask them');
 });
 
+test('the ask in the middle of a long line, with junk words first', () => {
+  // A long line said to the phone on 2026-11-23 (made up here, same shape): the hub model was asked
+  // whether it was a send, said no, and it was lost.
+  eq(sent('look at will also send another message to the pan thread that says the notes have to work for anyone not only for me like that is all supposed to work'),
+    'PAN: the notes have to work for anyone not only for me like that is all supposed to work', 'long line');
+});
+
+test('"send all of that to <thread>" sends the talk', () => {
+  eq(sent('Okay send all of that I just said to Pan.'), 'PAN: Everything I just said.', 'all of that');
+  eq(sent('send the whole thing to the tax papers thread'), 'Tax Papers: Everything I just said.', 'whole thing');
+  eq(sent('forward what I just said to the map creation thread'), 'Map Creation: Everything I just said.', 'what I just said');
+  eq(sent('send that to the printer'), null, 'not a thread');
+  eq(sent('send it to my mom'), null, 'a person, not a thread');
+});
+
+test('"read me my latest message" reads the newest reply', () => {
+  eq(read('can you read me my newest reply')?.kind, 'last', 'newest');
+  eq(read('what was the last message')?.kind, 'last', 'last');
+  eq(read('read me the last message from Maria')?.kind ?? null, null, 'from a person');
+  eq(read('what is my latest message on whatsapp')?.kind ?? null, null, 'another app');
+});
+
 test('lines that are PAN\'s own stay PAN\'s', () => {
   for (const line of ['tell me a joke', 'also tell me what the weather is', 'Send another message to my wife that says I am late.',
     'I got another message about the pan this morning', 'What did you actually send as a message to Pan?', 'Did you get the messages that it sent to you?',
-    'Also, what time is it', 'and then we went home. It was late.']) {
+    'Also, what time is it', 'and then we went home. It was late.', "Later on I'll send a message to the pan thread about it",
+    'yesterday we never send a message to the tax papers thread at all']) {
     eq(sent(line), null, line);
   }
 });

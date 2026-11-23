@@ -3137,7 +3137,7 @@ export async function* routeStream(text, context = {}) {
   let shelf = { block: '', named: [] };
   try {
     pauseForTalk();   // a note being written in the background stops: this turn needs the CPU
-    shelf = shelfForTurn(text);
+    shelf = shelfForTurn(text, { othersNearby: overheardWithin(2 * 60_000, context.org_id || 'org_personal') >= 2 });
     if (shelf.named.length) console.log(`[routeStream] shelf: ${shelf.named.join(', ')} named in this line`);
   } catch (e) { console.warn('[routeStream] shelf failed:', e.message); }
   const talking = Number.isFinite(context.since_pan_ms) ? context.since_pan_ms < TALK_MS : panSpokeWithin(TALK_MS, context.org_id);
@@ -3843,13 +3843,17 @@ answer an earlier question, and do not narrate what the context blocks mention.`
   // A follow up on a question about the world is one too ("what years did he win that in" after a
   // question about titles went to the voice model, which answered from its own head, Nov 20).
   const followsWorld = !!followUp && asksTheWorld(followUp.asked);
+  // A question that names one of his things (the shelf has its note): the voice model never sees the
+  // notes, so a two word question naming one of his projects got the dictionary meaning of the word
+  // (his phone, 2026-11-23). The bigger model gets the note. Too short for asksTheWorld.
+  const asksAboutHisThing = shelf.named.length > 0 && /\?\s*$/.test(String(text).trim());
   const worldQ = !!studentModel && !standing && !wordSearch && !(context.canCamera && looksVisual(text))
     && !/Relevant memories:|His own notes from/.test(String(memoryContext || ''))
-    && worldQuestionsOn(context.device_id) && (asksTheWorld(text) || asksForSomething(text) || followsWorld);
+    && worldQuestionsOn(context.device_id) && (asksTheWorld(text) || asksForSomething(text) || followsWorld || asksAboutHisThing);
   // A request to come up with something (a question for him, a joke): the same road to the bigger
   // model, its own rule there. The 2B voice model answered such a request with two words of
   // agreement, twice running (Nov 17).
-  const askedFor = worldQ && !asksTheWorld(text) && !followsWorld;
+  const askedFor = worldQ && !asksTheWorld(text) && !followsWorld && !asksAboutHisThing;
   const worldRule = (gate) => 'He asked something that needs real knowledge or judgment. Answer it correctly and plainly, the way a smart friend would out loud, in one to three short spoken sentences, talking to him as "you". Give the real figure, step or reason when there is one. If you are not sure, say so in a few words and give what you do know; never make up a term, a number or a product. Stay on his question: nothing about his work, his projects or the background line unless he asked.'
       + (gate ? ' If he was not talking to you (the TV, someone else in the room), reply {"intent":"ambient","addressed":0.1,"response":"[AMBIENT]"}.' : '');
   const worldPrompt = (gate) => [

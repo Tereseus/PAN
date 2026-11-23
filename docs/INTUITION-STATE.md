@@ -439,6 +439,24 @@ scored 0.67 against 0.60 for an unrelated one. So the shelf holds **notes on thi
   searched on the web); the situation line (what the things on his screens or in the talk are);
   memory search (a matching note is the first result, for the voice's recall and for `pan_search`).
 - The reader's own prompt is unchanged.
+- **A note is an object** (the owner's keys, 2026-11-23), the same for any kind of thing, a
+  person, a company, a job, a project, a place, an event: name, aliases, kind, what, role, who
+  (name, role, reach), where, when (can repeat), state, as_of, next (what, on), needs, facts,
+  reach, links, private, importance. Stored as JSON (`obj`); `renderThing` makes the short
+  key: value lines a prompt reads (`record`). Keys the notes do not show are left out.
+- **What a note never holds**, checked in code whatever the model writes (`cleanThing`): the
+  owner listed under `who`; the owner's own address, phone, email, passwords or account
+  numbers (facts whose key says so, any value with a phone number or an email); filler such as
+  "Not specified"; a value copied word for word out of the evidence (the model pasted a line of
+  an assistant's reply as a note's state).
+- **His things, not the news.** After a note is written for anything that is not a project, job,
+  app, person or conversation, the model is asked one short question about it: part of his own
+  life, or only a public topic he talked about (a country in a talk about the Baltics)? A topic
+  has its note dropped and waits for more mentions.
+- **Endpoints:** `GET /api/v1/things` (`q` filters by name), `GET /api/v1/things/:name`,
+  `POST /api/v1/things/write { name, dry }` (writes one now; `dry` returns it unsaved).
+- **Private notes** (health, money) are not put in a reply while two or more other voices were
+  heard in the last 2 minutes.
 
 ## 12. The knowledge library
 

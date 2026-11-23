@@ -768,6 +768,9 @@ const IN_THREAD = new RegExp(`${LEAD}(?:in|on|to|over in)\\s+(?:the\\s+|my\\s+)?
 const LOOSE = new RegExp(`${LEAD}${VERB}\\s+(?:the\\s+)?(.+)$`, 'i');
 const FOLLOWUP = new RegExp(`${LEAD}(?:tell it|ask it|reply|answer it|say back|tell them|ask them)\\b[\\s,:.-]*(.+)$`, 'i');
 const LIST = /\b(?:list|which|what)\b.*\b(?:threads|sessions)\b/i;
+const EMBEDDED = /(?<!\b(?:i|we|he|she|they|i'll|we'll|i'd|who|don't|didn't|not|never|already)\s+)\b(?:send|text)\s+(?:a\s+|another\s+|one\s+more\s+)?(?:new\s+)?message\s+(?:on\s+)?to\s+(?:the\s+|my\s+)?(.{1,48}?)\s+(?:thread|session|chat)\b[\s,:.-]*(.*)$/i;
+const SEND_BACK = new RegExp(`${LEAD}(?:send|forward|pass|give)\\s+(?:that|this|it|all (?:of )?(?:that|it)|everything|what i (?:just )?said|(?:that|this|the)\\s+(?:whole\\s+)?(?:thing|message|part|last (?:thing|message|part)))(?:\\s+(?:that\\s+)?i\\s+(?:just\\s+)?said)?\\s+(?:on\\s+|over\\s+)?to\\s+(?:the\\s+|my\\s+)?(.{1,48}?)(?:\\s+(?:thread|session|chat))?\\s*[.!?]*$`, 'i');
+const LATEST = /^(?:(?:hey\s+)?(?:pan|pam|pen)[,.]?\s+)?(?:(?:can|could) you\s+)?(?:read(?:\s+me)?|what(?:'s| is| was)|tell me|play(?:\s+me)?)\s+(?:my|the)\s+(?:latest|last|newest|most recent)\s+(?:message|reply|answer)\s*[.!?]*$/i;
 const LAST_REPLY = /\bwhat did (?:the\s+)?(.{1,48}?)\s*(?:thread|session)?\s+(?:say|answer|reply)\b/i;
 // Status asks are answered from the transcript, so a busy thread is never interrupted:
 // "can you see what my PC stuff thread is doing", "is the tasks thread done", "check on the map thread".
@@ -932,6 +935,14 @@ function parseFor(utterance, person, st) {
     return { kind: 'unknown', name: m[1] };
   }
 
+  // Asking to hear his newest message went to the general model, which said it had no record of one
+  // (2026-11-23). His messages are his threads' replies (a person's message is read out as it
+  // comes), so the newest reply to him is read.
+  if (LATEST.test(text)) {
+    const job = get(`SELECT * FROM thread_relay_jobs WHERE asked_by IS :w AND status IN ('replied','failed') ORDER BY created_at DESC LIMIT 1`, { ':w': askedBy });
+    return { kind: 'last', job: job || null };
+  }
+
   const last = LAST_REPLY.exec(text);
   if (last) {
     // Only a named thread, "thread"/"session" said out loud, or it/that/they while the last
@@ -1001,6 +1012,25 @@ function parseFor(utterance, person, st) {
     }
     if (r.reason === 'no_number') return { kind: 'no_number', number: r.number };
     return { kind: 'unknown', name: m[1] };
+  }
+
+  // The full ask said after a few other words, in a long line ("... also send another message to
+  // the X thread that says ...", his phone, 2026-11-23). ANCHORED wants it at the start, and as "a thread
+  // named in passing" the hub model was asked whether to send, said "No.", and the line was lost.
+  // "send a message to the X thread" is the ask itself, wherever it stands in the line.
+  const emb = EMBEDDED.exec(text);
+  if (emb && threads.length && !WAS_IT_DONE.test(text)) {
+    const body = cleanBody(emb[2]);
+    const r = matchThread(emb[1], threads);
+    if (r.ok && r.score >= 0.8) return body ? { kind: 'send', thread: r.thread, text: body } : { kind: 'empty', thread: r.thread };
+  }
+
+  // Asked again right after that line was lost, as "send all of that to <thread>" (the same day): what
+  // he said goes to the thread, the thread named with or without the word "thread".
+  const back = SEND_BACK.exec(text);
+  if (back && threads.length) {
+    const r = matchThread(back[1], threads);
+    if (r.ok && r.score >= 0.8) return { kind: 'send', thread: r.thread, text: 'Everything I just said.', utterance: text };
   }
 
   const computer = computerCommand(text, threads);

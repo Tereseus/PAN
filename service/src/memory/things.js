@@ -41,8 +41,15 @@ export function ensureThings() {
     written_mentions INTEGER NOT NULL DEFAULT 0,
     embedding   BLOB
   )`);
-  // asked_at: when he last asked PAN about it by voice (added 2026-11-23, after the table)
-  try { run(`ALTER TABLE memory_things ADD COLUMN asked_at TEXT`); } catch {}
+  // Added after the table (2026-11-23): asked_at, when he last asked PAN about it by voice; obj,
+  // the note as an object (renderThing makes `record` from it); importance and private from it.
+  for (const col of ['asked_at TEXT', 'obj TEXT', 'importance REAL', 'private INTEGER NOT NULL DEFAULT 0']) {
+    try {
+      run(`ALTER TABLE memory_things ADD COLUMN ${col}`);
+      // The first notes were prose: the watch writes them again as objects, best known first.
+      if (col.startsWith('obj ')) run(`UPDATE memory_things SET written_at = NULL WHERE record IS NOT NULL`);
+    } catch {}
+  }
   _ready = true;
 }
 
@@ -240,23 +247,138 @@ export async function gatherEvidence(name, aliases = [], { limit = EVIDENCE } = 
   return { first: first.map((p) => p.line), later: out.map((p) => p.line) };
 }
 
-const RECORD_PROMPT = (name, notes, old) => `You keep PAN's notes on the things in one man's life and work. PAN is his voice assistant. The notes are his own words and what his Claude threads reported doing for him.
+// ── The note: one object per thing, the same keys for anyone ────────────────────────────
+// Checked against very different lives (2026-11-23): an electrician's panel job, a carer with an
+// elderly parent, a parent's schedules, a trucker, a shop, a student, a trip, a person. Code work
+// is one case of it, not the shape. Questions read single keys ("who's our contact there" is
+// `who`, "how's it going" is `state`), and prompts get short key: value lines, not prose.
+export const KINDS = ['person', 'organization', 'group', 'job', 'project', 'place', 'object', 'event', 'conversation', 'app', 'other'];
 
-Write what "${name}" is to him, from the notes below only.
-- Two or three plain sentences about him in the third person ("he"): what it is, how it relates to him, and where it stands now.
-- Say what the thing IS, in the first words: "X is his ...". Not what was said in one conversation about it.
-- What it is usually shows in how it first came up; where it stands shows in the latest notes.
-- Only what the notes say. Never guess or add general knowledge.
-- If it has other names or spellings in the notes, say so.
-- If the notes do not show what it is, write exactly: UNKNOWN
-${old ? `\nThe current note, to update (keep what is still true):\n${old}\n` : ''}
+const RECORD_PROMPT = (name, notes, old, owner) => `You keep PAN's notes on the things in one person's life${owner ? ` (the owner, ${owner})` : ''}. PAN is their voice assistant. The notes below are the owner's own words and what their assistants reported doing for them.
+
+Fill in the note on "${name}" as ONE JSON object, from the notes only. Leave out every key the notes do not show. Never guess, never add general knowledge. Never put the owner in "who". Never write the owner's own address, phone number, email, passwords or account numbers anywhere in the note. Write every value as a few words of your own, never a copied passage.
+{
+ "name": "${name}",
+ "aliases": ["other names or spellings used in the notes"],
+ "kind": "one of: ${KINDS.join(', ')}",
+ "what": "what it is to the owner, one short line",
+ "role": "the owner's relation to it",
+ "who": [{"name": "a person or company", "role": "their part in it", "reach": "how to reach them, only if the notes say"}],
+ "where": "place, site or room",
+ "when": [{"what": "...", "at": "date or time", "repeats": "only if it repeats"}],
+ "state": "where it stands now, one short line",
+ "as_of": "the date of the latest note that shows that state",
+ "next": [{"what": "what is still open", "on": "who or what it waits on"}],
+ "needs": ["parts, tools or materials it needs"],
+ "facts": {"a detail": "its value"},
+ "reach": ["channels to act on it: a thread, an email, a phone number"],
+ "links": ["names of related things"],
+ "private": true when it is about health, money or anything not to read out with other people around,
+ "importance": 0 to 1, how much it matters to the owner now
+}
+"what" comes from how it first came up; "state", "as_of" and "next" from the latest notes.
+If the notes do not show what it is, reply with only: UNKNOWN
+If "${name}" is only a public topic the owner talked about (a country, a team, a brand, a news story) with no part in the owner's own life (no plan, person, work, purchase or trip of theirs tied to it), reply with only: PUBLIC
+${old ? `\nThe current note (keep what is still true, update the rest):\n${JSON.stringify(old)}\n` : ''}
 How it first came up, oldest first:
 ${notes.first.join('\n') || '(none)'}
 
 Since then, newest first:
 ${notes.later.join('\n') || '(none)'}
 
-The note on "${name}":`;
+The JSON note on "${name}":`;
+
+// The owner's name (setting display_name), so the model leaves the owner out of "who".
+function ownerName() {
+  try { return String(get(`SELECT value FROM settings WHERE key = 'display_name'`)?.value || '').replace(/^"|"$/g, '').trim(); } catch { return ''; }
+}
+// Details of the owner's own that never go in a note, whatever the model writes: notes reach prompts,
+// and a prompt can go to a cloud model. The PCBWay note copied his delivery address and phone into
+// its facts (2026-11-23).
+const OWN_DETAIL_KEY = /address|phone|mobile|email|password|passcode|pin\b|card|iban|account|bank|ssn|passport|login/i;
+// A phone number has 10+ digits in one run; a date (2026-11-23) or a size (67.5 x 64) does not.
+const looksPrivate = (v) => /[\w.+-]+@[\w-]+\.[\w.]+|\[EMAIL-REDACTED\]/.test(v)
+  || (String(v).match(/\+?\d[\d\s().-]{8,}\d/g) || []).some((m) => m.replace(/\D/g, '').length >= 10);
+const oldObj = (thing) => { try { return thing.obj ? JSON.parse(thing.obj) : null; } catch { return null; } };
+// Filler the model writes for a key it should have left out ("where: Not specified") is no value.
+const FILLER = /^(?:not specified|unspecified|not stated|not mentioned|unknown|none|n\/a|null|no note yet\b.*|nothing yet)\.?$/i;
+const cut = (v, n) => { const t = String(v ?? '').replace(/\s+/g, ' ').trim(); if (FILLER.test(t)) return ''; return t.length > n ? t.slice(0, n - 3).replace(/\s+\S*$/, '') + '...' : t; };
+const list = (v, n) => (Array.isArray(v) ? v : v == null || v === '' ? [] : [v]).slice(0, n);
+const dropEmpty = (o) => Object.fromEntries(Object.entries(o).filter(([, v]) => v));
+
+/** The model's reply made into a clean note object, or null. Unknown keys are dropped. */
+export function cleanThing(raw, name, evidence = '') {
+  let o = raw;
+  if (typeof raw === 'string') {
+    const t = raw.trim();
+    if (/^UNKNOWN\b/i.test(t)) return null;
+    const a = t.indexOf('{'), b = t.lastIndexOf('}');
+    if (a < 0 || b <= a) return null;
+    const body = t.slice(a, b + 1);
+    try { o = JSON.parse(body); } catch {
+      try { o = JSON.parse(body.replace(/,\s*([}\]])/g, '$1')); } catch { return null; }
+    }
+  }
+  if (!o || typeof o !== 'object') return null;
+  const out = { name: cut(name || o.name, 80) };
+  const owner = ownerName().toLowerCase();
+  const what = cut(o.what, 200);
+  if (!what || /^unknown$/i.test(what)) return null;
+  const aliases = list(o.aliases, 6).map((x) => cut(x, 60)).filter((x) => x && x.toLowerCase() !== out.name.toLowerCase());
+  if (aliases.length) out.aliases = aliases;
+  out.kind = KINDS.includes(String(o.kind || '').toLowerCase()) ? String(o.kind).toLowerCase() : 'other';
+  out.what = what;
+  // A value copied word for word out of the evidence is a pasted passage, not the model's summary:
+  // the PCBWay note's state was a line of an assistant's chat reply (2026-11-23).
+  // Compared as letters and digits only, so markdown the model stripped ("**Website:**") still matches.
+  const bare = (x) => String(x).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+  const ev = bare(evidence);
+  const copied = (v) => { const t = bare(String(v).replace(/\.\.\.$/, '')); return ev && t.length >= 40 && ev.includes(t.slice(0, 40)); };
+  for (const k of ['role', 'where', 'state', 'as_of']) { const v = cut(o[k], 120); if (v && !looksPrivate(v) && !copied(v)) out[k] = v; }
+  const who = list(o.who, 6).map((w) => (typeof w === 'string' ? { name: cut(w, 60) } : dropEmpty({ name: cut(w?.name, 60), role: cut(w?.role, 80), reach: cut(w?.reach, 100) }))).filter((w) => w.name);
+  if (who.length) out.who = who;
+  const when = list(o.when, 6).map((w) => (typeof w === 'string' ? { what: cut(w, 100) } : dropEmpty({ what: cut(w?.what, 100), at: cut(w?.at, 60), repeats: cut(w?.repeats, 60) }))).filter((w) => w.what || w.at);
+  if (when.length) out.when = when;
+  const next = list(o.next, 6).map((w) => (typeof w === 'string' ? { what: cut(w, 120) } : dropEmpty({ what: cut(w?.what, 120), on: cut(w?.on, 80) }))).filter((w) => w.what);
+  if (next.length) out.next = next;
+  for (const k of ['needs', 'reach', 'links']) {
+    const v = list(o[k], k === 'needs' ? 10 : 8).map((x) => cut(typeof x === 'object' ? JSON.stringify(x) : x, 100)).filter((x) => x && !/^[\w\s]*:?\s*\[EMAIL-REDACTED\]$/i.test(x));
+    if (v.length) out[k] = v;
+  }
+  if (out.who && owner) out.who = out.who.filter((w) => !owner.split(/\s+/).some((part) => part.length > 2 && w.name.toLowerCase().includes(part)));
+  if (out.who && !out.who.length) delete out.who;
+  if (o.facts && typeof o.facts === 'object' && !Array.isArray(o.facts)) {
+    for (const k of Object.keys(o.facts)) if (OWN_DETAIL_KEY.test(k) || looksPrivate(String(o.facts[k]))) delete o.facts[k];
+    const f = Object.entries(o.facts).slice(0, 12).map(([k, v]) => [cut(k, 40), cut(typeof v === 'object' ? JSON.stringify(v) : v, 100)]).filter(([k, v]) => k && v);
+    if (f.length) out.facts = Object.fromEntries(f);
+  }
+  if (o.private === true || /^(true|yes)$/i.test(String(o.private))) out.private = true;
+  const imp = Number(o.importance);
+  out.importance = Number.isFinite(imp) ? Math.max(0, Math.min(1, imp)) : 0.5;
+  return out;
+}
+
+/**
+ * The note as short key: value lines for a prompt. `keys` picks fields (default all); the name,
+ * kind and what always lead.
+ */
+export function renderThing(o, keys = null) {
+  if (!o) return '';
+  const want = (k) => !keys || keys.includes(k);
+  const parts = [`${o.name} (${o.kind || 'other'}): ${o.what}`];
+  if (o.aliases?.length && want('aliases')) parts.push(`also called: ${o.aliases.join(', ')}`);
+  if (o.role && want('role')) parts.push(`role: ${o.role}`);
+  if (o.who?.length && want('who')) parts.push(`who: ${o.who.map((w) => [w.name, w.role && `(${w.role})`, w.reach && `via ${w.reach}`].filter(Boolean).join(' ')).join('; ')}`);
+  if (o.where && want('where')) parts.push(`where: ${o.where}`);
+  if (o.when?.length && want('when')) parts.push(`when: ${o.when.map((w) => [w.what, w.at, w.repeats && `(${w.repeats})`].filter(Boolean).join(' ')).join('; ')}`);
+  if (o.state && want('state')) parts.push(`state: ${o.state}${o.as_of ? ` (as of ${o.as_of})` : ''}`);
+  if (o.next?.length && want('next')) parts.push(`next: ${o.next.map((w) => w.what + (w.on ? ` (waiting on ${w.on})` : '')).join('; ')}`);
+  if (o.needs?.length && want('needs')) parts.push(`needs: ${o.needs.join(', ')}`);
+  if (o.facts && want('facts')) parts.push(`facts: ${Object.entries(o.facts).map(([k, v]) => `${k} ${v}`).join('; ')}`);
+  if (o.reach?.length && want('reach')) parts.push(`reach: ${o.reach.join(', ')}`);
+  if (o.links?.length && want('links')) parts.push(`links: ${o.links.join(', ')}`);
+  return parts.join('\n  ');
+}
 
 // The model that writes records: job_models 'memory-things' if he set one, else gemma4:e4b on the
 // hub's own Ollama. gemma4:e2b (the consolidation default) wrote "PCBWay is where the reply to the
@@ -276,6 +398,16 @@ export function pauseForTalk() {
   if (_writing) { try { _writing.abort(); } catch {} }
 }
 
+/** True when the note shows a public topic he only talked about, not a thing in his own life. */
+async function onlyATopic(obj) {
+  const q = `A note PAN wrote from one person's own words:\n${renderThing(obj)}\n\nIs "${obj.name}" part of this person's own life (their plan, work, purchase, trip, people, home or belongings), or only a public topic they talked about (a country, a region, a team, a brand, a news story)?\nAnswer with one word, MINE or TOPIC:`;
+  let a = '';
+  try {
+    for await (const c of askAIStream(q, { model: recordModel(), maxTokens: 4, timeout: 60000, caller: 'memory-things', temperature: 0 })) a += typeof c === 'string' ? c : (c?.text || '');
+  } catch { return false; }
+  return /^\W*TOPIC\b/i.test(a.trim());
+}
+
 /** Write or update one thing's record. Returns the record, null, or { aborted: true }. */
 export async function writeRecord(thing, { dry = false } = {}) {
   const aliases = (() => { try { return JSON.parse(thing.aliases || '[]'); } catch { return []; } })();
@@ -285,7 +417,7 @@ export async function writeRecord(thing, { dry = false } = {}) {
   const ac = new AbortController();
   _writing = ac;
   try {
-    for await (const c of askAIStream(RECORD_PROMPT(thing.name, notes, thing.record), { model: recordModel(), maxTokens: 220, timeout: 180000, caller: 'memory-things', signal: ac.signal })) {
+    for await (const c of askAIStream(RECORD_PROMPT(thing.name, notes, oldObj(thing), ownerName()), { model: recordModel(), maxTokens: 500, timeout: 180000, caller: 'memory-things', signal: ac.signal })) {
       text += typeof c === 'string' ? c : (c?.text || '');
     }
     text = text.trim();
@@ -297,22 +429,33 @@ export async function writeRecord(thing, { dry = false } = {}) {
     if (_writing === ac) _writing = null;
   }
   if (ac.signal.aborted) return { aborted: true };
-  text = text.replace(/^["'`]+|["'`]+$/g, '').replace(/\s+/g, ' ').trim();
-  // gemma4:e4b sometimes says it all twice: keep the first three different sentences.
-  const sentences = [];
-  for (const s of text.split(/(?<=[.!?])\s+/)) {
-    const k = s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-    if (k && !sentences.some((x) => x.k === k)) sentences.push({ s, k });
-    if (sentences.length === 3) break;
+  // A public topic he only talked about (Lithuania in a talk on the Baltics, 2026-11-23) is not one of
+  // his things: its note is dropped, so the shelf never answers "Lithuania" with a news summary as if
+  // it were his. More mentions bring it back for another look (a trip there would make it his).
+  if (/^PUBLIC\b/i.test(text)) {
+    if (!dry) run(`UPDATE memory_things SET record = NULL, obj = NULL, embedding = NULL, written_at = datetime('now','localtime'), written_mentions = mentions WHERE id = :id`, { ':id': thing.id });
+    return { record: null, public: true };
   }
-  text = sentences.map((x) => x.s).join(' ');
-  if (!text || /^UNKNOWN\b/i.test(text) || text.length < 20) return null;
-  if (dry) return { record: text, notes: notes.first.length + notes.later.length };
+  const obj = cleanThing(text, thing.name, [...notes.first, ...notes.later].map((n) => (typeof n === 'string' ? n : JSON.stringify(n))).join(' '));
+  if (!obj) return null;
+  // The PUBLIC rule above, inside the long note prompt, was not followed: Lithuania was written up
+  // again (2026-11-23). Asked alone, about the short note just written, it is one easy question.
+  if (!['project', 'job', 'conversation', 'app', 'person'].includes(obj.kind) && await onlyATopic(obj)) {
+    if (!dry) run(`UPDATE memory_things SET record = NULL, obj = NULL, embedding = NULL, written_at = datetime('now','localtime'), written_mentions = mentions WHERE id = :id`, { ':id': thing.id });
+    return { record: null, public: true };
+  }
+  const record = renderThing(obj);
+  const n = notes.first.length + notes.later.length;
+  if (dry) return { record, obj, notes: n };
   let vec = null;
-  try { vec = await embed(`${thing.name}: ${text}`); } catch {}
-  run(`UPDATE memory_things SET record = :r, written_at = datetime('now','localtime'), written_mentions = mentions, embedding = :v WHERE id = :id`,
-    { ':r': text, ':v': vec ? toBlob(vec) : null, ':id': thing.id });
-  return { record: text, notes: notes.first.length + notes.later.length };
+  try { vec = await embed(`${obj.name}: ${obj.what}. ${obj.state || ''}`); } catch {}
+  const had = (() => { try { return JSON.parse(thing.aliases || '[]'); } catch { return []; } })();
+  const aliasesAll = [...new Set([...had, ...(obj.aliases || [])])].slice(0, 10);
+  run(`UPDATE memory_things SET record = :r, obj = :o, kind = :k, aliases = :a, importance = :imp, private = :p,
+      written_at = datetime('now','localtime'), written_mentions = mentions, embedding = :v WHERE id = :id`,
+    { ':r': record, ':o': JSON.stringify(obj), ':k': obj.kind, ':a': JSON.stringify(aliasesAll), ':imp': obj.importance,
+      ':p': obj.private ? 1 : 0, ':v': vec ? toBlob(vec) : null, ':id': thing.id });
+  return { record, obj, notes: n };
 }
 
 /**
@@ -382,10 +525,36 @@ export function stopThingsWatch() {
 /** Every thing with a record, for the shelf. */
 export function thingsWithRecords() {
   ensureThings();
-  return all(`SELECT id, name, norm, aliases, kind, record, last_seen FROM memory_things WHERE record IS NOT NULL`);
+  return all(`SELECT id, name, norm, aliases, kind, record, obj, importance, private, last_seen FROM memory_things WHERE record IS NOT NULL`);
 }
 
 export function thingsStats() {
   ensureThings();
   return get(`SELECT COUNT(*) things, SUM(record IS NOT NULL) records, MAX(written_at) last_written FROM memory_things`);
+}
+
+// ── For the API (GET /api/v1/things, POST /api/v1/things/write) ─────────────────────────
+const asNote = (t) => t && ({ id: t.id, name: t.name, kind: t.kind, mentions: t.mentions, importance: t.importance, private: !!t.private,
+  first_seen: t.first_seen, last_seen: t.last_seen, asked_at: t.asked_at, written_at: t.written_at,
+  note: (() => { try { return t.obj ? JSON.parse(t.obj) : null; } catch { return null; } })(), text: t.record });
+
+export function listThings({ q = '', limit = 50, withNotes = true } = {}) {
+  ensureThings();
+  const n = normName(q);
+  return all(`SELECT * FROM memory_things WHERE (:n = '' OR norm LIKE :like) ${withNotes ? 'AND record IS NOT NULL' : ''}
+    ORDER BY COALESCE(importance, 0) DESC, last_seen DESC LIMIT :lim`, { ':n': n, ':like': `%${n}%`, ':lim': Math.min(500, Number(limit) || 50) }).map(asNote);
+}
+
+export function getThing(name) {
+  ensureThings();
+  return asNote(get(`SELECT * FROM memory_things WHERE norm = :n OR name = :name COLLATE NOCASE`, { ':n': normName(name), ':name': String(name || '') }));
+}
+
+/** Write one thing's note now (dry: return it without saving). */
+export async function writeThingNow(name, { dry = false } = {}) {
+  ensureThings();
+  const t = get(`SELECT * FROM memory_things WHERE norm = :n OR name = :name COLLATE NOCASE`, { ':n': normName(name), ':name': String(name || '') });
+  if (!t) return { error: 'not a thing yet' };
+  const r = await writeRecord(t, { dry });
+  return r?.aborted ? { aborted: true } : r || { note: null, reason: 'the notes do not show what it is' };
 }

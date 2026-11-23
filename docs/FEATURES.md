@@ -1491,6 +1491,15 @@ children can have adult-sounding voices and vice versa).
   thread ..." at the start) is sent only if the hub model (`voice_world_model`) says Yes to
   `sendQuestion`: is he giving that instruction now, or only talking about sending to the
   thread? A describing line ("when I say send it to the pan thread, how would it know?") stays PAN's.
+- **Three more ways of asking (Nov 23):** (1) "send a message to the X thread (that says) ..."
+  anywhere in a line is the ask itself (`EMBEDDED`), with no model question: a long line with
+  junk words first had the model say No and was lost. Not after i/we/they/I'll/never and the
+  like ("later I'll send a message to the X thread" stays PAN's). (2) "send all of that / the
+  whole thing / what I just said to X" (thread word optional, `SEND_BACK`) sends "Everything I
+  just said." with the last voice turns attached (`REFERS_BACK`, `recentConvo`). (3) "read me
+  my latest / last / newest message (reply, answer)" (`LATEST`, the whole line) reads the newest
+  relay reply to the speaker. Over 1,187 of his real lines since May and the 270 addressed-bench
+  lines, the three forms match only the three lines that had been missed.
 - **One send per thing he says (Nov 22):** a voice send waits `HOLD_MS` (8 s) before the
   relay may take it (`not_before`). A longer version of the same line from the same device
   to the same thread within 90 s replaces the waiting send (`sendOnce` / `sendPlan`); once

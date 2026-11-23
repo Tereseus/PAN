@@ -10,7 +10,7 @@ import { fileURLToPath } from 'url';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { transcribePcm16, transcribeAnyLanguage, warmHubAsr } from '../hub-asr.js';
-import { pauseForTalk } from '../memory/things.js';
+import { pauseForTalk, listThings, getThing, writeThingNow } from '../memory/things.js';
 import { benchContext } from '../bench-context.js';
 import { recordTiming, turnTimings } from '../voice-timing.js';
 import { setPhoneTimeZone } from '../intuition/time.js';
@@ -1995,6 +1995,21 @@ router.post('/reading', async (req, res) => {
 // Yields chunks of the response as they're generated so the phone can start TTS immediately.
 // Event format: "data: {type:'chunk',text:'...'}\n\n" then "data: {type:'done',result:{...}}\n\n"
 // His voice profile for voice-id.js: how many lines it has learned, and a way to start again.
+// His notes on things (memory/things.js): GET lists them (q filters by name), GET /things/:name
+// reads one, POST /things/write writes one now ({ name, dry }: dry returns it without saving).
+router.get('/things', (req, res) => {
+  try { res.json({ things: listThings({ q: req.query.q || '', limit: req.query.limit, withNotes: req.query.all !== '1' }) }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+router.get('/things/:name', (req, res) => {
+  try { const t = getThing(req.params.name); t ? res.json(t) : res.status(404).json({ error: 'no such thing' }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+router.post('/things/write', async (req, res) => {
+  try { res.json(await writeThingNow(req.body?.name, { dry: !!req.body?.dry })); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 router.get('/voice/profile', async (req, res) => {
   try { res.json((await import('../voice-id.js')).profileState()); } catch (e) { res.status(500).json({ error: e.message }); }
 });
