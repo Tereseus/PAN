@@ -51,6 +51,50 @@ export function ensureThings() {
     } catch {}
   }
   _ready = true;
+  clearJunk();
+}
+
+// The owner is never one of his own things, and a word seen once with a capital that he also types
+// in lowercase is an ordinary word until it comes up again: on 2026-11-23 there were notes on the
+// owner himself (330 mentions) and on "Write" ("the Write tool"), "Row" and "Ties", one mention each,
+// which the shelf would match in everyday talk. A new real name (in lowercase nowhere) still gets its
+// note the first time it shows up.
+function ownerNorms() {
+  return new Set(ownerName().split(/\s+/).map(normName).filter((w) => w.length >= 3));
+}
+// A one-word name seen once is an everyday word when, in the events that hold it, it is mostly
+// written in lowercase mid-sentence ("write", "row"); a name is mostly capitalised ("Satyr", which
+// the threads write about a lot). How often it shows up says nothing: a first try by count cleared his
+// game's unit names (2026-11-23). The batch's lowercase count (plain) is 0 for a word seen once.
+// Up to 40 events by rowid from the full text index, then by primary key: a few ms.
+function everyday(t) {
+  if (t.mentions > 3 || /\s/.test(String(t.name).trim())) return false;   // "Write" had 2 ("the Write tool")
+  try {
+    const w = String(t.name).replace(/[^\p{L}\p{N}]/gu, '');
+    if (!w) return false;
+    const rows = all(`SELECT data FROM events WHERE id IN (SELECT rowid FROM events_fts WHERE events_fts MATCH :m LIMIT 40)`, { ':m': `"${w.toLowerCase()}"` });
+    let lower = 0, cap = 0;
+    const re = new RegExp(`(^|[^\\p{L}\\p{N}])(${w})(?![\\p{L}\\p{N}])`, 'giu');
+    for (const r of rows) {
+      const s = String(r.data || '');
+      for (const m of s.matchAll(re)) {
+        const before = s.slice(Math.max(0, m.index - 3), m.index + m[1].length);
+        if (/[.!?:"\n]\s*$|^\s*$/.test(before)) continue;   // a sentence start says nothing
+        if (m[2] === m[2].toLowerCase()) lower++; else cap++;
+      }
+    }
+    return lower >= 3 && lower > 2 * cap;
+  } catch { return false; }
+}
+function clearJunk() {
+  try {
+    const own = ownerNorms();
+    for (const t of all(`SELECT id, name, norm, mentions, plain FROM memory_things WHERE record IS NOT NULL`)) {
+      if (own.has(t.norm) || (t.mentions < 2 && t.plain > 0) || everyday(t)) {
+        run(`UPDATE memory_things SET record = NULL, obj = NULL, embedding = NULL WHERE id = :id`, { ':id': t.id });
+      }
+    }
+  } catch (e) { console.warn('[things] junk check failed:', e.message); }
 }
 
 /** Lower case letters only, doubled letters made single: "Ellipsis" and "Elipsis" are the same. */
@@ -114,11 +158,13 @@ export function namesIn(text) {
 export function noteMentions(events) {
   ensureThings();
   const seen = new Map();   // norm -> { name, n, at }
+  const own = ownerNorms();
   const typed = [];
   const asked = new Set();
   const add = (name, at, n = 1) => {
     const norm = normName(name);
     if (!norm || norm.length < 3 || NOT_THINGS.has(norm) || /[._\/]|^scratch|\d{4}-\d{2}/i.test(name)) return;
+    if (own.has(norm)) return;   // the owner is not one of his own things
     const e = seen.get(norm) || { name, n: 0, at };
     e.n += n; if (at > e.at) e.at = at;
     seen.set(norm, e);
@@ -469,9 +515,11 @@ export async function writeRecord(thing, { dry = false } = {}) {
  */
 export function dueThings(limit = 1) {
   ensureThings();
-  return all(`SELECT * FROM memory_things WHERE mentions >= :min AND mentions > plain
+  const own = [...ownerNorms()];
+  return all(`SELECT * FROM memory_things WHERE mentions >= :min AND mentions > plain AND (mentions >= 2 OR plain = 0)
+    AND norm NOT IN (${own.map((_, i) => ':o' + i).join(', ') || "''"})
     AND (written_at IS NULL OR mentions >= written_mentions + :more)
-    ORDER BY (written_at IS NULL) DESC, (asked_at > datetime('now','localtime','-1 hour')) DESC, (first_seen > datetime('now','localtime','-1 day')) DESC, mentions DESC LIMIT :lim`, { ':min': MIN_MENTIONS, ':more': MORE, ':lim': limit });
+    ORDER BY (written_at IS NULL) DESC, (asked_at > datetime('now','localtime','-1 hour')) DESC, (first_seen > datetime('now','localtime','-1 day')) DESC, mentions DESC LIMIT :lim`, { ':min': MIN_MENTIONS, ':more': MORE, ':lim': limit * 4, ...Object.fromEntries(own.map((o, i) => [':o' + i, o])) }).filter((t) => !everyday(t)).slice(0, limit);
 }
 
 /** Write the next due note. A thing the notes cannot explain yet waits for MORE mentions. */
