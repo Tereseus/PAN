@@ -1737,10 +1737,12 @@ class PanForegroundService : Service() {
         // showed the phone's rough transcript, not what the hub heard (owner, 2026-11-03).
 
         // Always save transcript and user message for conversation screen
-        persistHistoryTurn("user", text)
+        // A turn the ear wrote no words for (UNHEARD) is kept once the hub has heard it (onHeard).
+        val unheard = text == dev.pan.app.stt.UNHEARD
+        if (!unheard) persistHistoryTurn("user", text)
         serviceScope.launch {
             attachReading(dataRepository.addUserMessage(text), text, null)
-            dataRepository.queueAudioUpload(
+            if (!unheard) dataRepository.queueAudioUpload(
                 AudioUpload(
                     transcript = text,
                     timestamp = System.currentTimeMillis(),
@@ -2149,6 +2151,7 @@ class PanForegroundService : Service() {
                         heardText = heard
                         // History keeps what the hub heard, not the phone's rougher guess.
                         mainHandler.post { replaceUserLine(text, heard) }
+                        if (text == dev.pan.app.stt.UNHEARD) persistHistoryTurn("user", heard)
                         // The talk on Home too (0.5.2): it showed the phone's rough words while the
                         // hub had heard the line right.
                         serviceScope.launch { runCatching { dataRepository.correctUserLine(text, heard) } }
@@ -2217,6 +2220,13 @@ class PanForegroundService : Service() {
                     // how recall went to 0% (voicebench, 2026-11-02).
                     // On Home it gets one small line under his words saying why PAN stayed out of
                     // it, so silence does not look like a fault (owner, 2026-11-17).
+                    // The hub heard no words in a turn the device could not write down either:
+                    // nothing was said, so the "…" line goes from Home and from the talk.
+                    if (response?.reason == "nothing_heard") {
+                        withContext(Dispatchers.Main) { if (conversationHistory.lastOrNull()?.second == text) conversationHistory.removeAt(conversationHistory.size - 1) }
+                        runCatching { dataRepository.dropUserLine(text) }
+                        return@launch
+                    }
                     notForPanNote(response?.reason)?.let { note -> runCatching { dataRepository.addNote(note) } }
                     return@launch
                 }

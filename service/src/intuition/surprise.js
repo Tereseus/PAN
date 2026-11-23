@@ -13,9 +13,17 @@
 // averaged over the line's word pieces (`mid`, 576 numbers). p_for_pan v2 uses it (for-pan.js). It is
 // there only when model.onnx has that second output (added 2026-11-23 to the same file; the logits did
 // not change).
+//
+// It runs in a child process of its own. The hub's speech recognizer (sherpa-onnx-node, hub-asr.js and
+// voice-id.js) loads its own, older onnxruntime.dll into the process, and Windows then refuses this
+// package's ("The operating system cannot run %1"): in the live service every turn got no surprise
+// (2026-11-23). The child is started on the first line, ends with its parent, and is started again
+// after a crash. PAN_SURPRISE_INPROC=1 computes in the calling process instead.
 import { createRequire } from 'module';
 import { existsSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
+import { fork } from 'child_process';
+import { fileURLToPath } from 'url';
 import { getDataDir } from '../platform.js';
 
 const require = createRequire(import.meta.url);
@@ -44,13 +52,8 @@ function ready() {
 
 const ids = (tok, text) => Array.from(tok.encode(text, { add_special_tokens: false }).ids, Number);
 
-/**
- * The line's surprise, as the turn book and the fit use it:
- * mean = average surprisal in nats per word piece, floor = share of pieces outside the model's top
- * 100 guesses, first = average surprisal over the first six pieces; mid = the layer 15 reading (or null).
- * Null when the model is missing.
- */
-export async function lineSurprise(history, line) {
+// The work itself (in the child process unless PAN_SURPRISE_INPROC=1); see lineSurprise.
+async function computeSurprise(history, line) {
   const m = await ready();
   const text = String(line || '').trim();
   if (!m || !text) return null;
@@ -90,3 +93,61 @@ export async function lineSurprise(history, line) {
   const floor = ranks.filter((r) => r >= 100).length / nb;
   return { mean: +mean.toFixed(3), floor: +floor.toFixed(3), first: +first.toFixed(3), n: nb, ms: Date.now() - t0, mid };
 }
+
+// ── The child process ────────────────────────────────────────────────────────
+const IS_CHILD = process.env.PAN_SURPRISE_CHILD === '1';
+const IN_PROC = IS_CHILD || process.env.PAN_SURPRISE_INPROC === '1';
+const CALL_TIMEOUT_MS = 15_000;
+const RESTART_AFTER_MS = 60_000;
+let _child = null, _seq = 0, _deadUntil = 0;
+const _waiting = new Map();
+
+function child() {
+  if (_child) return _child;
+  if (Date.now() < _deadUntil) return null;
+  const c = fork(fileURLToPath(import.meta.url), [], {
+    env: { ...process.env, PAN_SURPRISE_CHILD: '1' }, windowsHide: true, stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
+  });
+  c.on('message', (m) => {
+    const w = _waiting.get(m?.id);
+    if (w) { _waiting.delete(m.id); clearTimeout(w.timer); w.resolve(m.result ?? null); }
+  });
+  c.on('exit', (code) => {
+    if (_child === c) { _child = null; _deadUntil = Date.now() + RESTART_AFTER_MS; }
+    if (code) console.warn(`[surprise] child process ended (${code}); started again after ${RESTART_AFTER_MS / 1000} s`);
+    for (const [id, w] of _waiting) { clearTimeout(w.timer); w.resolve(null); _waiting.delete(id); }
+  });
+  c.unref();
+  c.channel?.unref?.();
+  _child = c;
+  return c;
+}
+
+/**
+ * The line's surprise, as the turn book and the fit use it:
+ * mean = average surprisal in nats per word piece, floor = share of pieces outside the model's top
+ * 100 guesses, first = average surprisal over the first six pieces; mid = the layer 15 reading (or null).
+ * Null when the model is missing or the child process does not answer.
+ */
+export async function lineSurprise(history, line) {
+  if (IN_PROC) return computeSurprise(history, line);
+  const c = child();
+  if (!c) return null;
+  const id = ++_seq;
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => { _waiting.delete(id); resolve(null); }, CALL_TIMEOUT_MS);
+    _waiting.set(id, { resolve, timer });
+    try { c.send({ id, history: String(history || ''), line: String(line || '') }); }
+    catch { clearTimeout(timer); _waiting.delete(id); resolve(null); }
+  });
+}
+
+if (IS_CHILD) {
+  process.on('disconnect', () => process.exit(0));   // the service ended
+  process.on('message', async (m) => {
+    let result = null;
+    try { result = await computeSurprise(m.history, m.line); } catch (e) { console.warn('[surprise] line failed:', e.message); }
+    try { process.send({ id: m.id, result }); } catch {}
+  });
+}
+

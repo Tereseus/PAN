@@ -1,6 +1,15 @@
 package dev.pan.app.stt
 
 /**
+ * The words of a turn the device's own ear could not write down, though it heard a real stretch of
+ * sound (SherpaStreamingStt). The turn's audio goes to the hub with it, the hub's bigger model writes
+ * the words, and if it hears nothing either the turn ends quietly (reason nothing_heard). In the car
+ * the unit's ear wrote words for 3 of the 15 lines he said in one hour, while the hub heard them
+ * right (2026-11-23).
+ */
+const val UNHEARD = "…"
+
+/**
  * The surface PanForegroundService drives on whichever engine is active.
  *
  * The bottom five members used to live only on GoogleStreamingStt, so the

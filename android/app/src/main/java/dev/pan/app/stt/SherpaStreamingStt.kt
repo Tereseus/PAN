@@ -119,6 +119,9 @@ class SherpaStreamingStt @Inject constructor(
 
         // Smart Turn's window: it listens to the last 8 s of the current turn.
         private const val TURN_AUDIO_MAX = 8 * SAMPLE_RATE
+        // A turn with no words is sent to the hub only with this much sound (pre-roll and the
+        // closing pause included): a short knock or a breath is not worth a trip.
+        private const val UNHEARD_MIN_SAMPLES = SAMPLE_RATE * 6 / 5
         // The whole turn is kept (up to the recogniser's own 20 s cap) so the hub can
         // transcribe it again with Parakeet; a turn longer than this is not sent.
         private const val UTT_AUDIO_MAX = 20 * SAMPLE_RATE
@@ -1417,6 +1420,17 @@ class SherpaStreamingStt @Inject constructor(
                                 turnClipped = false
                                 lastPartial = ""
                                 LiveWords.text.value = ""
+                                // No words, but a real stretch of sound and not PAN's own voice: the hub
+                                // listens to it (UNHEARD).
+                                if (text.isBlank() && !heardBy && pcm != null && pcm.size >= UNHEARD_MIN_SAMPLES &&
+                                    isTtsSpeaking?.invoke() != true) {
+                                    log("no words from the ear for ${pcm.size * 1000 / SAMPLE_RATE} ms of sound: the hub will listen")
+                                    VoiceEvents.emit("final_unheard", "ms" to pcm.size * 1000 / SAMPLE_RATE)
+                                    lastTurn = UNHEARD to pcm
+                                    lastUnfinished = null
+                                    lastHeardBeforePan = if (heardAt < ttsBeganAt) UNHEARD else null
+                                    withContext(Dispatchers.Main) { callback?.invoke(UNHEARD, true) }
+                                }
                                 if (text.isNotBlank() && !heardBy) {
                                     val clean = stripEcho(text)
                                     if (clean.isBlank()) {

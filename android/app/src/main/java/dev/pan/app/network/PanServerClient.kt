@@ -436,6 +436,8 @@ class PanServerClient @Inject constructor(
         try {
             val body = JSONObject().apply {
                 put("text", text)
+                // The device's ear wrote no words for this sound: the hub listens (stt/SttEngine.kt UNHEARD).
+                if (text == dev.pan.app.stt.UNHEARD) put("words_unheard", true)
                 // Conversation benchmark turn: the hub answers it the same way and
                 // persists nothing (service/src/bench-context.js).
                 if (bench) put("bench", true)

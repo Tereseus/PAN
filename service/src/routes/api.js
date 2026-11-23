@@ -2193,6 +2193,16 @@ router.post('/query/stream', async (req, res) => {
       send({ type: 'heard', text });
     }
     recordTiming({ turn: turnId, stage: 'asr', ms: Date.now() - t0, bench: !!bench || undefined });
+    // The device's ear wrote no words for this sound and sent it anyway (app 0.5.52+, words_unheard,
+    // text is a placeholder). If the hub hears no words either, nothing was said: end quietly.
+    if (req.body.words_unheard && !String(better || '').trim()) {
+      console.log(`[hub-asr] no words in ${Math.round(Buffer.byteLength(String(audio), 'base64') / 32)} ms of sound the device could not write down either`);
+      send({ type: 'done', result: { intent: 'ambient', response: '', reason: 'nothing_heard' } });
+      clearInterval(keepaliveInterval);
+      if (streamControllers.get(streamKey)?.controller === controller) clearStream(streamKey);
+      if (!res.writableEnded) res.end();
+      return;
+    }
   }
 
   // One line heard by two ΠANs in one room (same-line.js): the same words at the same moment on
