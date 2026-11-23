@@ -32,6 +32,9 @@ const BENIGN = [
   [/\bno (?:problem|worries)\b/g, ' alright '],
   [/\bnothing (?:is )?wrong\b/g, ' alright '],
   [/\b(?:doesn'?t|does not) matter\b/g, ' alright '],
+  // Talking ABOUT a mood is not having it: a line saying the reading calls him frustrated set Frustrated (his
+  // talk of 2026-11-23, about this very reading).
+  [/\b(?:says?|said|thinks?|thought|reads?|shows?|calls?|labels?|decides?)\s+(?:that\s+)?(?:i'?m|i am|me|he'?s|he is|i was|he was)\s+(?:\w+\s+){0,2}(?:frustrat\w*|annoyed|angry|mad|upset|stressed|sad|anxious|not (?:ok|okay|well|good)|tired|impatient)\b/g, ' alright '],
 ];
 
 const CUES = {
@@ -50,7 +53,9 @@ const CUES = {
     [/\b(?:still|again)\b[^.?!]{0,25}\b(?:not|broken|failing|fails|wrong|doesn'?t|isn'?t|won'?t|same)\b/, 0.5],
     [/\b(?:not|isn'?t|aren'?t|doesn'?t|don'?t|won'?t|stopped) work(?:ing|s)?\b|\bdoes not work\b/, 0.4],
     [/\b(?:fail(?:s|ed|ing)?|broken|broke|crash(?:es|ed|ing)?|garbage|useless|terrible|horrible|awful|sucks?|so bad|so stupid)\b/, 0.35],
-    [/\byou (?:just|always|keep|never|didn'?t even)\b/, 0.4],
+    // Not "you just": "you just need to..." is how he gives an instruction (with "what the fuck",
+    // it held Frustrated for hours on 2026-11-23).
+    [/\byou (?:always|keep|never|didn'?t even)\b/, 0.4],
     [/\b(?:never|don'?t ever) (?:do|add|put|use|say) (?:it|that|this|anything)\b/, 0.3],
     [/\bcome on\b|\bseriously\b|\bugh+\b|\bare you kidding\b/, 0.4],
   ],
@@ -97,7 +102,11 @@ const CUES = {
 
 // First person and now: "I can't breathe", not "what if someone can't breathe".
 const EMERGENCY = [
-  /\b(?:i need help|help me|somebody help|someone help)\b/,
+  // A call for help, not a request for a hand: "can you help me with the board" set Emergency on
+  // 156 readings in 33 hours (2026-11-23). It counts when nothing follows, or now/please/someone,
+  // or what is wrong.
+  /\b(?:somebody|someone|anybody|anyone) help\b/,
+  /\b(?:i need help|help me)(?=\s*(?:$|[.!]|please\b|now\b|someone\b|somebody\b|quick\b|i'?m\b|i am\b|i can'?t\b|i cannot\b))/,
   /\bcall (?:an? )?(?:ambulance|911|112|the police|the fire)\b/,
   /\bi (?:can'?t|cannot) breathe\b/,
   /\b(?:chest pain|heart attack|having a (?:stroke|seizure|heart attack))\b/,

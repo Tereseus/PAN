@@ -27,6 +27,7 @@ import { startAutoDev, stopAutoDev } from './autodev.js';
 import { startStackScanner, stopStackScanner } from './stack-scanner.js';
 import { startOrchestrator, stopOrchestrator } from './orchestrator.js';
 import { consolidate as consolidateMemory } from './memory/consolidation.js';
+import { startThingsWatch, stopThingsWatch } from './memory/things.js';
 import { evolve as runEvolution } from './evolution/engine.js';
 import { listSessions, sendToSession, broadcastToSession, broadcastNotification, getProcessRegistry, pipeResetAdapter } from './terminal-bridge.js';
 import { createAlert } from './routes/dashboard.js';
@@ -641,8 +642,12 @@ const services = [
         .catch(err => reportServiceRun('consolidation', err.message));
       setTimeout(run, 5 * 60 * 1000); // first run after 5 min
       services.find(s => s.id === 'consolidation')._timer = setInterval(run, 12 * 60 * 60 * 1000);
+      // Things (memory/things.js): a new name in his words is understood within minutes, not at
+      // the next 12 hour run, and its note is updated as more comes in.
+      startThingsWatch();
     },
     stopFn: () => {
+      stopThingsWatch();
       const svc = services.find(s => s.id === 'consolidation');
       if (svc._timer) { clearInterval(svc._timer); svc._timer = null; }
       if (svc._catchup) { clearTimeout(svc._catchup); svc._catchup = null; }

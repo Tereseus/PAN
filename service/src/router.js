@@ -33,6 +33,8 @@ import { loadModes, saveMode, dropMode } from './intuition/world.js';
 import { hisTimeZone, utcOffsetHours } from './intuition/time.js';
 import { notePhoneGps, placeLine, daylightLine, weatherLine } from './intuition/place.js';
 import { followUpOf, followUpLine, historyLines } from './intuition/conversation.js';
+import { shelfForTurn, notesNamedIn } from './intuition/shelf.js';
+import { pauseForTalk } from './memory/things.js';
 
 // The talk before this line, oldest first, for a tool that needs it (tools.js: the currency
 // tool reads "what about fifty thousand yen" by the line before it).
@@ -571,7 +573,11 @@ function buildSituationLine(context = {}) {
       parts.push(`the phone camera saw ${String(look.description).slice(0, 70)} ${Math.max(1, Math.round(look.age_ms / 60_000))} min ago`);
     }
     const cs = getConversationState(org);
-    if (cs?.topic && cs.distilled_at && now - cs.distilled_at < 10 * 60_000) parts.push(`the talk is about ${String(cs.topic).slice(0, 50)}`);
+    const topicNow = cs?.topic && cs.distilled_at && now - cs.distilled_at < 10 * 60_000 ? String(cs.topic) : '';
+    if (topicNow) parts.push(`the talk is about ${topicNow.slice(0, 50)}`);
+    // What the things on his screens or in the talk are, from his notes (memory/things.js), so the
+    // state says what he is doing ("WOE Camera is his thread for ..."), not only a window's name.
+    try { parts.push(...notesNamedIn([...screens, topicNow], 2)); } catch {}
     if (dictatingToClaude()) parts.push('he has been dictating to Claude on his computer');
     if (overheardWithin(2 * 60_000, org) >= 2) parts.push('other voices nearby (TV or people)');
     return parts.length ? `Situation (background only, never read it out): ${parts.join('; ')}.` : '';
@@ -3126,6 +3132,14 @@ export async function* routeStream(text, context = {}) {
   // Someone other than the owner: their own short path, and none of what follows.
   if (context.person) { yield* personTurn(text, context, withProsody); return; }
   warmVectors();
+  // The shelf (intuition/shelf.js): every line of his is checked for the names of his things, so
+  // their notes are ready on the turns that need them. A guest's line returned above.
+  let shelf = { block: '', named: [] };
+  try {
+    pauseForTalk();   // a note being written in the background stops: this turn needs the CPU
+    shelf = shelfForTurn(text);
+    if (shelf.named.length) console.log(`[routeStream] shelf: ${shelf.named.join(', ')} named in this line`);
+  } catch (e) { console.warn('[routeStream] shelf failed:', e.message); }
   const talking = Number.isFinite(context.since_pan_ms) ? context.since_pan_ms < TALK_MS : panSpokeWithin(TALK_MS, context.org_id);
 
   // Told to mute (mute-ask.js): the device does it, and nothing is said. A device too old to know
@@ -3840,7 +3854,7 @@ answer an earlier question, and do not narrate what the context blocks mention.`
       + (gate ? ' If he was not talking to you (the TV, someone else in the room), reply {"intent":"ambient","addressed":0.1,"response":"[AMBIENT]"}.' : '');
   const worldPrompt = (gate) => [
     'You are PAN, his voice assistant and a friend in the room. Reply ONLY as JSON: {"intent":"query","addressed":0.9,"response":"..."}',
-    studentHistory, buildSelfLine({ viaLink: context.via_link, deviceId: context.device_id }), nowLine(), situationLine,
+    studentHistory, buildSelfLine({ viaLink: context.via_link, deviceId: context.device_id }), nowLine(), situationLine, shelf.block,
     `${isDash ? 'User typed' : 'Mic heard'}: "${safeText}"`,
     worldRule(gate),
   ].filter(Boolean).join('\n\n');
@@ -3862,13 +3876,16 @@ answer an earlier question, and do not narrate what the context blocks mention.`
   };
   // The notes go right above his line, after everything that stays the same from turn to turn.
   const worldPromptHub = (gate, notes, again = false) => hubPrompt((askedFor ? 'ASKED' : notes ? (again ? 'LOOKED_SEARCH' : 'LOOKED') : 'WORLD') + (gate ? '_MAYBE' : ''), [studentHistory, nowLine(),
+    shelf.block,
     notes ? 'Notes, looked up on the web just now:\n' + notes.map((n) => '- ' + n).join('\n') : '',
     `${isDash ? 'User typed' : 'Mic heard'}: "${safeText}"`].filter(Boolean), hubSelf());
   // The lookup starts once per turn: at once while PAN is in the talk, else the moment the voice
   // model starts a spoken answer (a question on the TV is not searched for).
   let lookedUp = null;
   const startLookup = () => {
-    if (!lookedUp) lookedUp = worldHub && !askedFor && webLookupOn(context.device_id)
+    // A question about one of his own things (the shelf has its notes) is not searched on the web:
+    // "what is Elipsis" would find the punctuation mark, not his project.
+    if (!lookedUp) lookedUp = worldHub && !askedFor && !shelf.named.length && webLookupOn(context.device_id)
       ? lookupNotes(followsWorld ? searchQuery(`${followUp.asked} ${text}`) : searchQuery(text, talkBefore(context, text)), { engine: webLookupEngine(), deadlineMs: WEB_LOOKUP_MS, talk: String(context.device_id || '') }).catch(() => null)
       : Promise.resolve(null);
     return lookedUp;
@@ -4121,7 +4138,7 @@ answer an earlier question, and do not narrate what the context blocks mention.`
           notePath('think');
           yield* bigAsk([
             'You are PAN, his voice assistant and a friend in the room. Reply ONLY as JSON: {"intent":"query","addressed":0.9,"response":"..."}',
-            historyBlock.trim(), buildSelfLine({ viaLink: context.via_link, deviceId: context.device_id }), nowLine(), situationLine,
+            historyBlock.trim(), buildSelfLine({ viaLink: context.via_link, deviceId: context.device_id }), nowLine(), situationLine, shelf.block,
             `${isDash ? 'User typed' : 'Mic heard'}: "${safeText}"`,
             'This one needs real thought. Answer it the way a smart friend would out loud: a real view and the reason for it, in two or three short spoken sentences, talking to him as "you". If he says you did not answer him, answer his last real question from the conversation now. Never dodge: no "I can\'t tell you", no "who\'s asking", no "I already did".',
           ].filter(Boolean).join('\n\n'), 'THINK');

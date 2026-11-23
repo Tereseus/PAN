@@ -31,6 +31,7 @@ import { currentUserId } from './nourishment.js';
 import { dispatchAction } from './action.js';
 import { getConversationState, panSpokeWithin, dictatingToClaude, overheardWithin } from '../conv-state-watcher.js';
 import { readHim } from './reader.js';
+import { hisWords } from '../memory/things.js';
 import { hisZone, localHour } from './time.js';
 
 // In-memory snapshot of last intuition verdict — used to compute deltas and
@@ -863,10 +864,21 @@ function awakeSince(now = Date.now()) {
   if (now - _awake.at < 10 * 60_000) return _awake.since;
   let since = null;
   try {
+    // Only his own input: a scheduled job's prompt at 4 AM, or a line PAN answered that was not
+    // said to it, is not him awake. Counting them, there was never a 4 hour gap and he was read as
+    // "up about 26 hours", Not Ok, on most of 2026-11-22 and 23.
+    // Only the few fields needed, read by SQLite: parsing 4,000 whole events here every 10 minutes
+    // would hold up the thread his voice turns run on.
+    const his = (type, r) => {
+      if (type === 'UserPromptSubmit') return !!hisWords(r.p);
+      if (/-bench$/.test(String(r.dev || ''))) return false;
+      return r.a == null || Number(r.a) >= 0.5;
+    };
     const times = ['RouterCommand', 'UserPromptSubmit'].flatMap((type) => all(
-      `SELECT created_at FROM events WHERE event_type = :type ORDER BY id DESC LIMIT 2000`,
+      `SELECT created_at, substr(json_extract(data, '$.prompt'), 1, 300) AS p, json_extract(data, '$.device_id') AS dev,
+         json_extract(data, '$.addressed') AS a FROM events WHERE event_type = :type ORDER BY id DESC LIMIT 2000`,
       { ':type': type }
-    )).map((r) => new Date(r.created_at).getTime()).filter((t) => t > now - AWAKE_WINDOW_MS);
+    ).filter((r) => his(type, r))).map((r) => new Date(r.created_at).getTime()).filter((t) => t > now - AWAKE_WINDOW_MS);
     let prev = null;
     for (const t of times.sort((a, b) => b - a)) {
       if (prev != null && prev - t >= SLEEP_GAP_MS) { since = prev; break; }

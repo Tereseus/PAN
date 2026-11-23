@@ -10,6 +10,7 @@ import { fileURLToPath } from 'url';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { transcribePcm16, transcribeAnyLanguage, warmHubAsr } from '../hub-asr.js';
+import { pauseForTalk } from '../memory/things.js';
 import { benchContext } from '../bench-context.js';
 import { recordTiming, turnTimings } from '../voice-timing.js';
 import { setPhoneTimeZone } from '../intuition/time.js';
@@ -1408,6 +1409,8 @@ router.post('/recall/stream', async (req, res) => {
 
     // Semantic + FTS hits first (ranked by relevance)
     for (const hit of memHits) {
+      // His note on a thing the question names (memory/things.js) goes first, as it is.
+      if (!hit.event && hit.hit === 'note') { entries.unshift({ time: 'his note', text: hit.preview.slice(0, 500) }); continue; }
       if (!hit.event || seen.has(hit.event.id)) continue;
       seen.add(hit.event.id);
       const snippet = extractSnippet(hit.event);
@@ -2174,6 +2177,9 @@ router.post('/query/stream', async (req, res) => {
       return;
     }
   }
+  // A note being written in the background (memory/things.js) stops now, before his audio is
+  // read: with one running, the hub's speech recognizer took 56.6 s on one line (2026-11-23).
+  try { pauseForTalk(); } catch {}
   if (audio) {
     const t0 = Date.now();
     // Interpreting, the other person speaks another language: the model for that language

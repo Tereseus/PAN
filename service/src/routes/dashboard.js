@@ -530,7 +530,14 @@ router.get('/api/events', async (req, res) => {
           console.warn('[dashboard] meaning fallback failed:', err.message);
         }
       }
+      // His notes on the things the query names (memory/things.js), ahead of the raw events: one
+      // line says what Elipsis is, where the events only show pieces of it. First page only.
+      let notes = [];
+      if (!offset) {
+        try { const { notesForQuery } = await import('../intuition/shelf.js'); notes = notesForQuery(search, 3); } catch {}
+      }
       return res.json({
+        ...(notes.length ? { notes } : {}),
         events,
         total: hits.length + meaning,
         limit, offset,

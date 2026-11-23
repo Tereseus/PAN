@@ -419,6 +419,27 @@ world = {
 Speed: on a turn the voice reads `world.line` and the top shelf entries. That is a string copy
 and one embedding. The line is rebuilt when something changes, not when he speaks.
 
+### 11.1 Built (2026-11-23): notes on things, by name
+
+The memory's facts could not fill the shelf: 9,926 facts, 6,352 filed as his preferences, mostly
+scraps of scheduled job prompts; none said what his projects are, and by meaning a relevant fact
+scored 0.67 against 0.60 for an unrelated one. So the shelf holds **notes on things** instead
+(`memory/things.js`, table `memory_things`), found by **name**, not by meaning:
+
+- **Understood the first time.** The watch (started by the steward with consolidation) reads his
+  typed prompts every 3 minutes. Scheduled job prompts and pastes are not his words. A new
+  capitalised name (or a thread's project folder) gets a note within minutes, written by the
+  hub's own model (`gemma4:e4b`, setting `job_models['memory-things']`) from how it **first**
+  came up plus a spread of the latest mentions. Every 3 more mentions it is rewritten.
+- **Never during a turn.** A note is written only after 3 quiet minutes, and any heard line stops
+  one in progress (`pauseForTalk`); it is written later.
+- **Names, spelled the way speech hears them.** Doubled letters count as one: "ellipsis" finds Elipsis.
+- **Where the notes go:** the shelf (`intuition/shelf.js`: a named thing stays ready 15 minutes,
+  the two freshest go to the bigger model's prompts, and a question about his own thing is not
+  searched on the web); the situation line (what the things on his screens or in the talk are);
+  memory search (a matching note is the first result, for the voice's recall and for `pan_search`).
+- The reader's own prompt is unchanged.
+
 ## 12. The knowledge library
 
 So that facts do not depend on a search engine that blocks the hub or costs money:

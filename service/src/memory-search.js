@@ -655,7 +655,7 @@ async function searchMemory(query, opts = {}) {
     fused.set(row.id, cur);
   });
 
-  if (fused.size === 0) return [];
+  if (fused.size === 0) return scope === 'main' ? await notesFirst(q) : [];
 
   // ---------- Hydrate top-N with full event rows ----------
   const ranked = Array.from(fused.values()).sort((a, b) => b.rrf - a.rrf).slice(0, limit);
@@ -682,7 +682,18 @@ async function searchMemory(query, opts = {}) {
   });
 
   // Apply differential privacy — noise scores and perturb ranking
-  return privatizeSearch(results, opts.caller || 'search');
+  const out = privatizeSearch(results, opts.caller || 'search');
+  return scope === 'main' ? [...(await notesFirst(q)), ...out].slice(0, Math.max(limit, 2)) : out;
+}
+
+// His notes on things (memory/things.js) answer "what is X" in one line, where the raw events
+// only show pieces of it: a note whose name the query holds goes first. Loaded late, so this file
+// does not pull the intuition code in at import.
+async function notesFirst(q) {
+  try {
+    const { notesForQuery } = await import('./intuition/shelf.js');
+    return notesForQuery(q).map((n) => ({ id: `note:${n.name}`, score: 1, ftsRank: null, vecRank: null, hit: 'note', event: null, preview: `${n.name}: ${n.record}` }));
+  } catch { return []; }
 }
 
 /**
