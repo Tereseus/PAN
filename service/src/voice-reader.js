@@ -56,7 +56,8 @@ async function* completion(prompt, maxTokens, signal, usageOut, copy) {
   const reader = r.body.getReader();
   const decoder = new TextDecoder();
   let buf = '';
-  while (true) {
+  // finally: a caller that stops early closes the stream, so llama-server stops writing (llm.js).
+  try { while (true) {
     const { done, value } = await reader.read();
     if (done) break;
     buf += decoder.decode(value, { stream: true });
@@ -73,7 +74,7 @@ async function* completion(prompt, maxTokens, signal, usageOut, copy) {
         usageOut.output_tokens += obj.timings?.predicted_n || 0;
       }
     }
-  }
+  } } finally { reader.cancel().catch(() => {}); }
 }
 
 /**

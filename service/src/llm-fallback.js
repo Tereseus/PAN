@@ -433,6 +433,7 @@ export async function* askAIStreamWithFallback(prompt, opts = {}) {
     const firstTokenDeadline = Date.now() + firstTokenMs;
 
     let yieldedAny = false;
+    let gen = null;
     try {
       // Per-attempt timeout MUST be passed explicitly. askAIStream defaults to
       // timeout=20000 and arms its own AbortController from it (llm.js:588-594).
@@ -468,7 +469,7 @@ export async function* askAIStreamWithFallback(prompt, opts = {}) {
         ? Math.max(passthrough.maxTokens ?? 300, 1200)
         : passthrough.maxTokens;
 
-      const gen = askAIStream(prompt, {
+      gen = askAIStream(prompt, {
         ...passthrough,
         timeout: attemptTimeoutMs,
         maxTokens: maxTokensForModel,
@@ -541,6 +542,14 @@ export async function* askAIStreamWithFallback(prompt, opts = {}) {
       // Either rethrown from inside or thrown by external code (e.g. non-retriable)
       throw err;
     } finally {
+      // A consumer that stops reading early (routeStream breaks out once it knows the reply is a
+      // world question, [THINK], [CAMERA] or [MUTE]) leaves this generator at its yield; nothing
+      // reached the model call, so the model server went on writing the unused reply. The voice
+      // reader did that for about 1.4 s and the next turn waited behind it: reader first token
+      // 1,944 ms after a cut turn vs 533 ms after a whole one (hub log, 2026-11-24, 108 world turns).
+      // Close the attempt here: the abort ends the HTTP request, return() runs its cleanup.
+      try { attemptController.abort(); } catch {}
+      if (gen) gen.return(undefined).catch(() => {});
       // Detach the forwarded-abort listener so listeners don't accumulate across
       // chain iterations (and so a later external abort can't fire a stale one).
       if (externalSignal && fwdAbort) {

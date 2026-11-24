@@ -630,6 +630,12 @@ export async function* askAIStream(rawPrompt, { model, timeout = 20000, maxToken
     }
   } finally {
     clearTimeout(timer);
+    // The caller stopped reading (the router breaks out once it knows the reply is a world question,
+    // [THINK], [CAMERA] or [MUTE]): close the request so the model server stops writing. Without this
+    // the voice reader went on writing its unused reply for about 1.4 s, and the next turn waited
+    // behind it: reader first token 1,944 ms after a cut turn vs 533 ms after a whole one (hub log,
+    // 2026-11-24, 108 world turns). A request that already ended is not touched by the abort.
+    controller.abort();
     if (externalSignal && externalAbortHandler) {
       try { externalSignal.removeEventListener('abort', externalAbortHandler); } catch {}
     }
