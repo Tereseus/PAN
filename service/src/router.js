@@ -7,7 +7,7 @@ import { buildToolBlocks } from './tools.js';
 import { outLoud, keepFigures } from './sums.js';
 import { lookupNotes, searchQuery, DEFAULT_ENGINE, ENGINES } from './web-lookup.js';
 import { wikiNotes } from './library/zim.js';
-import { peekSearch } from './search-again.js';
+import { peekSearch, peekDecline } from './search-again.js';
 import { readerMayAnswer } from './reader-alone.js';
 import { buildSelfBlock, buildSelfLine } from './self.js';
 import { anonymizeForAI } from './anonymize.js';
@@ -3918,6 +3918,7 @@ answer an earlier question, and do not narrate what the context blocks mention.`
   // model starts a spoken answer (a question on the TV is not searched for).
   let lookedUp = null;
   let notesFrom = '';
+  const searchWords = () => (followsWorld ? searchQuery(`${followUp.asked} ${text}`) : searchQuery(text, talkBefore(context, text)));
   const startLookup = () => {
     // A question about one of his own things (the shelf has its notes) is not searched on the web:
     // "what is Elipsis" would find the punctuation mark, not his project.
@@ -3926,7 +3927,7 @@ answer an earlier question, and do not narrate what the context blocks mention.`
     const web = webLookupOn(context.device_id);
     if (!lookedUp) lookedUp = worldHub && !askedFor && !shelf.named.length && (wiki || web)
       ? (async () => {
-        const q = followsWorld ? searchQuery(`${followUp.asked} ${text}`) : searchQuery(text, talkBefore(context, text));
+        const q = searchWords();
         const w = wiki ? await wikiNotes(followsWorld ? `${followUp.asked} ${text}` : text).catch(() => null) : null;
         if (w) { notesFrom = 'wikipedia'; return w; }
         return web ? lookupNotes(q, { engine: webLookupEngine(), deadlineMs: WEB_LOOKUP_MS, talk: String(context.device_id || '') }).catch(() => null) : null;
@@ -3946,11 +3947,25 @@ answer an earlier question, and do not narrate what the context blocks mention.`
     if (!notes || askedFor || !mayLookAgain) { yield* plainAsReply(askAIStreamWithFallback(worldPromptHub(gate, notes), hubOpts), HUB_SENTENCES); return; }
     // The notes may miss it: the model may ask for one more search in its own words, once.
     const first = await peekSearch(askAIStreamWithFallback(worldPromptHub(gate, notes, true), hubOpts));
-    if (!first.query) { yield* plainAsReply(first.stream, HUB_SENTENCES); return; }
+    if (!first.query) {
+      // Wikipedia is a snapshot. When the model answers its notes with "I don't know", it has said it
+      // does not know: look on the web with the turn's own search words and ask once more.
+      const said = notesFrom === 'wikipedia' && webLookupOn(context.device_id) ? await peekDecline(first.stream) : null;
+      if (!said?.declined) { yield* plainAsReply(said ? said.stream : first.stream, HUB_SENTENCES); return; }
+      const t1 = Date.now();
+      const web = await lookupNotes(searchWords(), { engine: webLookupEngine(), deadlineMs: WEB_LOOKUP_MS, talk: String(context.device_id || '') }).catch(() => null);
+      console.log(`[routeStream] Wikipedia did not hold it, so the web: ${web ? web.notes.length : 0} lines in ${Date.now() - t1} ms`);
+      if (!web?.notes?.length) { yield* plainAsReply(said.stream, HUB_SENTENCES); return; }
+      await said.close();
+      notesFrom = '';
+      yield* plainAsReply(askAIStreamWithFallback(worldPromptHub(gate, web.notes), hubOpts), HUB_SENTENCES);
+      return;
+    }
     const t0 = Date.now();
     const more = await lookupNotes(first.query, { engine: webLookupEngine(), deadlineMs: WEB_LOOKUP_MS, talk: String(context.device_id || '') }).catch(() => null);
     console.log(`[routeStream] the hub model searched again for "${first.query}": ${more ? more.notes.length : 0} lines in ${Date.now() - t0} ms`);
-    yield* plainAsReply(askAIStreamWithFallback(worldPromptHub(gate, more ? more.notes : notes), hubOpts), HUB_SENTENCES);
+    if (more?.notes?.length) notesFrom = '';
+    yield* plainAsReply(askAIStreamWithFallback(worldPromptHub(gate, more?.notes?.length ? more.notes : notes), hubOpts), HUB_SENTENCES);
   }
   // Every other line handed up: the hub model when voice_hub_paths says so, else the cloud model.
   // voice_hub_paths_model: another hub model for these lines (same values as voice_world_model). They are

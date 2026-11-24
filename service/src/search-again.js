@@ -33,6 +33,48 @@ export function maybeSearchTag(head) {
   return !rest || rest[0] === ':';
 }
 
+// The ways the voice model says it does not know. With offline Wikipedia notes that miss something
+// that changes (a price, this year's winner), the untrained model said "I don't know that." instead
+// of writing the search tag: 11 of 88 on the answer bench, 2026-11-23. That is its own word that it
+// does not know, so the hub then looks on the web (the owner: Wikipedia first, the web for what is new).
+const DECLINES = ["i don't know", 'i do not know', 'i dont know', "i'm not sure", 'im not sure', 'i am not sure',
+  'not sure', "i can't find", 'i cannot find', "i couldn't find", "i can't tell", "i don't have"];
+const norm = (s) => lead(s).toLowerCase().replace(/[‘’]/g, "'").replace(/\s+/g, ' ');
+
+/** Does a reply that starts like this say it does not know? true, false, or null (too early to tell). */
+export function declineState(head) {
+  const t = norm(head);
+  if (DECLINES.some((p) => t.startsWith(p))) return true;
+  if (!t || DECLINES.some((p) => p.startsWith(t))) return null;
+  return false;
+}
+
+/** Read the start of a stream only as long as it could still be "I don't know". { declined, stream,
+ *  close }: stream gives every piece again from the first; close() drops it when it is not used. */
+export async function peekDecline(stream) {
+  const it = stream[Symbol.asyncIterator]();
+  const seen = [];
+  let head = '', done = false, state = null;
+  while (state === null) {
+    const r = await it.next();
+    if (r.done) { done = true; state = declineState(head) === true; break; }
+    seen.push(r.value);
+    head += r.value;
+    state = declineState(head);
+  }
+  return {
+    declined: state === true,
+    close: async () => { try { await it.return?.(); } catch { /* already over */ } },
+    stream: (async function* () {
+      try {
+        for (const c of seen) yield c;
+        if (done) return;
+        while (true) { const r = await it.next(); if (r.done) return; yield r.value; }
+      } finally { try { await it.return?.(); } catch { /* already over */ } }
+    })(),
+  };
+}
+
 /** Read the start of a model's stream. A search tag: { query } (the rest of that stream is
  *  dropped). Anything else: { stream } that gives every piece again from the first, so nothing
  *  is lost and nothing waits longer than it takes to see that the reply is not a tag. */

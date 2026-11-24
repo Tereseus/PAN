@@ -2,7 +2,7 @@
 // said, and every other reply passes through whole.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { searchAgainQuery, maybeSearchTag, peekSearch } from '../search-again.js';
+import { searchAgainQuery, maybeSearchTag, peekSearch, peekDecline, declineState } from '../search-again.js';
 
 async function* from(pieces) { for (const p of pieces) yield p; }
 const drain = async (s) => { let out = ''; for await (const c of s) out += c; return out; };
@@ -62,5 +62,28 @@ test('stopping early closes the model stream', async () => {
   async function* model() { try { yield 'One. '; yield 'Two. '; yield 'Three.'; } finally { closed = true; } }
   const r = await peekSearch(model());
   for await (const c of r.stream) { if (c) break; }
+  assert.equal(closed, true);
+});
+
+test('a decline (I do not know) is caught, an answer is not, and the answer is not held back', async () => {
+  assert.equal(declineState("I don't know that."), true);
+  assert.equal(declineState('I’m not sure who won.'), true);
+  assert.equal(declineState('I '), null);
+  assert.equal(declineState('It is 3,776 metres.'), false);
+  assert.equal(declineState('In 1989.'), false);
+  let pulled = 0;
+  async function* model() { for (const c of ['It', "'s ", 'about ', '3 euros.']) { pulled++; yield c; } }
+  const r = await peekDecline(model());
+  assert.equal(r.declined, false);
+  assert.ok(pulled <= 2, 'stopped reading as soon as it could not be a decline');
+  assert.equal(await drain(r.stream), "It's about 3 euros.");
+});
+
+test('a decline is caught, and close() ends the model stream', async () => {
+  let closed = false;
+  async function* model() { try { yield 'I don'; yield "'t know"; yield ' that.'; } finally { closed = true; } }
+  const r = await peekDecline(model());
+  assert.equal(r.declined, true);
+  await r.close();
   assert.equal(closed, true);
 });
