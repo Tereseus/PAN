@@ -9,6 +9,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -38,6 +39,8 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -469,6 +472,7 @@ private fun LineBox(live: String, micOn: Boolean, onSend: (String) -> Unit, onMi
         // The phone's quick first guess comes in capitals. Shown as a sentence; the line in the talk
         // above is replaced by what the hub heard once it has listened to the sound.
         val liveWords = live.lowercase().replaceFirstChar { it.uppercase() }
+        val listenMode by dev.pan.app.audio.ListenMode.mode.collectAsState()
         Row(
             modifier = Modifier
                 .weight(1f)
@@ -517,6 +521,9 @@ private fun LineBox(live: String, micOn: Boolean, onSend: (String) -> Unit, onMi
                 Text(
                     when {
                         hearing -> liveWords
+                        micOn && listenMode == dev.pan.app.audio.ListenMode.Mode.LISTEN -> "Listening only. ΠAN keeps quiet until you say it can talk"
+                        micOn && listenMode == dev.pan.app.audio.ListenMode.Mode.NAME -> "Name only. ΠAN answers when you start with its name"
+                        micOn && listenMode == dev.pan.app.audio.ListenMode.Mode.FORGET -> "Don't remember. Nothing from now on is kept"
                         micOn -> "Listening. Your words show here as you talk"
                         else -> "Muted. Tap here to type"
                     },
@@ -531,31 +538,60 @@ private fun LineBox(live: String, micOn: Boolean, onSend: (String) -> Unit, onMi
     }
 }
 
-/** The mute button: the same one on Home and inside a conversation in People. */
+/**
+ * The mic button, the same one on Home and inside a conversation in People. Its picture is the
+ * listening mode (audio/ListenMode.kt, pictures in ModeIcons.kt): a microphone (Normal), an ear
+ * (Listen only), Π (Name only), a hat with glasses (Don't remember), a crossed microphone (Mute).
+ * A tap mutes and unmutes as before; holding it opens the chooser.
+ */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 internal fun MicButton(on: Boolean, onClick: () -> Unit, diameter: androidx.compose.ui.unit.Dp = 56.dp) {
+    val mode by dev.pan.app.audio.ListenMode.mode.collectAsState()
+    val ctx = LocalContext.current
+    var choosing by remember { mutableStateOf(false) }
     val fill = if (on) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant
     val ink = if (on) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
-    Box(
-        modifier = Modifier
-            .size(diameter)
-            .clip(CircleShape)
-            .background(fill)
-            .clickable(onClickLabel = if (on) "Mute" else "Unmute", onClick = onClick),
-        contentAlignment = Alignment.Center
-    ) {
-        Canvas(modifier = Modifier.size(diameter * 0.46f)) {
-            val w = size.width
-            val h = size.height
-            val stroke = w * 0.09f
-            drawRoundRect(ink, topLeft = Offset(w * 0.36f, h * 0.06f), size = Size(w * 0.28f, h * 0.52f),
-                cornerRadius = CornerRadius(w * 0.14f))
-            drawArc(ink, startAngle = 0f, sweepAngle = 180f, useCenter = false,
-                topLeft = Offset(w * 0.22f, h * 0.20f), size = Size(w * 0.56f, h * 0.52f),
-                style = Stroke(stroke, cap = StrokeCap.Round))
-            drawLine(ink, Offset(w * 0.5f, h * 0.72f), Offset(w * 0.5f, h * 0.92f), stroke, StrokeCap.Round)
-            drawLine(ink, Offset(w * 0.34f, h * 0.92f), Offset(w * 0.66f, h * 0.92f), stroke, StrokeCap.Round)
-            if (!on) drawLine(ink, Offset(w * 0.10f, h * 0.08f), Offset(w * 0.90f, h * 0.94f), stroke * 1.2f, StrokeCap.Round)
+    val label = if (!on) "Muted" else mode.label
+    Box {
+        Box(
+            modifier = Modifier
+                .size(diameter)
+                .clip(CircleShape)
+                .background(fill)
+                .combinedClickable(
+                    onClickLabel = if (on) "Mute" else "Unmute",
+                    onLongClickLabel = "Choose how ΠAN listens",
+                    onClick = onClick,
+                    onLongClick = { choosing = true }
+                )
+                .semantics { contentDescription = "Microphone: $label" },
+            contentAlignment = Alignment.Center
+        ) {
+            val pic = if (!on) ModeIcons.MicOff else ModeIcons.of(mode)
+            Icon(pic, contentDescription = null, tint = ink, modifier = Modifier.size(diameter * 0.5f))
+        }
+        DropdownMenu(expanded = choosing, onDismissRequest = { choosing = false }) {
+            val svc = dev.pan.app.service.PanForegroundService::class.java
+            for (m in dev.pan.app.audio.ListenMode.Mode.values()) {
+                DropdownMenuItem(
+                    leadingIcon = { Icon(ModeIcons.of(m), contentDescription = null, modifier = Modifier.size(22.dp)) },
+                    text = { Text(m.label + if (on && m == mode) "  ✓" else "") },
+                    onClick = {
+                        choosing = false
+                        ctx.startService(android.content.Intent(ctx, svc)
+                            .setAction(dev.pan.app.service.PanForegroundService.ACTION_SET_MODE).putExtra("mode", m.wire))
+                    }
+                )
+            }
+            DropdownMenuItem(
+                leadingIcon = { Icon(ModeIcons.MicOff, contentDescription = null, modifier = Modifier.size(22.dp)) },
+                text = { Text("Mute" + if (!on) "  ✓" else "") },
+                onClick = {
+                    choosing = false
+                    ctx.startService(android.content.Intent(ctx, svc).setAction("TOGGLE_MIC").putExtra("on", false))
+                }
+            )
         }
     }
 }

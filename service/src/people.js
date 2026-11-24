@@ -58,6 +58,7 @@ export const PERSON_ALLOW = Object.freeze([
   'POST /api/v1/logs',
   'POST /api/v1/query/stream',
   'POST /api/v1/voice/warm',
+  'POST /api/v1/listen-mode',      // their own device's listening mode (listen-mode.js)
   'POST /api/v1/reading',
   'POST /api/v1/vision',
   'GET /api/v1/slack/pending',     // their own notes only (phone-notes.js)

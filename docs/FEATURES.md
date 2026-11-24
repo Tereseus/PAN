@@ -734,6 +734,51 @@ asks for its notes every few seconds.
   (2026-11-11). Sunrise, sunset and "is it dark" now answer right.
 - Design: docs/INTUITION-STATE.md v2, sections 10 to 14.
 
+## Listening modes (app 0.5.53, hub `service/src/listen-mode.js`; the owner, 2026-11-24)
+
+Five ways ΠAN listens, per device and per person. Hold the mic button to pick one; its picture
+shows the mode (Material Symbols for the microphones and the ear, Π and the hat drawn by us on the
+same grid, `ui/home/ModeIcons.kt`). Home's line and the notification say it too.
+
+| Mode | Hears | Speaks | Keeps | Way out | Picture |
+|---|---|---|---|---|---|
+| Normal | everything | when it judges it is spoken to | yes | (default) | microphone |
+| Listen only | everything, voice ID still runs | never | yes, quiet turns are recorded as heard | the person's release words ("you can talk", "back to normal" always), the button | ear |
+| Name only | everything | only lines that start with ΠAN's name or the person's own word | yes | "back to normal", the button | Π |
+| Don't remember | everything | as Normal | nothing (below) | "remember again" or the person's own words, the button, or after 60 minutes | hat with glasses |
+| Mute | nothing (mic off) | nothing | nothing | ONLY the button | crossed microphone |
+
+- **Device:** `audio/ListenMode.kt` holds the mode (prefs `pan_listen_mode`), the person's own words
+  (Settings > How ΠAN listens: name words, Listen only words, Don't remember words, any language,
+  one per line, 12 each) and the device's own check of a whole line that is a mode command. Each
+  turn sends `listen_mode` and `mode_words` to `/query/stream`. A mode change is posted to
+  `POST /api/v1/listen-mode` (owner and person devices; `GET /api/v1/listen-mode?device=` reads it,
+  for the Medallion's firmware later). The mic button's long press opens the chooser
+  (`ACTION_SET_MODE`, `--es mode normal|listen|name|forget`); picking a mode while muted turns the mic on.
+- **Hub:** `routeStream` checks the mode first (`modeTurn`): a mode command anywhere it is a whole
+  sentence (first or last, at most 3 sentences, 16 words; "I like to just listen to music" is not
+  one) sends a `listen_mode` event before any chunk, a short "Okay..." and `listen_mode` in the
+  done; a quiet turn ends as `ambient` with reason `listen_mode`, `name_mode` or `mute_mode`; a
+  named line in Name only is answered as addressed (`addressed_now`); a release word followed by
+  more ("you can talk, what time is it") ends the mode and answers the rest. `mute` stays the old
+  `mute: true`.
+- **Listen only on the device:** `panSpeak` says nothing for 6 s after the "Okay, just listening.".
+- **Don't remember keeps nothing:** the hub runs the turn inside the no-trace context the bench uses
+  (`bench-context.js`: events, thoughts, needs, memory items, correction learning all check
+  `isBench()`), with his real device and talk, and skips the voice turn record, the turn book, voice
+  learning and the spoken-on note (`routes/api.js`). The device keeps no lines on Home, no history
+  (`persistHistoryTurn`), no uploads, no photos (`uploadCapture`; `/vision` gets `bench: true`) and
+  ships no log lines (`LogShipper`). Ends by itself after an hour (`FORGET_LIMIT_MS`, the hub's
+  incognito default) on the next line he says. It does NOT use the hub's user-wide incognito switch
+  (`routes/incognito.js`): that would also hide his Claude threads on every computer. **Still kept:**
+  the hub's own console log (carrier.log) prints heard lines as before, and timing lines
+  (`voice-timing.jsonl`, no words) are marked bench.
+- **Calls:** a call opens the mic on a muted phone as before (`CallRules`); call lines go to the call
+  before the mode is read, so every mode keeps calls working.
+- **Not yet:** Syrinx learning the mode commands in every language like `[MUTE]` (next voice round);
+  until then other languages use the person's own words or the button. The acks are English.
+- Tests: `service/src/__tests__/listen-mode.test.js` (9), `ListenModeTest` (5).
+
 ## Phone Sensors list (app main screen; `GET/PUT /api/sensors/devices/:id`)
 
 - Each row is a permission switch for what PAN may use from that device. The phone copies the

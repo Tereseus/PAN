@@ -112,7 +112,8 @@ class PanServerClient @Inject constructor(
 
     suspend fun analyzeImage(imageBase64: String, question: String): String? {
         return try {
-            val response = api.vision(VisionRequest(imageBase64, question))
+            val response = api.vision(VisionRequest(imageBase64, question,
+                bench = if (dev.pan.app.audio.ListenMode.forgetting()) true else null))
             if (response.isSuccessful) {
                 response.body()?.description
             } else {
@@ -133,6 +134,8 @@ class PanServerClient @Inject constructor(
      * a failed upload must not delay or break the voice reply.
      */
     suspend fun uploadCapture(imageBytes: ByteArray, caption: String?, question: String?, onDevice: Boolean = false) = withContext(Dispatchers.IO) {
+        // Don't remember: the photo and its answer are not kept anywhere.
+        if (dev.pan.app.audio.ListenMode.forgetting()) return@withContext
         try {
             val deviceId = android.os.Build.MODEL.lowercase().replace(" ", "-")
             val base64 = android.util.Base64.encodeToString(imageBytes, android.util.Base64.NO_WRAP)
@@ -414,6 +417,19 @@ class PanServerClient @Inject constructor(
         })
     }
 
+    /** Tell the hub this device's listening mode (normal, listen, name, mute) when the button changes it. */
+    fun postListenMode(mode: String) {
+        val body = JSONObject().put("mode", mode).toString().toRequestBody("application/json".toMediaType())
+        val request = Request.Builder()
+            .url("${Constants.PLACEHOLDER_BASE_URL}/api/v1/listen-mode")
+            .post(body)
+            .build()
+        okHttpClient.newCall(request).enqueue(object : okhttp3.Callback {
+            override fun onFailure(call: okhttp3.Call, e: java.io.IOException) {}
+            override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) { response.close() }
+        })
+    }
+
     suspend fun askPanStream(
         text: String,
         conversationHistory: String = "",
@@ -425,6 +441,9 @@ class PanServerClient @Inject constructor(
         sincePanMs: Long? = null,
         addressed: Boolean = false,
         musicPlaying: Boolean = false,
+        listenMode: String? = null,
+        modeWords: JSONObject? = null,
+        onListenMode: ((String) -> Unit)? = null,
         onCall: ((okhttp3.Call) -> Unit)? = null,
         onHeard: ((String) -> Unit)? = null,
         onInterpreting: (() -> Unit)? = null,
@@ -447,6 +466,9 @@ class PanServerClient @Inject constructor(
                 if (addressed) put("addressed_now", true)
                 // Music is playing on this device: the hub answers only lines that name PAN.
                 if (musicPlaying) put("media_playing", true)
+                // The listening mode and the person's own words for it (hub listen-mode.js).
+                if (listenMode != null) put("listen_mode", listenMode)
+                if (modeWords != null) put("mode_words", modeWords)
                 // How long ago PAN last stopped talking: inside 45 s this line is part of a talk.
                 if (sincePanMs != null) put("since_pan_ms", sincePanMs)
                 if (conversationHistory.isNotEmpty()) put("context", conversationHistory)
@@ -507,6 +529,8 @@ class PanServerClient @Inject constructor(
                         "interpreting" -> onInterpreting?.invoke()
                         // Before the chunks of an interpreted reply: the language it is in (hub of 2026-11-18 on).
                         "line_lang" -> json.optString("lang", "").takeIf { it.isNotBlank() }?.let { onLineLang?.invoke(it) }
+                        // The hub changed the listening mode (a mode command it heard), before any chunk.
+                        "listen_mode" -> json.optString("mode", "").takeIf { it.isNotBlank() }?.let { onListenMode?.invoke(it) }
                         // After the reply: whether he has PAN interpreting now, and into what.
                         "interpreter" -> onInterpreter?.invoke(json.optString("lang", "").ifBlank { null })
                         "ambient" -> {
@@ -534,6 +558,7 @@ class PanServerClient @Inject constructor(
                                     hold_ms = result.optLong("hold_ms", 0L),
                                     camera = result.optBoolean("camera", false),
                                     mute = result.optBoolean("mute", false),
+                                    listen_mode = result.optString("listen_mode", "").ifBlank { null },
                                     reason = result.optString("reason", "").ifBlank {
                                         if (result.optBoolean("to_claude", false)) "dictating" else null
                                     },

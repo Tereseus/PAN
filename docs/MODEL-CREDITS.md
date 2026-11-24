@@ -89,6 +89,7 @@ today. Whatever is not in it is not part of ΠAN, even if a copy still sits on t
 | The link | Tailscale's Go module, wireguard-go | Phone, PCs | BSD-3, MIT |
 | Storage | SQLCipher, sqlite-vec | Hub | BSD style (its notice must ship), MIT or Apache 2.0 |
 | Camera, pairing code | CameraX, ZXing | Phone | Apache 2.0 |
+| Mic button pictures (microphone, crossed microphone, ear) | Google Material Symbols, Rounded | Phone | Apache 2.0 |
 
 ### Allowed, with conditions
 

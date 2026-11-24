@@ -88,6 +88,8 @@ data class QueryResponse(
     // The hub heard him tell PAN to mute (hub of 2026-11-18 on). The device checks its own words
     // for that first, and in a car its ear gets them wrong; the hub's transcript had them right.
     val mute: Boolean = false,
+    // The listening mode after this turn, when the hub changed it (hub listen-mode.js).
+    val listen_mode: String? = null,
     // When PAN stayed out of it (intent ambient): the hub's one word for why.
     val reason: String? = null,
     // Where the hub's time went on this turn (hub of 2026-11-17 on), as the hub's own JSON.
@@ -123,7 +125,9 @@ data class ServerStatus(
 
 data class VisionRequest(
     val image_base64: String,
-    val question: String
+    val question: String,
+    // Don't remember (audio/ListenMode.kt): the hub's bench photo path, which keeps nothing.
+    val bench: Boolean? = null
 )
 
 data class VisionResponse(

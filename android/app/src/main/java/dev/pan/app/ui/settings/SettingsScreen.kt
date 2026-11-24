@@ -330,6 +330,9 @@ fun SettingsScreen(
             // It draws its own line under itself, and nothing at all on a person's device.
             NotesDeviceSection(viewModel, snackbarHostState)
 
+            ListenWordsSection()
+            HorizontalDivider()
+
             // Sounds
             Text("Sounds", style = MaterialTheme.typography.titleMedium)
 

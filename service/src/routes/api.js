@@ -1991,6 +1991,25 @@ router.post('/reading', async (req, res) => {
   }
 });
 
+// The listening mode each device last reported (listen-mode.js): for the Medallion's firmware and
+// anything else that shows it. POST { mode } from the app when the button changes it.
+router.get('/listen-mode', async (req, res) => {
+  const { allModes, modeOf } = await import('../listen-mode.js');
+  const dev = String(req.query.device || '').trim();
+  res.json(dev ? { device: dev, ...(modeOf(dev) || { mode: null }) } : { devices: allModes() });
+});
+router.post('/listen-mode', async (req, res) => {
+  const { noteMode, MODES } = await import('../listen-mode.js');
+  const mode = String(req.body?.mode || '');
+  // The same key a voice turn uses (/query/stream): a person's device by its PAN Link key only.
+  const person = req.user?.person ? req.user : null;
+  const dev = String(person ? `person${person.id}-${String(req.panLinkDevice?.id || 'device')}`
+    : (req.headers['x-device-id'] || req.headers['x-device-name'] || req.body?.device || '')).trim();
+  if (!MODES.includes(mode) || !dev) return res.status(400).json({ error: 'mode (normal, listen, name, mute) and a device are needed' });
+  noteMode(dev, mode);
+  res.json({ ok: true, device: dev, mode });
+});
+
 // POST /api/v1/query/stream — SSE streaming voice query
 // Yields chunks of the response as they're generated so the phone can start TTS immediately.
 // Event format: "data: {type:'chunk',text:'...'}\n\n" then "data: {type:'done',result:{...}}\n\n"
@@ -2074,6 +2093,8 @@ router.post('/query/stream', async (req, res) => {
   const deviceName = person ? `person${person.id}-${String(req.panLinkDevice?.id || 'device')}`
     : (req.headers['x-device-id'] || req.headers['x-device-name'] || null);
   let text = phoneText;
+  // Don't remember (listen-mode.js): this turn leaves nothing behind (see runTurn below).
+  const forget = req.body.listen_mode === 'forget' && !bench;
   // One id per turn so this handler's timings and the router's line up in voice-timing.jsonl.
   const turnId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
   const turnStart = Date.now();
@@ -2367,6 +2388,9 @@ router.post('/query/stream', async (req, res) => {
         addressed_now: !!req.body.addressed_now,
         // App 0.4.106+: music is playing on that device's speakers (the car, Nov 14: PAN answered the lyrics).
         media_playing: !!req.body.media_playing,
+        // App 0.5.53+: the listening mode (listen-mode.js) and the person's own words for it.
+        listen_mode: typeof req.body.listen_mode === 'string' ? req.body.listen_mode : undefined,
+        mode_words: req.body.mode_words && typeof req.body.mode_words === 'object' ? req.body.mode_words : undefined,
         // App 0.4.73+: how long ago PAN last stopped talking. The bench records no turns, so
         // this is the only thing that tells a talk from a stray line there.
         since_pan_ms: Number.isFinite(req.body.since_pan_ms) ? req.body.since_pan_ms : undefined,
@@ -2400,7 +2424,7 @@ router.post('/query/stream', async (req, res) => {
             const spoken = String(event.result?.response || '').trim();
             if (spoken && !spoken.startsWith('[') && !['ambient', 'cancelled'].includes(event.result?.intent)) noteSaid(tailKey, spoken);
           }
-          if (!bench && !person) recordVoiceTurn(req, { text, result: event.result, deviceId, turnId, sensors: parsedSensors });
+          if (!bench && !person && !forget) recordVoiceTurn(req, { text, result: event.result, deviceId, turnId, sensors: parsedSensors });
           // A call opened or answered by voice: this is the device that carries its sound.
           if (!bench && event.result?.intent === 'talk' && (event.result?.talk_with || event.result?.talk_room)) {
             try { setCallDevice(person ? Number(person.id) : 1, callDev(req)); } catch {}
@@ -2412,11 +2436,11 @@ router.post('/query/stream', async (req, res) => {
               .catch((e) => console.warn('[call-share] failed:', e.message));
           }
           // His notes follow him to the device he is talking to PAN on (phone-notes.js).
-          if (!bench && !person && String(event.result?.response || '').trim() && !['ambient', 'cancelled'].includes(event.result?.intent)) noteOwnerSpokeOn(deviceName);
+          if (!bench && !person && !forget && String(event.result?.response || '').trim() && !['ambient', 'cancelled'].includes(event.result?.intent)) noteOwnerSpokeOn(deviceName);
           // The situational state program's turn book: what it saw, what PAN did; the next
           // turn labels this one (intuition/turn-book.js). Not from a test device: its test lines
           // ("what is seven times eight zebrafinch") were labeling PAN as if he had said them (Nov 22).
-          if (!bench && !person && !voiceTestDevice(realId)) {
+          if (!bench && !person && !forget && !voiceTestDevice(realId)) {
             const r = event.result || {};
             const said = String(r.response || '').trim();
             // The line's surprise and the shadow p_for_pan (v1, and v2 as p_for_pan2) go in with it
@@ -2441,7 +2465,7 @@ router.post('/query/stream', async (req, res) => {
           }
           // Not from a test bench device (setting voice_test_devices, default the OnePlus Pad):
           // its speaker tests taught his voice profile other voices (Nov 15).
-          if (voicePrintNow && !voiceTestDevice(realId)) {
+          if (voicePrintNow && !forget && !voiceTestDevice(realId)) {
             const r = event.result || {};
             try { voice.learnWearer(voicePrintNow, text, r.intent !== 'ambient' && !!String(r.response || '').trim()); } catch {}
           }
@@ -2450,8 +2474,10 @@ router.post('/query/stream', async (req, res) => {
       }
     };
     // bench: the phone is playing recorded test speech (evals/voicebench). Same loop,
-    // nothing persisted.
+    // nothing persisted. Don't remember (listen-mode.js): the same no-trace context, so every
+    // writer that checks isBench() keeps nothing, with his real device and talk for the answer.
     if (bench) await benchContext.run({ bench: true }, runTurn);
+    else if (forget) await benchContext.run({ bench: true, forget: true }, runTurn);
     else await runTurn();
   } catch (err) {
     // An abort is not a failure: it means a newer utterance superseded this

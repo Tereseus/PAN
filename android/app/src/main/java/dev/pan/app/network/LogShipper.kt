@@ -46,6 +46,8 @@ class LogShipper @Inject constructor(
     }
 
     fun log(level: String, source: String, message: String, meta: Map<String, String>? = null) {
+        // Don't remember (audio/ListenMode.kt): log lines carry what was said; none go to the hub.
+        if (dev.pan.app.audio.ListenMode.forgetting()) return
         buffer.add(LogEntry(
             device_id = deviceId,
             device_type = "phone",

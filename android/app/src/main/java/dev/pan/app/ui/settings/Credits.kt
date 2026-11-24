@@ -50,6 +50,7 @@ private val ON_THIS_DEVICE = listOf(
     Credit("Supertonic 3", "ΠAN's voice", "Supertone", "OpenRAIL-M (model), MIT (code)",
         "ΠAN's voice is machine made. It must not be used to pass as a real person without their consent."),
     Credit("Streaming zipformer", "live words as you speak", "k2-fsa (Next-gen Kaldi)", "Apache 2.0"),
+    Credit("Material Symbols", "the microphone, crossed microphone and ear on the mic button", "Google", "Apache 2.0"),
     Credit("Smart Turn v3", "knows when you have finished", "Pipecat", "BSD 2-Clause"),
     Credit("Silero VAD", "knows when someone is talking", "Silero Team", "MIT"),
     Credit("YAMNet", "knows when music is playing", "Google", "Apache 2.0"),

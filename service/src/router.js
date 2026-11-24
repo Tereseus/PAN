@@ -56,6 +56,7 @@ import { studentChain } from './llm.js';
 import { warmReader } from './voice-reader.js';
 import { asksForCamera } from './camera-ask.js';
 import { asksToMute } from './mute-ask.js';
+import { modeTurn, modeAck, noteMode } from './listen-mode.js';
 import { may, refusal } from './people.js';
 import { ringing, ringQuestion, wantsStop, stoppedWords } from './ringing.js';
 import { alone } from './alone.js';
@@ -3160,6 +3161,39 @@ export async function* routeStream(text, context = {}) {
     ...(turnPlace ? { participation: turnPlace } : {}) });
   const _turnStart = Date.now();   // for the [routeStream] timing line
   if (context.voice_his === false) alone.heardOther(context.device_id);
+  // The listening modes (listen-mode.js, the owner Nov 24): Listen only, Name only, Mute. The
+  // device sends its mode and the person's own words; a mode command or a quiet turn ends here.
+  // A quiet turn is still kept (routes/api.js records it) and voice ID still ran on it.
+  if (!context.mode_checked && context.listen_mode) {
+    noteMode(context.device_id, context.listen_mode);
+    const lm = modeTurn(text, context.listen_mode, context.mode_words);
+    if (lm?.set) {
+      console.log(`[routeStream] listening mode ${context.listen_mode} -> ${lm.set}: ${JSON.stringify(String(text).slice(0, 60))}`);
+      noteMode(context.device_id, lm.set);
+      yield { type: 'listen_mode', mode: lm.set };
+      if (lm.set === 'mute') {
+        yield { type: 'done', result: withProsody({ intent: 'system', mute: true, listen_mode: 'mute', response: '', addressed: 0.95, importance: 0.3 }) };
+        return;
+      }
+      // "You can talk, what time is it?": out of Listen only, and the rest answered as for PAN.
+      if (lm.rest && lm.rest.trim().split(/\s+/).length >= 2) {
+        for await (const ev of routeStream(lm.rest, { ...context, listen_mode: lm.set, mode_checked: true, addressed_now: true })) {
+          yield ev.type === 'done' ? { ...ev, result: { ...ev.result, listen_mode: lm.set } } : ev;
+        }
+        return;
+      }
+      const ack = modeAck(lm.set, context.listen_mode);
+      if (ack) yield { type: 'chunk', text: ack };
+      yield { type: 'done', result: withProsody({ intent: 'system', listen_mode: lm.set, response: ack, addressed: 0.95, importance: 0.3 }) };
+      return;
+    }
+    if (lm?.quiet) {
+      console.log(`[routeStream] ${lm.quiet}: kept, nothing said: ${JSON.stringify(String(text).slice(0, 60))}`);
+      yield { type: 'done', result: withProsody({ intent: 'ambient', reason: lm.quiet, listen_mode: context.listen_mode, response: '', addressed: 0.05, importance: 0.1 }) };
+      return;
+    }
+    if (lm?.named) context = { ...context, addressed_now: true };
+  }
   // Someone other than the owner: their own short path, and none of what follows.
   if (context.person) { yield* personTurn(text, context, withProsody); return; }
   warmVectors();

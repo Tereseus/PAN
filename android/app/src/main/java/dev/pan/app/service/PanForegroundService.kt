@@ -59,6 +59,8 @@ class PanForegroundService : Service() {
         const val ACTION_TYPED_LINE = "TYPED_LINE"
         /** The "Interpreting" badge on Home was tapped: stop here at once, and tell the hub. */
         const val ACTION_STOP_INTERPRETING = "STOP_INTERPRETING"
+        /** The mic button's chooser: --es mode normal|listen|name (mute is TOGGLE_MIC --ez on false). */
+        const val ACTION_SET_MODE = "SET_LISTEN_MODE"
         private const val TAG = "PanService"
         val lastAction = MutableStateFlow("")
         val micEnabled = MutableStateFlow(false) // Start muted — user unmutes when ready
@@ -435,6 +437,15 @@ class PanForegroundService : Service() {
         notificationManager?.notify(Constants.NOTIFICATION_ID, buildNotification(listening = false, connected = serverClient.isConnected.value))
     }
 
+    /** Until when the "Okay, just listening." of a mode change may still be said. */
+    private var modeAckUntil = 0L
+
+    /** Change the listening mode (voice, the hub, or the button's chooser through ACTION_SET_MODE). */
+    private fun setListenMode(m: dev.pan.app.audio.ListenMode.Mode) {
+        if (m == dev.pan.app.audio.ListenMode.Mode.LISTEN) modeAckUntil = System.currentTimeMillis() + 6_000L
+        dev.pan.app.audio.ListenMode.set(this, m)
+    }
+
     /** Speak part of turn [seq]'s reply, unless a newer turn or a barge-in moved on. */
     private fun speakReply(seq: Int, text: String) {
         mainHandler.post {
@@ -505,8 +516,8 @@ class PanForegroundService : Service() {
     }
 
     private fun persistHistoryTurn(role: String, text: String) {
-        // Benchmark lines are not his conversation (TestAudio.kt).
-        if (TestAudio.active) return
+        // Benchmark lines are not his conversation (TestAudio.kt); nothing is kept in Don't remember.
+        if (TestAudio.active || dev.pan.app.audio.ListenMode.forgetting()) return
         serviceScope.launch(Dispatchers.IO) {
             try {
                 serverClient.api.appendHistory(
@@ -569,7 +580,8 @@ class PanForegroundService : Service() {
     // Persistent log — ships to PAN server via batched telemetry endpoint
     private fun panLog(msg: String) {
         Log.i(TAG, msg)
-        if (::logShipper.isInitialized) {
+        // Don't remember: the phone's log lines carry what was said, and they go to the hub.
+        if (::logShipper.isInitialized && !dev.pan.app.audio.ListenMode.forgetting()) {
             logShipper.info("service", msg)
         }
     }
@@ -608,6 +620,17 @@ class PanForegroundService : Service() {
                     panLog(if (on) "Car mode on: $car" else "Car mode off")
                 }
             }
+        }
+
+        // The listening mode (audio/ListenMode.kt): kept across restarts. The hub and the
+        // notification hear of every change, mute included (the mic button).
+        dev.pan.app.audio.ListenMode.load(this)
+        serviceScope.launch {
+            kotlinx.coroutines.flow.combine(dev.pan.app.audio.ListenMode.mode, micEnabled) { m, on -> if (on) m.wire else "mute" }
+                .collect { wire ->
+                    runCatching { serverClient.postListenMode(wire) }
+                    notificationManager?.notify(Constants.NOTIFICATION_ID, buildNotification(listening = micEnabled.value, connected = serverClient.isConnected.value))
+                }
         }
 
         // Initialize resistance client for path-of-least-resistance routing
@@ -1571,6 +1594,12 @@ class PanForegroundService : Service() {
             panLog("Suppressed while muted: ${text.take(40)}")
             return
         }
+        // Listen only: nothing is said, except the few seconds after the mode changed (its "Okay").
+        if (dev.pan.app.audio.ListenMode.mode.value == dev.pan.app.audio.ListenMode.Mode.LISTEN &&
+            System.currentTimeMillis() > modeAckUntil) {
+            panLog("Suppressed in Listen only: ${text.take(40)}")
+            return
+        }
         VoiceEvents.emit("speak", "text" to text)
         sttEngine.registerTtsOutput(text)
         // A turn-based recogniser has to be stopped here or it transcribes PAN
@@ -1705,6 +1734,34 @@ class PanForegroundService : Service() {
             serviceScope.launch { dataRepository.addUserMessage(text) }
             serviceScope.launch { dataRepository.addPanResponse("[PAN unmuted]") }
             return
+        }
+
+        // The listening modes (audio/ListenMode.kt): a whole line that is a mode command, or in
+        // Listen only one of the person's own release words, is done here. Anything else goes to
+        // the hub with the mode, and the hub decides (a release word with a question after it too).
+        run {
+            // Don't remember ends by itself after an hour (ListenMode.FORGET_LIMIT_MS).
+            if (dev.pan.app.audio.ListenMode.forgetRanOut()) {
+                panLog("Don't remember ran its hour: back to Normal")
+                setListenMode(dev.pan.app.audio.ListenMode.Mode.NORMAL)
+                mainHandler.post { panSpeak("An hour is up, so I'm remembering again.") }
+            }
+            val asked = dev.pan.app.audio.ListenMode.commandIn(lower)
+                ?: if (dev.pan.app.audio.ListenMode.isOwnRelease(lower)) dev.pan.app.audio.ListenMode.Mode.NORMAL else null
+            if (asked != null && asked != dev.pan.app.audio.ListenMode.mode.value) {
+                val from = dev.pan.app.audio.ListenMode.mode.value
+                panLog("Listening mode by voice: ${from.wire} -> ${asked.wire}")
+                VoiceEvents.emit("drop", "reason" to "mode_command", "mode" to asked.wire)
+                val ack = dev.pan.app.audio.ListenMode.ack(asked, from)
+                setListenMode(asked)
+                // The command line itself is kept unless it is said inside Don't remember.
+                if (from != dev.pan.app.audio.ListenMode.Mode.FORGET) {
+                    serviceScope.launch { dataRepository.addUserMessage(text) }
+                    serviceScope.launch { dataRepository.addPanResponse(ack) }
+                }
+                mainHandler.post { panSpeak(ack) }
+                return
+            }
         }
 
         // He carried on. The pause before these words was long enough to commit the last
@@ -2136,6 +2193,12 @@ class PanForegroundService : Service() {
                     text = text,
                     addressed = addressedNow,
                     musicPlaying = musicPlaying(),
+                    listenMode = dev.pan.app.audio.ListenMode.mode.value.wire,
+                    modeWords = dev.pan.app.audio.ListenMode.wordsJson(),
+                    onListenMode = { wire ->
+                        // A mode command the hub heard. Mute comes as the done's mute flag below.
+                        dev.pan.app.audio.ListenMode.Mode.of(wire)?.let { m -> mainHandler.post { setListenMode(m) } }
+                    },
                     conversationHistory = historyContext,
                     sensorJson = sensorJson,
                     canCamera = sensorContext.cameraEnabled,
@@ -2209,6 +2272,12 @@ class PanForegroundService : Service() {
                     feedbackSounds.onCommandSent()
                     withContext(Dispatchers.Main) { muteNow() }
                     return@launch
+                }
+                // The mode the hub left this device in, in case its listen_mode event was missed.
+                response?.listen_mode?.let { wire ->
+                    dev.pan.app.audio.ListenMode.Mode.of(wire)?.let { m ->
+                        if (m != dev.pan.app.audio.ListenMode.mode.value) withContext(Dispatchers.Main) { setListenMode(m) }
+                    }
                 }
 
                 // #462: ambient verdict — no TTS, no fallback.
@@ -3398,6 +3467,16 @@ class PanForegroundService : Service() {
             panLog("Assistant button: the next line is for PAN")
             return START_STICKY
         }
+        if (intent?.action == ACTION_SET_MODE) {
+            val m = dev.pan.app.audio.ListenMode.Mode.of(intent.getStringExtra("mode"))
+            if (m != null) {
+                setListenMode(m)
+                panLog("Listening mode by the button: ${m.wire}")
+                // Picking a listening mode while muted turns the mic on: the mode is about hearing.
+                if (!micEnabled.value) startService(Intent(this, PanForegroundService::class.java).setAction("TOGGLE_MIC").putExtra("on", true))
+            }
+            return START_STICKY
+        }
         if (intent?.action == "TOGGLE_MIC") {
             // micEnabled is what the notification and the UI show, so it is the
             // state the user is actually toggling. Deriving this from the
@@ -3490,7 +3569,11 @@ class PanForegroundService : Service() {
 
         // The same words Home uses (0.5.2): is it listening, is it connected (and if not, whether it
         // is the phone's internet or the computer), and what PAN thinks is going on.
-        val title = if (listening) "ΠAN is listening" else "ΠAN is muted"
+        val title = if (!listening) "ΠAN is muted" else when (dev.pan.app.audio.ListenMode.mode.value) {
+            dev.pan.app.audio.ListenMode.Mode.LISTEN -> "ΠAN is listening only"
+            dev.pan.app.audio.ListenMode.Mode.NAME -> "ΠAN answers to its name only"
+            else -> "ΠAN is listening"
+        }
         val online = runCatching {
             val cm = getSystemService(android.net.ConnectivityManager::class.java)
             cm?.getNetworkCapabilities(cm.activeNetwork)
