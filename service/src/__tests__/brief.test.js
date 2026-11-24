@@ -43,12 +43,13 @@ test('threads: the newest ask to each of his threads in the last 3 hours', () =>
   ok(!t.some((l) => /older ask|yesterday|not his/.test(l)), 'no older ask, no old thread, nobody else\'s');
 });
 
-test('same words a minute later (clock times, never "ago")', () => {
+test('same words a minute later (clock times, "ago" only by the hour)', () => {
   const a = buildBrief('Situation (background only, never read it out): at home; dark.', { now });
   const b = buildBrief('Situation (background only, never read it out): at home; dark.', { now: now + 60_000 });
   ok(a.text === b.text, 'stable');
   ok(a.text.startsWith('Situation (background only, never read it out): at home; dark. His threads: '), a.text.slice(0, 120));
-  ok(!/ago\b/.test(a.text), 'no relative times');
+  ok(!/minutes? ago|\d+ (hours? )?ago/.test(a.text), 'no minute counts, only hour buckets');
+  ok(/\(\w[\w' -]*, (under an hour|about an hour|about \w+ hours) ago\)/.test(a.text), 'each thread time is said in words with a rough ago: ' + a.text.slice(0, 200));
 });
 
 test('about 500 tokens at most', () => {

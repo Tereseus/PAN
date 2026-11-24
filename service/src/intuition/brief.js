@@ -29,6 +29,38 @@ function clock(ms) {
   catch { return new Date(ms).toISOString().slice(11, 16); }
 }
 
+// A thread's time the way it is said, and roughly how long ago, so the small voice model copies it
+// instead of working it out: round 25 said "ten to ten" for 9:15 and "eight hours" for two. Read with
+// these, the same model got thread questions right 58% of the time instead of 42% (round 26 bench,
+// 2026-11-23). Same words as the training data (pan-finetune r26/build_r26.py). The "ago" part only
+// changes on the hour, so the brief still stays the same from minute to minute.
+const HOURS = ['twelve', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven'];
+const UNITS = ['', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve',
+  'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen'];
+const num = (n) => (n < 20 ? UNITS[n] : (['', '', 'twenty', 'thirty', 'forty', 'fifty'][Math.floor(n / 10)] + (n % 10 ? '-' + UNITS[n % 10] : '')));
+export function spokenTime(h, m) {
+  const hw = HOURS[h % 12], nw = HOURS[(h + 1) % 12];
+  if (m === 0) return `${hw} o'clock`;
+  if (m === 15) return `quarter past ${hw}`;
+  if (m === 30) return `half past ${hw}`;
+  if (m === 45) return `quarter to ${nw}`;
+  if (m % 5) return `${hw} ${m < 10 ? 'oh ' + num(m) : num(m)}`;
+  return m < 30 ? `${num(m)} past ${hw}` : `${num(60 - m)} to ${nw}`;
+}
+export function agoWords(minutes) {
+  if (minutes < 60) return 'under an hour ago';
+  if (minutes < 120) return 'about an hour ago';
+  return `about ${num(Math.floor(minutes / 60))} hours ago`;
+}
+function when(ms, now) {
+  let h, m;
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: 'numeric', hourCycle: 'h23', timeZone: hisTimeZone() }).formatToParts(new Date(ms));
+    h = Number(parts.find((p) => p.type === 'hour').value); m = Number(parts.find((p) => p.type === 'minute').value);
+  } catch { const d = new Date(ms); h = d.getUTCHours(); m = d.getUTCMinutes(); }
+  return `${clock(ms)} (${spokenTime(h, m)}, ${agoWords(Math.max(0, Math.floor((now - ms) / 60_000)))})`;
+}
+
 /** His threads in the last 3 hours, the newest ask to each: sent, answered, or still waiting. */
 export function threadLines(now = Date.now(), max = 3) {
   let jobs = [];
@@ -44,9 +76,9 @@ export function threadLines(now = Date.now(), max = 3) {
     if (seen.has(name)) continue;
     seen.add(name);
     const asked = j.kind === 'status' ? `asked ${name} what it is doing` : `sent ${name} "${clip(j.text, 70)}"`;
-    if (j.status === 'replied') out.push(`${asked} at ${clock(j.created_at)}; it answered at ${clock(j.replied_at || j.created_at)}: ${clip(toSpeech(j.reply || '', 220).replace(/ The rest is in the thread\.$/, ''), 180)}`);
-    else if (j.status === 'failed') out.push(`${asked} at ${clock(j.created_at)}; it failed`);
-    else out.push(`${asked} at ${clock(j.created_at)}; no answer yet`);
+    if (j.status === 'replied') out.push(`${asked} at ${when(j.created_at, now)}; it answered at ${when(j.replied_at || j.created_at, now)}: ${clip(toSpeech(j.reply || '', 220).replace(/ The rest is in the thread\.$/, ''), 180)}`);
+    else if (j.status === 'failed') out.push(`${asked} at ${when(j.created_at, now)}; it failed`);
+    else out.push(`${asked} at ${when(j.created_at, now)}; no answer yet`);
     if (out.length >= max) break;
   }
   return out;

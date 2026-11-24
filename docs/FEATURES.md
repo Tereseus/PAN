@@ -1663,7 +1663,10 @@ children can have adult-sounding voices and vice versa).
   question words or "?" (Thai) is answered.
 - **The brief** (2026-11-23, `intuition/brief.js`, docs/INTUITION-STATE.md section 11.2): the
   situation line plus his threads (newest ask to each in 3 hours, its answer or none yet), the
-  things in play (shelf notes with state and next) and the talk's summary, clock times only, at
+  things in play (shelf notes with state and next) and the talk's summary. Thread times read
+  "5:12 AM (five twelve, under an hour ago)": the clock, the time in words, and an ago that moves
+  only by the hour, so the text stays the same minute to minute (round 26 bench: thread answers
+  42% right without the words, 58% with). At
   most 2,000 characters (about 500 tokens). Replaces the situation line in the turn's prompts and
   the reader's read ahead where setting `voice_brief` allows: `bench` (default, bench turns only),
   `on`, `off`. `GET /api/v1/brief` returns `{ text, parts, tokens, mode, built_at }` for the
