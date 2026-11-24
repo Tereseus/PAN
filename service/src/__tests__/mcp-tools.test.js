@@ -19,7 +19,7 @@
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import { registerPanTools } from '../mcp/pan-tools.js';
+import { registerPanTools, searchHit, HIT_CHARS } from '../mcp/pan-tools.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SOURCE = join(__dirname, '..', 'mcp', 'pan-tools.js');
@@ -120,6 +120,25 @@ test('enum has no duplicate values', () => {
   const seen = new Set();
   const dupes = (actionEnum || []).filter((e) => seen.size === seen.add(e).size);
   assert(dupes.length === 0, `duplicate enum value(s): ${dupes.join(', ')}`);
+});
+
+// pan_search hits: the words, not the raw row (2026-11-24: 50 raw Stop rows ran to 150,000
+// characters and the tool result overflowed, so threads stopped searching).
+test('a search hit is one short excerpt, not the raw hook payload', () => {
+  const reply = 'word '.repeat(2000);
+  const row = { id: 7, created_at: '2026-11-24 10:00:00', event_type: 'Stop', session_id: 'abcdef1234567890', match: 'all words',
+    data: JSON.stringify({ transcript_path: '/x/y.jsonl', background_tasks: ['a'.repeat(5000)], last_assistant_message: reply }) };
+  const h = searchHit(row);
+  assert(h.text.startsWith('word word'), 'excerpt comes from the reply');
+  assert(h.text.length <= HIT_CHARS + 2, `excerpt capped, got ${h.text.length}`);
+  assert(!JSON.stringify(h).includes('transcript_path') && !JSON.stringify(h).includes('aaaa'), 'payload fields left out');
+  assert(h.session === 'abcdef12' && h.match === 'all words' && h.type === 'Stop' && h.id === 7, 'keeps id, type, session, match');
+  assert(JSON.stringify(Array(12).fill(h), null, 2).length < 12000, '12 hits stay a few KB');
+});
+test('a search hit prefers the prompt and reads plain text rows', () => {
+  assert(searchHit({ data: { prompt: 'what did we  decide', last_assistant_message: 'x' } }).text === 'what did we decide', 'prompt first, spaces folded');
+  assert(searchHit({ data: 'plain words' }).text === 'plain words', 'a non JSON row is kept as text');
+  assert(searchHit({ data: null }).text === '', 'empty row');
 });
 
 console.log(`\n${'='.repeat(40)}`);

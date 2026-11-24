@@ -21,7 +21,26 @@ import { z } from 'zod';
 export const PAN_MCP_INSTRUCTIONS =
   'PAN is the user\'s persistent memory across every Claude and device. ' +
   'Use pan_search whenever the user refers to something from the past ("what did we decide", "the thing I mentioned", "last time") — their full history lives here. ' +
+  'Also search it BEFORE asking the user any question about their own life, home, devices, plans or past choices: the answer is usually already here. ' +
   'IMPORTANT: this surface is NOT auto-captured. When a conversation reaches something worth remembering (a decision, an answer the user will want later, a finished task), call pan_log_exchange with a concise summary so it joins the user\'s searchable memory. Reuse one session_id across a conversation.';
+
+// One pan_search hit as the words a thread can read: id, when, type, session, match and one excerpt.
+// 2026-11-24: the raw event rows went out before. Each Stop row carries the whole hook payload (paths,
+// background tasks, the full reply), so 50 of them ran to 150,000 characters, the tool result
+// overflowed, and threads stopped searching.
+export const HIT_CHARS = 700;
+export function searchHit(e) {
+  let d = e.data;
+  try { d = typeof d === 'string' ? JSON.parse(d) : d; } catch {}
+  const words = (d && typeof d === 'object')
+    ? (d.prompt || d.last_assistant_message || d.text || d.message || d.summary || JSON.stringify(d))
+    : String(d ?? '');
+  const flat = String(words).replace(/\s+/g, ' ').trim();
+  return {
+    id: e.id, when: e.created_at, type: e.event_type, session: String(e.session_id || '').slice(0, 8),
+    match: e.match, text: flat.length > HIT_CHARS ? flat.slice(0, HIT_CHARS) + ' …' : flat,
+  };
+}
 
 export function registerPanTools(server, { panBaseUrl }) {
   async function panFetch(path, { method = 'GET', body } = {}) {
@@ -53,9 +72,13 @@ export function registerPanTools(server, { panBaseUrl }) {
     { q: z.string(), limit: z.number().optional(), type: z.string().optional() },
     async ({ q, limit, type }) => {
       try {
-        let path = `/dashboard/api/events?q=${encodeURIComponent(q)}&limit=${limit || 50}`;
+        let path = `/dashboard/api/events?q=${encodeURIComponent(q)}&limit=${limit || 12}`;
         if (type) path += `&type=${encodeURIComponent(type)}`; // the endpoint reads `type`; `event_type` was silently ignored
         const r = await panFetch(path);
+        // 2026-11-24: return the words, not the raw event rows. Each Stop row carries the whole hook payload
+        // (paths, background tasks, the full reply), so 50 of them ran to 150,000 characters, the tool result
+        // overflowed, and threads stopped searching. Keep id/when/match plus one readable excerpt per hit.
+        if (r && Array.isArray(r.events)) r.events = r.events.map(searchHit);
         if (r && Array.isArray(r.events) && !r.events.some((e) => e.match === 'all words')) {
           r.hint = r.events.length
             ? 'No event has every word. These match some words or the meaning; if none fits, search again with fewer or different words.'
