@@ -779,6 +779,37 @@ same grid, `ui/home/ModeIcons.kt`). Home's line and the notification say it too.
   until then other languages use the person's own words or the button. The acks are English.
 - Tests: `service/src/__tests__/listen-mode.test.js` (9), `ListenModeTest` (5).
 
+## Topic brief for Claude threads (`service/src/hooks/topic-brief.js`, hook `UserPromptSubmit` in `routes/hooks.js`; 2026-11-24)
+
+When a prompt opens a topic, the hook hands the thread the best few matches from the stored history as
+`additionalContext`: date, thread folder and id, whether it was a reply or his line, the rare words it
+shares, and a short excerpt around them. At most 4 hits, one per thread, under 1,800 characters. Why: the
+SessionStart briefing only finds past work when a new thread's folder matches a project, and the owner
+rarely starts new threads (he renames old ones and they drift into new tasks), so a thread asked him which
+way his balconies face when a doc from Nov 15 already said.
+
+- **When it fires:** the first prompt of a session; the first prompt after a compaction (`SessionStart`
+  with `source: 'compact'` marks the session); or a prompt whose rare words the thread's last 6 prompts and
+  replies mostly never used (under 34 % of their weight, and the new words weigh at least 9.5), at most once
+  every 4 prompts. Prompts that are markup or messages relayed from other sessions or tasks are skipped.
+- **Rare words, from the history itself:** no keyword lists. Each candidate word (stop words, numbers and
+  hex ids dropped) is counted in the search index (`events_fts`, an FTS match stopped once the word is in
+  0.4 % of the indexed events; `indexStats`, cached an hour). Weight = ln(indexed events / events holding
+  the word), less the prompt's own copy (the hook stores and indexes the prompt before it runs).
+- **Search:** the rare words OR'd against `events_fts` (60 candidates, bm25 order), prompts and replies of
+  other sessions only. A hit must share at least 60 % of the prompt's rare-word weight, at least 9.5 of it,
+  and 2 words when the prompt has 2 or more; his own earlier lines need 3 shared words and 90 %, since replies
+  hold the facts and his lines matched on words he says when upset or thinking aloud.
+- **Time:** all synchronous SQLite; over 300 ms the result is dropped and briefs pause 10 minutes. Replay on
+  the hub's Nov 1 database copy (30 long sessions, 16,321 real prompts, only history before each prompt):
+  search 4 ms median, 11 ms p95, 39 ms worst; a brief with hits on 216 prompts (1 in 75), median 417
+  characters; by eye about half the hits were on topic (a VPN, a KVM, a repeated error, a machine setup)
+  and half loose matches, so each line names the shared words for the thread to judge.
+- **Log:** `[PAN brief] session=<id8> <reason>: <n> hit(s), <chars> chars, search <ms> ms` in hub.log.
+- Merged with the behavioural nudge (`session_nudges`, bug #769) when both are due.
+- **Not on the phone's voice path:** its prompt budget is small and every token costs reading time there.
+- Tests: `node service/src/__tests__/topic-brief.test.js` (15).
+
 ## Phone Sensors list (app main screen; `GET/PUT /api/sensors/devices/:id`)
 
 - Each row is a permission switch for what PAN may use from that device. The phone copies the

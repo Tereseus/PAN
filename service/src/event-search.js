@@ -27,7 +27,7 @@ const MAX_WORDS = 12;
 
 // Words that carry no topic. In the some-words pass every term is OR'd, so one of
 // these would match most of the database and make bm25 score all of it.
-const STOP_WORDS = new Set(`
+export const STOP_WORDS = new Set(`
 a an and are as at be been but by can could did do does doing done for from had has have how i if in
 into is it its just me my no not of on or our so than that the their them then there these they this
 to too up us was we were what when where which who why will with would you your yes ok okay please

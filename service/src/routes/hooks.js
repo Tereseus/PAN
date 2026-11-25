@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { run, get, all, insert, detectProject, indexEventFTS, allScoped, getScoped, runScoped, insertScoped } from '../db.js';
+import { db, run, get, all, insert, detectProject, indexEventFTS, allScoped, getScoped, runScoped, insertScoped } from '../db.js';
 import { shouldStoreEvent } from '../event-filters.js';
 import { broadcastNotification, broadcastChatUpdate, setInFlightTool, clearInFlightTool, findSessionByClaudeId } from '../terminal-bridge.js';
 import { askForAnswer, dropRequest, dropSessionRequests } from '../permission-requests.js';
@@ -13,6 +13,10 @@ import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from '
 import { join } from 'path';
 import { createHash } from 'crypto';
 import { capBlocks, dropSeenBlocks, turnTextData } from '../hooks/mid-turn-text.js';
+import { topicBrief, noteCompaction, indexStats } from '../hooks/topic-brief.js';
+
+// The search index's word counts for the topic brief, made on first use (a temp table on this connection).
+let briefStats = null;
 
 // Context size thresholds (in chars)
 const CLAUDE_MD_WARN_SIZE = 15000;  // ~3,750 tokens — alert if CLAUDE.md exceeds this
@@ -753,6 +757,8 @@ router.post('/:eventType', (req, res) => {
     }
 
     if (eventType === 'SessionStart') {
+      // After a compaction the thread has lost its detail: its next prompt gets a topic brief.
+      if (payload.source === 'compact') noteCompaction(sessionId);
       if (existingSession) {
         // Update existing session with fresh metadata
         runScoped(req, `UPDATE sessions SET
@@ -1119,6 +1125,16 @@ router.post('/:eventType', (req, res) => {
     // for this session and return them as additionalContext so Claude sees them
     // prepended to the user's prompt. This is how behavioral-lock-breaker.js
     // breaks Claude out of stock-reply loops on turn N+1.
+    // Topic brief (hooks/topic-brief.js): when this prompt opens a topic (first prompt, first after a
+    // compaction, or far from the thread's last turns), the best few hits from the stored history.
+    let brief = '';
+    if (eventType === 'UserPromptSubmit' && typeof payload.prompt === 'string') {
+      try { briefStats = briefStats || indexStats(db); } catch (err) { console.warn('[PAN brief] no index stats:', err.message); }
+      const b = briefStats ? topicBrief({ prompt: payload.prompt, sessionId, all, stats: briefStats, orgId: req.org_id || 'org_personal' }) : { text: '', reason: '' };
+      if (b.reason) console.log(`[PAN brief] session=${sessionId.slice(0, 8)} ${b.reason}: ${b.hits} hit(s), ${b.text.length} chars, search ${b.ms} ms`);
+      brief = b.text;
+    }
+
     if (eventType === 'UserPromptSubmit') {
       try {
         const pending = get(
@@ -1137,7 +1153,9 @@ router.post('/:eventType', (req, res) => {
             ok: true,
             hookSpecificOutput: {
               hookEventName: 'UserPromptSubmit',
-              additionalContext: pending.body,
+              additionalContext: brief ? `${pending.body}
+
+${brief}` : pending.body,
             },
           });
         }
@@ -1146,6 +1164,12 @@ router.post('/:eventType', (req, res) => {
       }
     }
 
+    if (brief) {
+      return res.status(200).json({
+        ok: true,
+        hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: brief },
+      });
+    }
     res.status(200).json({ ok: true });
   } catch (err) {
     console.error(`[PAN] Error handling ${eventType}:`, err.message);
