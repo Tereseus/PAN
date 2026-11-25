@@ -57,6 +57,115 @@ const DEVICE_ID = config.device_id || hostname();
 // pan-client-config.json, or PAN_OLLAMA_WATCHDOG=0.
 const OLLAMA_WATCHDOG = config.ollama_watchdog !== false && process.env.PAN_OLLAMA_WATCHDOG !== '0';
 
+// ── Ollama watchdog decision (pure) ── BEGIN ─────────────────────────────────
+// Nothing in this block may touch imports, process or the file system: the test
+// (service/src/__tests__/pan-client-ollama.test.js) cuts it out of this file and
+// runs it on its own, because machines download pan-client.js as ONE file.
+//
+// Why it exists: on a Linux box where Ollama runs as the systemd service
+// `ollama` with OLLAMA_HOST set to a tailnet address only (for example
+// 100.64.0.10:11434), a probe of 127.0.0.1:11434 failed, so the watchdog took
+// Ollama for dead and started a SECOND `ollama serve` on 127.0.0.1 as the login
+// user, with its own model store. Models were then pulled into the wrong store.
+// Now: when systemd runs Ollama, systemd restarts it and the watchdog stays out,
+// and the probe asks the address the service really listens on.
+
+// OLLAMA_HOST as Ollama itself reads it -> the base URL to ask.
+// "", "0.0.0.0", "::" (listen everywhere) are asked on 127.0.0.1.
+// Default port 11434; an explicit http:// with no port means 80, https:// 443.
+function ollamaBaseFromHost(value) {
+  let v = String(value ?? '').trim().replace(/^["']|["']$/g, '');
+  let scheme = 'http';
+  let defPort = '11434';
+  const m = v.match(/^(https?):\/\//i);
+  if (m) {
+    scheme = m[1].toLowerCase();
+    defPort = scheme === 'https' ? '443' : '80';
+    v = v.slice(m[0].length);
+  }
+  v = v.replace(/\/.*$/, '');
+  let host = v;
+  let port = '';
+  const bracketed = v.match(/^\[([^\]]*)\](?::(\d*))?$/);
+  if (bracketed) { host = bracketed[1]; port = bracketed[2] || ''; }
+  else if ((v.match(/:/g) || []).length === 1) { [host, port] = v.split(':'); }
+  if (!host || host === '0.0.0.0' || host === '::' || host === '[::]') host = '127.0.0.1';
+  if (host.includes(':')) host = `[${host}]`;
+  return `${scheme}://${host}:${port || defPort}`;
+}
+
+// `systemctl show ollama.service --property=...` output -> { Key: value }.
+// Environment is split into its own map; systemd quotes an assignment that
+// holds spaces ("A=b c").
+function parseSystemdShow(text) {
+  const out = { env: {} };
+  for (const line of String(text || '').split(/\r?\n/)) {
+    const i = line.indexOf('=');
+    if (i <= 0) continue;
+    const key = line.slice(0, i);
+    const val = line.slice(i + 1);
+    if (key === 'Environment') {
+      for (const tok of val.match(/"[^"]*"|\S+/g) || []) {
+        const a = tok.replace(/^"|"$/g, '');
+        const j = a.indexOf('=');
+        if (j > 0) out.env[a.slice(0, j)] = a.slice(j + 1);
+      }
+    } else {
+      out[key] = val;
+    }
+  }
+  return out;
+}
+
+// What the watchdog may do on this machine, and where Ollama answers.
+//   platform    - os.platform()
+//   flagOn      - "ollama_watchdog" not false and PAN_OLLAMA_WATCHDOG not '0'
+//   unit        - parseSystemdShow() of the ollama unit, or null (none / no systemd)
+//   processHost - this process's own OLLAMA_HOST (what a watchdog-started serve binds)
+// Returns { restart, pullModels, systemd, base, reason }.
+function decideOllamaWatchdog({ platform, flagOn, unit, processHost }) {
+  const ufs = String(unit?.UnitFileState || '');
+  const active = String(unit?.ActiveState || '');
+  const systemd = platform !== 'win32' && !!unit && unit.LoadState === 'loaded' &&
+    (/^enabled/.test(ufs) || ['active', 'activating', 'reloading'].includes(active));
+  const base = ollamaBaseFromHost(systemd ? unit.env?.OLLAMA_HOST : processHost);
+  let reason;
+  if (!flagOn) reason = 'off in config (ollama_watchdog false or PAN_OLLAMA_WATCHDOG=0)';
+  else if (systemd) reason = `systemd runs ollama (${ufs || 'unit'}, ${active || 'unknown'}); systemd restarts it`;
+  else reason = 'on';
+  return { restart: flagOn && !systemd, pullModels: flagOn, systemd, base, reason };
+}
+// ── Ollama watchdog decision (pure) ── END ───────────────────────────────────
+
+// The live plan, read again every 5 minutes so a unit enabled or removed later
+// is picked up without restarting pan-client.
+let _ollamaPlan = null;
+let _ollamaPlanAt = 0;
+function readSystemdOllamaUnit() {
+  if (IS_WINDOWS) return null;
+  try {
+    const out = execFileSync('systemctl',
+      ['show', 'ollama.service', '--property=LoadState,UnitFileState,ActiveState,Environment'],
+      { encoding: 'utf8', timeout: 3000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+    return parseSystemdShow(out);
+  } catch { return null; } // no systemd (macOS, containers) or no such unit
+}
+function ollamaPlan() {
+  if (_ollamaPlan && Date.now() - _ollamaPlanAt < 5 * 60 * 1000) return _ollamaPlan;
+  const plan = decideOllamaWatchdog({
+    platform: PLATFORM,
+    flagOn: OLLAMA_WATCHDOG,
+    unit: readSystemdOllamaUnit(),
+    processHost: process.env.OLLAMA_HOST,
+  });
+  if (!_ollamaPlan || _ollamaPlan.reason !== plan.reason || _ollamaPlan.base !== plan.base) {
+    console.log(`[Watchdog] Ollama at ${plan.base}; restart ${plan.restart ? 'on' : 'off'} (${plan.reason})`);
+  }
+  _ollamaPlan = plan;
+  _ollamaPlanAt = Date.now();
+  return plan;
+}
+
 if (!HUB_WS) {
   console.error('PAN Client: --hub <ws://hub:7777> is required');
   process.exit(1);
@@ -487,22 +596,27 @@ function send(obj) {
 }
 
 function probeServices() {
+  // Ask the address Ollama really listens on (systemd unit's OLLAMA_HOST, or
+  // this process's), not a fixed localhost: a tailnet-only service never
+  // answers on 127.0.0.1.
+  const base = ollamaPlan().base;
+  const port = Number(new URL(base).port) || 11434;
+  const entry = (status, models = []) => ({ name: 'ollama', port, status, url: base, modelCount: models.length, models });
   return new Promise((resolve) => {
     let body = '';
-    const req = http.get('http://localhost:11434/api/tags', { timeout: 3000 }, (res) => {
+    const req = (base.startsWith('https:') ? https : http).get(`${base}/api/tags`, { timeout: 3000 }, (res) => {
       res.on('data', d => { body += d; });
       res.on('end', () => {
         try {
           const data = JSON.parse(body);
-          const models = data.models || [];
-          resolve([{ name: 'ollama', port: 11434, status: 'up', url: 'http://localhost:11434', modelCount: models.length, models: models.map(m => m.name) }]);
+          resolve([entry('up', (data.models || []).map(m => m.name))]);
         } catch {
-          resolve([{ name: 'ollama', port: 11434, status: 'up', url: 'http://localhost:11434', modelCount: 0, models: [] }]);
+          resolve([entry('up')]);
         }
       });
     });
-    req.on('error', () => resolve([{ name: 'ollama', port: 11434, status: 'down', url: 'http://localhost:11434', modelCount: 0, models: [] }]));
-    req.on('timeout', () => { req.destroy(); resolve([{ name: 'ollama', port: 11434, status: 'down', url: 'http://localhost:11434', modelCount: 0, models: [] }]); });
+    req.on('error', () => resolve([entry('down')]));
+    req.on('timeout', () => { req.destroy(); resolve([entry('down')]); });
   });
 }
 
@@ -717,12 +831,14 @@ function pullMissingModels(missingModels) {
   for (const model of missingModels) {
     console.log(`[Watchdog] Ollama model '${model}' missing — pulling now...`);
     const ollamaExe = IS_WINDOWS
-      ? `"${process.env.LOCALAPPDATA || 'C:\\Users\\' + require('os').userInfo().username + '\\AppData\\Local'}\\Programs\\Ollama\\ollama.exe"`
+      ? `"${process.env.LOCALAPPDATA || 'C:\\Users\\' + os.userInfo().username + '\\AppData\\Local'}\\Programs\\Ollama\\ollama.exe"`
       : 'ollama';
     try {
+      // OLLAMA_HOST = the server that answered the probe, so the model lands
+      // in THAT server's store (the CLI otherwise asks 127.0.0.1).
       spawn(IS_WINDOWS ? 'cmd' : 'sh',
         IS_WINDOWS ? ['/c', `${ollamaExe} pull ${model}`] : ['-c', `ollama pull ${model}`],
-        { windowsHide: true, detached: true, stdio: 'ignore' }
+        { windowsHide: true, detached: true, stdio: 'ignore', env: { ...process.env, OLLAMA_HOST: ollamaPlan().base } }
       ).unref();
       console.log(`[Watchdog] Pull started for ${model}`);
     } catch (err) {
@@ -799,6 +915,15 @@ function findOllamaBinary() {
 }
 
 async function restartOllama() {
+  // Step 0: never start a second server next to one systemd runs. systemd
+  // restarts its own; a serve started here as the login user binds
+  // 127.0.0.1 with a separate model store (the stray server of Nov 21).
+  const plan = ollamaPlan();
+  if (plan.systemd) {
+    _logRestart({ step: 'systemd', ok: false, skipped: true, error: `not restarting: ${plan.reason}`, base: plan.base });
+    return;
+  }
+
   // Step 1: find the binary. PATH first, then the known install locations,
   // because a service PATH routinely cannot see a per-user install.
   const probe = await probeCommand(IS_WINDOWS ? 'where' : 'which', ['ollama'], 3000);
@@ -835,7 +960,7 @@ async function restartOllama() {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       try {
-        const r = await fetch('http://127.0.0.1:11434/api/tags', { signal: AbortSignal.timeout(2000) });
+        const r = await fetch(`${plan.base}/api/tags`, { signal: AbortSignal.timeout(2000) });
         if (r.ok) return true;
       } catch {}
       await new Promise((r) => setTimeout(r, 1000));
@@ -872,7 +997,7 @@ async function restartOllama() {
       _logRestart({
         step: 'launch_shortcut',
         ok: false,
-        error: 'shortcut launched but nothing listening on 11434 after 15s',
+        error: `shortcut launched but nothing answering at ${plan.base} after 15s`,
         path: 'C:\\Users\\Public\\Desktop\\Ollama.lnk',
       });
       // Fall through to `ollama serve` rather than returning a false success.
@@ -893,12 +1018,16 @@ async function restartOllama() {
     // descriptor that spawn accepts, and it is inherited by the detached
     // child, so the parent can close its own copy immediately.
     const fd = openSync(logPath, 'a');
+    // Outside the inner block: `p` is scoped to it, and reading p.pid below
+    // threw, so every launch was logged as failed with "p is not defined".
+    let servePid = null;
     try {
       writeSync(fd, `\n=== ${new Date().toISOString()} pan-client restart attempt ===\n`);
       // Absolute path: the whole point of resolving it above is that the bare
       // name is not resolvable from this process's PATH.
       const p = spawn(ollamaBin, ['serve'], { windowsHide: true, detached: true, stdio: ['ignore', fd, fd] });
       p.unref();
+      servePid = p.pid;
     } finally {
       try { closeSync(fd); } catch { /* child holds its own copy */ }
     }
@@ -908,9 +1037,9 @@ async function restartOllama() {
     _logRestart({
       step: 'launch_serve',
       ok: up,
-      pid: p.pid,
+      pid: servePid,
       log_path: logPath,
-      ...(up ? {} : { error: 'ollama serve spawned but nothing listening on 11434 after 15s — see log_path' }),
+      ...(up ? {} : { error: `ollama serve spawned but nothing answering at ${plan.base} after 15s — see log_path` }),
     });
   } catch (err) {
     _logRestart({ step: 'launch_serve', ok: false, error: err.message });
@@ -926,7 +1055,7 @@ async function sendHeartbeat() {
   // can see WHY restarts are failing.
   const ollamaSvc = services.find(s => s.name === 'ollama');
   const ollamaDown = ollamaSvc?.status === 'down';
-  if (ollamaDown && OLLAMA_WATCHDOG) {
+  if (ollamaDown && ollamaPlan().restart) {
     const now = Date.now();
     if (now - _ollamaLastRestartAttempt >= OLLAMA_RESTART_THROTTLE_MS) {
       _ollamaLastRestartAttempt = now;
@@ -942,7 +1071,7 @@ async function sendHeartbeat() {
   }
 
   // Watchdog: if Ollama is up but required models are missing (e.g. wiped by upgrade), pull them
-  if (!ollamaDown && ollamaSvc) {
+  if (!ollamaDown && ollamaSvc && ollamaPlan().pullModels) {
     const installedModels = ollamaSvc.models || [];
     const missing = REQUIRED_MODELS.filter(m => !installedModels.some(i => i.startsWith(m)));
     if (missing.length > 0) {
@@ -1726,7 +1855,7 @@ function startHttpMode() {
         let services = await probeServices();
         // Watchdog: attempt to restart Ollama if down (same throttle as WS mode)
         const ollamaDown = services.some(s => s.name === 'ollama' && s.status === 'down');
-        if (ollamaDown) {
+        if (ollamaDown && ollamaPlan().restart) {
           const now = Date.now();
           if (now - _ollamaLastRestartAttempt >= OLLAMA_RESTART_THROTTLE_MS) {
             _ollamaLastRestartAttempt = now;

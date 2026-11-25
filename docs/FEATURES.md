@@ -235,6 +235,37 @@ Removed with the old relay between hubs (`hub/`, `hub-client.js`, `hub-crypto.js
 
 ---
 
+## PAN client Ollama watchdog (`pan-client/pan-client.js`, `decideOllamaWatchdog`; 2026-11-25)
+
+- **Purpose:** each pan-client reports its machine's Ollama in the heartbeat (`services`:
+  status, models, `port`, `url`), restarts it when it is down, and pulls `REQUIRED_MODELS`
+  (`minicpm-v`) when they are missing.
+- **Where it asks:** the address Ollama really listens on, not a fixed `localhost:11434`.
+  On Linux, when systemd runs Ollama (unit `ollama.service` loaded and enabled, or active
+  right now), that unit's `OLLAMA_HOST`; otherwise this process's own `OLLAMA_HOST` (the
+  address a serve it starts would bind); `0.0.0.0` / `::` / empty are asked on 127.0.0.1.
+  Read with `systemctl show ollama.service --property=LoadState,UnitFileState,ActiveState,Environment`
+  at most every 5 minutes; a change is logged once as `[Watchdog] Ollama at <url>; restart on|off (<why>)`.
+  The heartbeat's `url` and `port` are that address. Model pulls run with `OLLAMA_HOST` set to
+  it, so a model lands in the store of the server that answered.
+- **When it restarts:** only when the switch is on and systemd does not run Ollama. With a
+  systemd unit, systemd restarts it, and `restartOllama()` (also behind the hub's
+  `restart_service` command) records `{ step: 'systemd', skipped: true }` and starts nothing.
+  The HTTP polling mode follows the same rule (it ignored the switch before).
+- **Switch:** `"ollama_watchdog": false` in `pan-client-config.json`, or `PAN_OLLAMA_WATCHDOG=0`:
+  no restarts and no model pulls; the probe still reports the real status.
+- **Replaces:** a probe of 127.0.0.1 only. On a Linux box whose systemd Ollama listened on its
+  tailnet address alone, that probe failed, so the watchdog started a second `ollama serve`
+  on 127.0.0.1 as the login user, with its own model store; it held stray models and pulls
+  landed there (found Nov 21; the stopgap was the switch above on that machine). Also fixed:
+  every successful `ollama serve` launch was logged as failed ("p is not defined"), and the
+  Windows pull path called `require` inside an ES module.
+- **Pre-gate:** `node service/src/__tests__/pan-client-ollama.test.js` (30). The decision is a
+  marked pure block inside `pan-client.js` (machines download that one file); the test cuts
+  the block out and runs it alone.
+
+---
+
 ## PAN Link pairing codes (`/api/v1/link/*`, `service/src/routes/link.js`)
 
 - **Calls:** pan-link's admin API on the hub (`http://127.0.0.1:7792`, or `PAN_LINK_ADMIN`)
