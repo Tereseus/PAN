@@ -1153,9 +1153,7 @@ router.post('/:eventType', (req, res) => {
             ok: true,
             hookSpecificOutput: {
               hookEventName: 'UserPromptSubmit',
-              additionalContext: brief ? `${pending.body}
-
-${brief}` : pending.body,
+              additionalContext: brief ? `${pending.body}\n\n${brief}` : pending.body,
             },
           });
         }

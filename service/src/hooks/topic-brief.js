@@ -227,6 +227,11 @@ export function indexStats(db) {
   return stats;
 }
 
+/** The text without the <system-reminder> blocks the app can put in front of his words. */
+export function withoutReminders(text) {
+  return String(text || '').replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, ' ').trim();
+}
+
 // ---- state per session, kept in this process ----------------------------------------------------
 const compacted = new Set();
 const sinceBrief = new Map();   // session -> prompts since its last brief
@@ -248,9 +253,10 @@ export function _reset() { compacted.clear(); sinceBrief.clear(); pausedUntil = 
 export function topicBrief({ prompt, sessionId, all, stats, orgId = 'org_personal', now = Date.now, clock = () => performance.now() }) {
   const out = { text: '', reason: '', ms: 0, terms: [], hits: 0 };
   try {
-    const p = String(prompt || '').trim();
-    // markup and messages relayed from other sessions or tasks are not his topic
-    if (!p || p.startsWith('<') || /<(cross-session-message|agent-message|task-notification|system-reminder)/.test(p.slice(0, 400))) return out;
+    // The app can put a <system-reminder> block in front of his first words: take it off. What is left
+    // must be his own words: markup and messages relayed from other sessions or tasks are not his topic.
+    const p = withoutReminders(prompt);
+    if (!p || p.startsWith('<') || /<(cross-session-message|agent-message|task-notification|system-reminder|scheduled-task)\b/.test(p.slice(0, 400))) return out;
     // every prompt counts toward the cooldown, briefed or not
     if (sinceBrief.has(sessionId)) sinceBrief.set(sessionId, sinceBrief.get(sessionId) + 1);
     if (now() < pausedUntil) { out.reason = 'paused (slow search earlier)'; return out; }
@@ -268,8 +274,8 @@ export function topicBrief({ prompt, sessionId, all, stats, orgId = 'org_persona
        ORDER BY id DESC LIMIT :n`, { ':sid': sessionId, ':org_id': orgId, ':n': RECENT_TURNS + 1 });
     const norm = (s) => String(s).replace(/\s+/g, ' ').trim();
     const rest = [...recent];
-    if (rest.length && rest[0].event_type === 'UserPromptSubmit' && norm(eventSearchText(rest[0])) === norm(p)) rest.shift();
-    const texts = rest.map(eventSearchText).filter(Boolean);
+    if (rest.length && rest[0].event_type === 'UserPromptSubmit' && norm(withoutReminders(eventSearchText(rest[0]))) === norm(p)) rest.shift();
+    const texts = rest.map((r) => withoutReminders(eventSearchText(r))).filter(Boolean);
     const earlierPrompt = rest.some((r) => r.event_type === 'UserPromptSubmit');
     const afterCompact = compacted.delete(sessionId);
     const last = texts.slice(0, RECENT_TURNS);

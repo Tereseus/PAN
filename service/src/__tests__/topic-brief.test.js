@@ -66,6 +66,21 @@ test('words only the current prompt holds do not count (it is indexed before the
   assert(b.text.includes('the garden'), `got ${b.reason} ${b.text}`);
 });
 
+test('a leading system-reminder block is taken off; markup-only prompts are skipped', () => {
+  const wrapped = `<system-reminder>The user started this session without a folder.</system-reminder>
+${SOLAR}`;
+  const db = fakeDb({ recent: [ups('s1', wrapped)], hits: [OLD_HIT] });
+  const b = topicBrief({ prompt: wrapped, sessionId: 's1', all: db.all, stats, clock: db.clock });
+  assert(b.text.includes('the garden'), `wrapped first prompt: ${b.reason}`);
+  for (const p of ['<task-notification><task-id>x</task-id> balconies solar roof</task-notification>',
+    '<scheduled-task name="x">balconies solar roof</scheduled-task>',
+    'Another Claude session sent a message: <cross-session-message from="x">balconies solar roof</cross-session-message>']) {
+    const d = fakeDb({ recent: [ups('s1', p)], hits: [OLD_HIT] });
+    const r = topicBrief({ prompt: p, sessionId: 's1', all: d.all, stats, clock: d.clock });
+    assert(r.text === '' && d.calls.search === 0, `markup briefed: ${p.slice(0, 30)}`);
+  }
+});
+
 test('a prompt on the same topic as the last turns stays quiet', () => {
   const recent = [ups('s1', SOLAR, 10), ups('s1', 'which side do the balconies face again', 9), stop('s1', 'The balconies face the garden; solar panels on the railings of the house would get afternoon sun.', 8), ups('s1', 'tell me about the solar panels and balconies', 7)];
   const db = fakeDb({ recent, hits: [OLD_HIT] });
