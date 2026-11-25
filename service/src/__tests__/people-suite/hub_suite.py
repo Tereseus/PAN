@@ -380,7 +380,11 @@ def main():
         time.sleep(2)
         s, j = call("GET", "/dashboard/api/events?limit=20&q=%s" % token)
         events = j.get("events") if isinstance(j, dict) else j
-        check("talk", "none of a person's words were stored in the owner's events", s == 200 and not events, (s, str(j)[:200]))
+        # Only an event that holds the token is one of their lines. The search also returns the
+        # nearest events by meaning when no word matches (event-search.js, third pass), and on
+        # Nov 24 that handed back the owner's own "call the Kitchen crew" from an earlier run.
+        theirs = [e for e in (events or []) if token in json.dumps(e)]
+        check("talk", "none of a person's words were stored in the owner's events", s == 200 and not theirs, (s, str(theirs)[:200]))
 
         # a person's device naming the owner's phone in a header cannot cancel the owner's turn
         box = {}

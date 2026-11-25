@@ -7,11 +7,30 @@ import { pinAllowed } from './compute-store.js';
 import { readerStream } from './voice-reader.js';
 import { describeWithPhotoReader } from './photo-reader.js';
 import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
+import { tmpdir as osTmpdir } from 'os';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { anonymizeForAI } from './anonymize.js';
 import { getSecret } from './secrets.js';
 
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
+
+/**
+ * Options for a plain one-turn Claude call through the Agent SDK: the prompt in, words out, and
+ * nothing of the computer's own Claude set-up. Leaving settingSources out does NOT isolate it in
+ * SDK 0.2.92: the probe of 2026-11-24 found the owner's CLAUDE.md, his auto memory and nine MCP
+ * servers (ΠAN's own memory tools and his Gmail among them) in the context of the call a person's
+ * device falls back to. Every one of these is shut here; the cwd is the temp folder so no project
+ * file is near it. __tests__/sdk-isolation.test.js checks the options.
+ */
+export function sdkPlainOptions(model, abortController, caller = 'unknown') {
+  return {
+    model, maxTurns: 1, persistSession: false, permissionMode: 'default', abortController,
+    tools: [], settingSources: [], mcpServers: {}, strictMcpConfig: true, cwd: osTmpdir(),
+    env: { ...process.env, CLAUDE_AGENT_SDK_CLIENT_APP: `pan-server/${caller}`,
+      ENABLE_CLAUDEAI_MCP_SERVERS: 'false', CLAUDE_CODE_DISABLE_CLAUDE_MDS: '1',
+      CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1', CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS: '1' },
+  };
+}
 const GROQ_URL      = 'https://api.groq.com/openai/v1/chat/completions';
 const OPENAI_URL    = 'https://api.openai.com/v1/chat/completions';
 const DEFAULT_MODEL = 'claude-haiku-4-5-20251001';
@@ -851,7 +870,7 @@ export async function askAI(rawPrompt, { model, timeout = 15000, maxTokens = 300
         }, timeout);
         (async () => {
           try {
-            const q = sdkQuery({ prompt, options: { model, maxTurns: 1, persistSession: false, permissionMode: 'plan', abortController: controller, tools: [], env: { ...process.env, CLAUDE_AGENT_SDK_CLIENT_APP: `pan-server/${caller}` } } });
+            const q = sdkQuery({ prompt, options: sdkPlainOptions(model, controller, caller) });
             let text = '';
             let usage = null;
             for await (const event of q) {

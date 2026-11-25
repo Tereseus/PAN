@@ -30,6 +30,10 @@ setting('display_name', 'Zebulon');
 setting('about_him', 'OWNERFACT he builds the Quasar game');
 setting('personality', 'OWNERPERSONA dry and blunt');
 setting('voice_student_model', 'ollama:test-voice');
+// No real model, ever: with no chain set, the voice chain fell to Claude through the Agent SDK on
+// whatever computer ran this, and in one run of three its reply to "PAN status" was read as a leak
+// (2026-11-24; the SDK then also carried the owner's own Claude set-up, closed in llm.js).
+setting('ai_fallback_chain_voice', ['ollama:pan-test-none']);
 try { run(`INSERT INTO memory_items (item_type, content, context, confidence, classified_at, org_id) VALUES ('note', 'OWNERMEMORY the wifi password is on the fridge', '', 1, datetime('now'), 'org_personal')`); } catch {}
 try { run(`INSERT INTO device_presence (device_id, user_id, activity, screen_title, confidence, platform, as_of) VALUES ('laptop', 'owner', 'working', 'OWNERSCREEN Quasar editor', 90, 'windows', :t)`, { ':t': Date.now() }); } catch {}
 try { run(`INSERT INTO chat_messages (id, thread_id, sender_id, body, body_type, created_at) VALUES ('m1', 'thread-pan-system', 'self', 'OWNERTALK remind me about the dentist', 'text', :t)`, { ':t': Date.now() }); } catch {}
@@ -216,6 +220,7 @@ await test('a line for a person never reaches the owner\'s path', async () => {
   // The owner's path would answer "status" with his counts (tryQuickSystem) without any model.
   const { done, said } = await turn('PAN status', ctx({ signal: AbortSignal.timeout(1) })).catch((e) => ({ done: null, said: '', err: e }));
   ok(!/events|memories|projects/.test(`${said} ${done?.response || ''}`), `the owner's counts were read out: ${said}`);
+  ok(!/PAN status:/.test(`${said} ${done?.response || ''}`), `the owner's status line was read out: ${said}`);
 });
 
 // A sum for a person is worked out by code and its figure kept (arith.js, sums.js keepFigures): a
