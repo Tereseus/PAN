@@ -276,6 +276,18 @@ Intuition fed almost entirely by Claude Code prompts: "last heard" was never a v
   last 20 minutes and he is not dictating to Claude. The 30 minute dedupe and the 3-ignored
   snooze still apply. `conv:*` stays text only (Π thread and dashboard).
 
+## Update 2026-11-25 — the last look is part of the conversation state
+
+On 2026-11-08 "what am I looking at?" was answered from his desktop's window title, and the
+next two turns denied any camera and any record of it. The conversation state now keeps the
+last look (`conv-state-watcher.js` `noteLook` / `lastLook`, 15 min): its source (pendant,
+the phone's back camera, or a window title), the question, what was said and what was seen.
+`/vision` writes it after a photo answer; `recordVoiceTurn` writes it when a "what am I
+looking at / doing" reply named a window title. `routeStream` answers "which camera did you
+use?" and "how did you know about X?" from it by code (`looks.js` `sourceAnswer`, path
+`look_source`), and the situation line names the camera of the last look. Details and tests:
+FEATURES.md, "Where a look came from".
+
 ## See also
 
 - [PAN-ARCHITECTURE.md](./PAN-ARCHITECTURE.md) — what each section IS (Intuition cortex, sub-sections 1–5)

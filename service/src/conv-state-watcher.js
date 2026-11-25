@@ -237,6 +237,23 @@ export function getConversationState(orgId = 'org_personal') {
 }
 
 /**
+ * The last thing PAN described from a picture or a window: { source, said, description, title,
+ * device, question, at }. source is 'pendant', 'phone_back', 'phone_front' or 'screen'
+ * (looks.js). Kept so "which camera did you use?" and "how did you know about X?" get the truth:
+ * on 2026-11-08 both were denied ("I'm just reading your voice", "I don't have any record of that").
+ */
+export function noteLook(orgId = 'org_personal', look = {}) {
+  if (!look?.source) return;
+  _orgSlot(orgId).look = { ...look, at: look.at || Date.now() };
+}
+
+/** The last look while it is still part of the talk (15 min by default), else null. */
+export function lastLook(orgId = 'org_personal', maxAgeMs = 15 * 60_000) {
+  const look = _orgs.get(orgId || 'org_personal')?.look;
+  return look && Date.now() - look.at < maxAgeMs ? look : null;
+}
+
+/**
  * Inspect — returns the raw ring buffer for debugging.
  */
 export function getConversationBuffer(orgId = 'org_personal') {
@@ -287,6 +304,7 @@ export function getConvStateStatus() {
       last_distill_at: slot.lastDistillAt,
       distilling: false,
       state: getConversationState(orgId),
+      last_look: slot.look || null,
     });
   }
   return { started: _started, orgs };

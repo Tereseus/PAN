@@ -2121,6 +2121,43 @@ children can have adult-sounding voices and vice versa).
   do that. I don't have a camera feed from the phone." Tests: `node
   service/src/__tests__/camera-ask.test.js` (4) and `CameraAskTest` (9, `gradlew
   :app:testDebugUnitTest`).
+- **Where a look came from (`service/src/looks.js`, 2026-11-25):** on 2026-11-08 "what am I
+  looking at?" got "You're looking at MovieWriter" with no camera at all: the voice model read
+  his desktop's window title off the situation line. Asked "did you use the front-facing camera
+  or the back camera?" it said "I didn't. I'm just reading your voice", and "how did you know
+  about MovieWriter?" got "I don't have any record of that". Now:
+  - **Which camera.** `/vision` uses the pendant's newest frame when one came in the last 12 s
+    (the pendant sends one about every 5 s while it is on; `/photo` keeps the newest in memory,
+    `pickLookImage`), unless he names the phone ("look through my phone's camera"). Otherwise
+    the phone's photo, which is always the back camera (`CameraCapture.kt` binds
+    `DEFAULT_BACK_CAMERA`; there is no front camera path). The phone still takes its own photo
+    first; an app that knows the pendant is on could skip that.
+  - **Said with the answer.** The spoken answer opens with its source (`withSource`): "From your
+    pendant camera a few seconds ago: ..." or "From your phone's back camera: ...". Not on a
+    `bench: true` run. `/vision` returns `source` ('pendant', 'phone_back'), and the
+    `VisionAnalysis` event keeps it. The phone may send `source` with the photo; absent, it is
+    'phone_back'.
+  - **Kept in the conversation state.** `conv-state-watcher.js` `noteLook` / `lastLook`
+    (15 min): source, the question, what was said, what the photo showed, when. A reply read off
+    a window title is kept the same way (`recordVoiceTurn`: his line asked what he is looking at
+    or doing, and the reply names a word of a window title, `screenLookFrom` over
+    `router.js` `screenTitlesNow`). `GET /api/v1/conversation/status` shows it as `last_look`.
+    The situation line names the camera that took the last look ("his pendant camera saw ...",
+    it said "the phone camera" for every look).
+  - **Follow-ups answered by code** (`sourceAnswer`, in `routeStream` beside the camera check,
+    path `look_source`, a few ms): "which camera", "front or back camera", "did you take a
+    picture" get the camera and when ("Your pendant camera, not the front one. I used the last
+    frame it sent before you asked, a few seconds ago."), or "I didn't use a camera. I read it
+    off your desktop's window title, which says ..." after a window answer, or "I didn't use a
+    camera just now." with no look. "How did you know about X" is answered only when X is in the
+    last look or a window he has up (allowing a misheard name: "Movie Rider" finds
+    "MovieWriter"); anything else stays the voice model's. After a hub restart the source is read
+    from PAN's own last answers in the history ("From your pendant camera ...").
+  - Tests: `node service/src/__tests__/looks.test.js` (27); voice eval `node
+    service/src/evals/converse.js --kind look-source` (3 cases, check `honest_source`: names the
+    source, denies nothing). Dev 7781, 2026-11-25: 3/3; a pendant frame then "what am I looking
+    at" gave "From your pendant camera a few seconds ago: ..." (14 s, moondream), and with no
+    fresh frame "From your phone's back camera: ...".
 - **`[CAMERA]` when no photo can be taken:** a line that passes `looksVisual` with the camera
   off gets "I can't see it, my camera's off." Any other line is asked once more with the camera
   ruled out, and a second `[CAMERA]` goes to the cloud model on a short prompt. Both used to end

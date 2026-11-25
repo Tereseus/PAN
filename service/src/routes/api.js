@@ -16,6 +16,7 @@ import { recordTiming, turnTimings } from '../voice-timing.js';
 import { setPhoneTimeZone } from '../intuition/time.js';
 import { followUpOf, historyLines } from '../intuition/conversation.js';
 import { plainLook, spokenLook } from '../camera-ask.js';
+import { withSource, screenLookFrom, asksWhatHeSees } from '../looks.js';
 import { noteSaid, dropOwnTail } from '../own-tail.js';
 import { scopeFor, may, refusal } from '../people.js';
 import { addNote, takeNotesFor, noteSender, maySpeakNow, noteOwnerSpokeOn, notesDevices, SPEAK_PER_MINUTE } from '../phone-notes.js';
@@ -392,8 +393,19 @@ function recordVoiceTurn(req, { text, result, deviceId, turnId, sensors }) {
         place: sensors?.phone?.gps?.address || null,
       }));
     }
-    import('../conv-state-watcher.js').then(({ noteUtterance }) => {
+    import('../conv-state-watcher.js').then(async ({ noteUtterance, noteLook }) => {
       noteUtterance({ orgId, text, isFinal: true, source: answered ? 'him' : 'room', deviceId, distill: answered });
+      // He asked what he is looking at or doing, and the answer named a window he has up: that
+      // window is where it came from (looks.js). "You're looking at MovieWriter" was read off his
+      // desktop's title on 2026-11-08, and "how did you know about MovieWriter?" got "I don't
+      // have any record of that".
+      if (answered && response && !result?.camera && asksWhatHeSees(text)) {
+        try {
+          const { screenTitlesNow } = await import('../router.js');
+          const hit = screenLookFrom(response, screenTitlesNow());
+          if (hit) noteLook(orgId, { ...hit, question: text });
+        } catch {}
+      }
       if (answered && response) noteUtterance({ orgId, text: response, isFinal: true, source: 'pan', deviceId, distill: false });
     }).catch(() => {});
     // The phone had no presence row, so Intuition and the situation line only ever saw his
@@ -552,6 +564,10 @@ router.post('/photo', async (req, res) => {
     console.error(`[PAN Pendant] failed to save ${photoFilename}: ${e.message}`);
   }
 
+  // The newest pendant frame, for a look while the pendant is on (/vision). Kept in memory only;
+  // the file above is the record.
+  if (!source || source === 'pendant') _lastPendantFrame = { jpeg_base64, at: Date.now() };
+
   // Event type stays 'PandantPhoto' (sic). The typo is load-bearing now that
   // rows exist under it; renaming would orphan the history for no benefit.
   insertEvent(photoId, 'PandantPhoto', JSON.stringify({
@@ -594,6 +610,22 @@ router.post('/photo', async (req, res) => {
 
 // The camera hand-off turn as the hub heard it (set in recordVoiceTurn).
 let _cameraAsk = null;
+
+// WHICH CAMERA LOOKS. The pendant when it is on, else the phone's back camera, never the front
+// (selfie) one: the phone only ever binds DEFAULT_BACK_CAMERA (CameraCapture.kt). The pendant
+// sends a frame about every 5 s while it is on (PendantBle.kt -> /photo), so a frame newer than
+// PENDANT_FRESH_MS means it is on and worn, and it is what he is facing. He can still ask for
+// the phone by name ("look through my phone's camera").
+let _lastPendantFrame = null;   // { jpeg_base64, at }
+const PENDANT_FRESH_MS = 12_000;
+const NAMES_PHONE = /\bphone'?s?\b/i;
+function pickLookImage(phoneImage, asked, phoneSource, now = Date.now()) {
+  const p = _lastPendantFrame;
+  if (p && now - p.at < PENDANT_FRESH_MS && !NAMES_PHONE.test(String(asked || ''))) {
+    return { image: p.jpeg_base64, source: 'pendant', frameAgeMs: now - p.at };
+  }
+  return { image: phoneImage, source: phoneSource === 'phone_front' ? 'phone_front' : 'phone_back', frameAgeMs: 0 };
+}
 
 // "Use the camera and look at it" asks nothing: the question was the turn before
 // ("what kind of dog is that?"). Handed the bare command, the vision model described the floor.
@@ -726,7 +758,8 @@ async function lookAndAnswer(image, asked, remember = true) {
 router.post('/vision', async (req, res) => {
   // bench: a test photo (hub bench, 2026-11-03). Same looks and answer; the question is used
   // as sent, and nothing is saved: no photo file, no VisionAnalysis memory, no follow-up context.
-  const { image_base64, question } = req.body;
+  // source: which camera the phone used ('phone_back' when absent: the app only has that one).
+  const { image_base64, question, source: phoneSource } = req.body;
   // A person other than the owner: the same looks and answer, and like a bench photo nothing is
   // kept (no file, no memory, no follow-up context) and the owner's talk is not read for the question.
   const person = req.user?.person ? req.user : null;
@@ -740,18 +773,30 @@ router.post('/vision', async (req, res) => {
   try {
     const { getConversationBuffer } = await import('../conv-state-watcher.js');
     const asked = bench ? String(question || 'What is in this photo?') : visionQuestion(question, getConversationBuffer(req.org_id || 'org_personal'));
-    console.log(`[PAN Vision] Analyzing image (${image_base64.length} chars)${bench ? ' [bench]' : ''}, question: "${asked.slice(0, 80)}"${asked !== question ? ` (phone heard "${String(question || '').slice(0, 60)}")` : ''}`);
+    // A bench photo is the picture under test, so it is never swapped for the pendant's frame.
+    const pick = req.body.bench ? { image: image_base64, source: phoneSource || 'phone_back', frameAgeMs: 0 } : pickLookImage(image_base64, asked, phoneSource);
+    const image = pick.image;
+    console.log(`[PAN Vision] Analyzing image (${image.length} chars) from ${pick.source}${pick.source === 'pendant' ? ` (frame ${Math.round(pick.frameAgeMs / 1000)} s old)` : ''}${bench ? ' [bench]' : ''}, question: "${asked.slice(0, 80)}"${asked !== question ? ` (phone heard "${String(question || '').slice(0, 60)}")` : ''}`);
 
     const t0 = Date.now();
-    const description = spokenVision(await lookAndAnswer(image_base64, asked, !bench));
+    const answer = spokenVision(await lookAndAnswer(image, asked, !bench));
+    // Said with its source (looks.js): on 2026-11-08 he could not tell which camera, if any, was used.
+    // Not on a bench run: the bench scores the answer itself.
+    const description = req.body.bench ? answer : withSource(answer, pick.source, pick.frameAgeMs);
     console.log(`[PAN Vision] Result (${Date.now() - t0}ms): ${description.slice(0, 100)}`);
-    if (bench) return res.json({ description, ...(person ? {} : { bench: true }) });
+    if (bench) return res.json({ description, source: pick.source, ...(person ? {} : { bench: true }) });
+
+    // The look joins the conversation state, so "which camera did you use?" gets the truth.
+    try {
+      const { noteLook } = await import('../conv-state-watcher.js');
+      noteLook(req.org_id || 'org_personal', { source: pick.source, question: asked, said: answer.slice(0, 300), description: String(_lastLook?.look || answer).slice(0, 300), at: Date.now() - pick.frameAgeMs });
+    } catch {}
 
     // Save the image to disk
     const photoId = `vision-${Date.now()}`;
     const photoFilename = `${photoId}.jpg`;
     try {
-      writeFileSync(join(PHOTOS_DIR, photoFilename), Buffer.from(image_base64, 'base64'));
+      writeFileSync(join(PHOTOS_DIR, photoFilename), Buffer.from(image, 'base64'));
       console.log(`[PAN Vision] Image saved: ${photoFilename}`);
     } catch (e) {
       console.error(`[PAN Vision] Failed to save image: ${e.message}`);
@@ -762,11 +807,12 @@ router.post('/vision', async (req, res) => {
         question: asked,
         description: description.slice(0, 500),
         image_file: photoFilename,
-        image_size: image_base64.length,
+        image_size: image.length,
+        source: pick.source,
         timestamp: Date.now()
       }), req.user?.id);
 
-    res.json({ description });
+    res.json({ description, source: pick.source });
   } catch (err) {
     console.error('[PAN Vision] Error:', err.message, err.stack);
     res.status(500).json({ error: 'Vision analysis failed', detail: err.message, description: 'I could not analyze the image right now.' });

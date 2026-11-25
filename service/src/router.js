@@ -28,7 +28,8 @@ import { recordTiming } from './voice-timing.js';
 import { noteMealMention } from './intuition/nourishment.js';
 import { noteSignalsInUtterance } from './intuition/signals.js';
 import { getCurrentSnapshot } from './intuition/index.js';
-import { getConversationState, getConversationBuffer, dictatingToClaude, panSpokeWithin, overheardWithin } from './conv-state-watcher.js';
+import { getConversationState, getConversationBuffer, dictatingToClaude, panSpokeWithin, overheardWithin, lastLook } from './conv-state-watcher.js';
+import { sourceAnswer, sourceName } from './looks.js';
 import { recentThoughts } from './intuition/mind.js';
 import { loadModes, saveMode, dropMode } from './intuition/world.js';
 import { hisTimeZone, utcOffsetHours } from './intuition/time.js';
@@ -571,6 +572,19 @@ export function briefNow(context = {}) {
   return { text: b.text || line, parts: b.parts, tokens: Math.round(estTokens(b.text || line)), mode: briefMode(), built_at: Date.now() };
 }
 
+/** What his computers show now: [{ device: 'desktop' | 'laptop', title }], fresh in the last
+ *  2 min, at most two. The situation line's windows, and where looks.js finds the window an
+ *  answer was read from ("how did you know about MovieWriter?", 2026-11-08). */
+export function screenTitlesNow(now = Date.now()) {
+  try {
+    return all(`SELECT device_id, activity, screen_title, platform FROM device_presence WHERE as_of > :since ORDER BY as_of DESC LIMIT 5`,
+      { ':since': now - 2 * 60_000 })
+      .filter(p => p.screen_title && meaningfulTitle(p.screen_title) && !/^idle$/i.test(p.activity || '') && !/minipc|hub/i.test(p.device_id || '') && !/android|ios/i.test(p.platform || ''))
+      .slice(0, 2)
+      .map(p => ({ device: /mint|desktop/i.test(p.device_id || '') ? 'desktop' : 'laptop', title: String(p.screen_title) }));
+  } catch { return []; }
+}
+
 function buildSituationLine(context = {}) {
   try {
     const parts = [];
@@ -586,11 +600,7 @@ function buildSituationLine(context = {}) {
     try { const wx = weatherLine(); if (wx) parts.push(wx); } catch {}
     // Device names stay home: a hostname is a label, not something a cloud model needs.
     // The phone's own row (recordVoiceTurn) is its place, which is already above.
-    const screens = all(`SELECT device_id, activity, screen_title, platform FROM device_presence WHERE as_of > :since ORDER BY as_of DESC LIMIT 5`,
-      { ':since': now - 2 * 60_000 })
-      .filter(p => p.screen_title && meaningfulTitle(p.screen_title) && !/^idle$/i.test(p.activity || '') && !/minipc|hub/i.test(p.device_id || '') && !/android|ios/i.test(p.platform || ''))
-      .slice(0, 2)
-      .map(p => `his ${/mint|desktop/i.test(p.device_id || '') ? 'desktop' : 'laptop'} shows "${String(p.screen_title).slice(0, 40)}"`);
+    const screens = screenTitlesNow(now).map(s => `his ${s.device} shows "${s.title.slice(0, 40)}"`);
     parts.push(...screens);
     // A few standing facts about him (setting `about_him`), so a window title like "War of
     // Eternity (DEBUG)" is not filled in by guessing: on Nov 12 the voice model told him he was
@@ -600,9 +610,14 @@ function buildSituationLine(context = {}) {
     // it meant (his talks of Nov 15). His own words can call for it too (aboutHimFor, routeStream).
     const about = aboutHim();
     if (about && screens.some((t) => touches(about, t))) parts.push(about);
-    const look = getCurrentSnapshot(context.org_id || null)?.signals?.world_context;
+    // The last look, named by the camera that took it (looks.js): this said "the phone camera" for
+    // the pendant's frames too.
+    const seen = lastLook(org);
+    const look = seen && seen.source !== 'screen'
+      ? { description: seen.description || seen.said, age_ms: now - seen.at, name: sourceName(seen).replace(/^your /, 'his ') }
+      : (() => { const w = getCurrentSnapshot(context.org_id || null)?.signals?.world_context; return w ? { ...w, name: w.source === 'pendant' ? 'his pendant camera' : "his phone's camera" } : null; })();
     if (look?.description && (look.age_ms ?? Infinity) < 15 * 60_000) {
-      parts.push(`the phone camera saw ${String(look.description).slice(0, 70)} ${Math.max(1, Math.round(look.age_ms / 60_000))} min ago`);
+      parts.push(`${look.name} saw ${String(look.description).slice(0, 70)} ${Math.max(1, Math.round(look.age_ms / 60_000))} min ago`);
     }
     const cs = getConversationState(org);
     const topicNow = cs?.topic && cs.distilled_at && now - cs.distilled_at < 10 * 60_000 ? String(cs.topic) : '';
@@ -3359,6 +3374,21 @@ export async function* routeStream(text, context = {}) {
   // its own words first, but its recogniser drops letters ("what am i lookin at", 2026-11-08);
   // the hub then answered from the computer's screen, twice, and said it had no camera when
   // asked to use it. These words are the hub's, which are better.
+  // He asks where PAN's last picture came from ("did you use the front-facing camera or the
+  // back camera?", "how did you know about MovieWriter?"): answered by code from the last look
+  // in the conversation state (looks.js). The voice model denied both on 2026-11-08.
+  if (!interpreting) {
+    const org = context.org_id || 'org_personal';
+    const said = sourceAnswer(text, { look: lastLook(org), history: context.conversation_history, screens: screenTitlesNow() });
+    if (said) {
+      console.log(`[routeStream] where the look came from: ${JSON.stringify(String(text).slice(0, 60))} -> ${said}`);
+      try { recordTiming({ turn: context.turn_id, device: context.device_id, stage: 'path', path: 'look_source' }); } catch {}
+      yield { type: 'chunk', text: said };
+      yield { type: 'done', result: withProsody({ intent: 'query', speech_act: 'answer', addressed: 0.95, response: said, importance: 0.5 }) };
+      return;
+    }
+  }
+
   if (context.canCamera && !interpreting && asksForCamera(text)) {
     console.log(`[routeStream] asks for the camera: ${JSON.stringify(String(text).slice(0, 60))}`);
     yield { type: 'done', result: withProsody({ intent: 'query', addressed: 0.95, camera: true, response: '', importance: 0.5 }) };
