@@ -131,12 +131,11 @@ const DEFAULT_NAME = ['pan', 'hey pan', 'ok pan', 'pam', 'pann', 'ΠAN', 'Παν
 export function modeTurn(text, mode = 'normal', words = {}) {
   const own = cleanWords(words);
   const m = MODES.includes(mode) ? mode : 'normal';
-  if (m === 'forget') {
-    const sents = sentencesOf(text);
-    if (sents.length && sents.length <= 3 && TO_REMEMBER.test(sents[0])) return { set: 'normal', rest: sents.slice(1).join('. ') };
-    const rest = startsWithAny(text, own.remember);
-    if (rest !== null) return { set: 'normal', rest };
-  }
+  // Don't remember ends only with the button (owner, 2026-11-25). "Remember again", his own words,
+  // and "just listen", "name only" or "back to normal" all used to leave it by voice, and Listen
+  // only keeps everything: one misheard line started saving again. Only Mute is let through, since
+  // it turns the mic off; the mode is still Don't remember when the button turns the mic back on.
+  if (m === 'forget') return modeAsked(text) === 'mute' ? { set: 'mute', rest: '' } : null;
   // The mic is off in mute; a line that still arrives (a call opened the mic) gets nothing.
   if (m === 'mute') return { quiet: 'mute_mode' };
   const asked = modeAsked(text);

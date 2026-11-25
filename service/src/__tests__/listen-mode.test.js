@@ -52,18 +52,20 @@ t('mute: nothing by voice', () => {
   eq(modeTurn('you can talk', 'mute'), { quiet: 'mute_mode' });
   eq(modeTurn('back to normal', 'mute'), { quiet: 'mute_mode' });
 });
-t("don't remember: talks as normal, nothing else changes, own words end it", () => {
+t("don't remember: talks as normal, nothing else changes, only the button ends it", () => {
   eq(modeAsked("Don't remember any of this."), 'forget');
   eq(modeAsked('Okay, this is off the record'), 'forget');
   eq(modeAsked('Go incognito'), 'forget');
   eq(modeAsked("I don't remember what he said yesterday"), null);
   eq(modeTurn("don't remember this", 'normal'), { set: 'forget', rest: '' });
   eq(modeTurn('what time is it', 'forget'), null);
-  eq(modeTurn('remember again', 'forget'), { set: 'normal', rest: '' });
-  eq(modeTurn('You can remember again. What did I ask?', 'forget'), { set: 'normal', rest: 'What did I ask' });
+  eq(modeTurn('remember again', 'forget'), null);
+  eq(modeTurn('You can remember again. What did I ask?', 'forget'), null);
   eq(modeTurn('remember again', 'listen'), { quiet: 'listen_mode' });
-  eq(modeTurn('θυμήσου', 'forget', { remember: ['Θυμήσου'] }), { set: 'normal', rest: '' });
-  eq(modeTurn('just listen', 'forget'), { set: 'listen', rest: '' });
+  eq(modeTurn('θυμήσου', 'forget', { remember: ['Θυμήσου'] }), null);
+  eq(modeTurn('just listen', 'forget'), null);
+  eq(modeTurn('back to normal', 'forget'), null);
+  eq(modeTurn('mute yourself', 'forget'), { set: 'mute', rest: '' });
 });
 t('words helpers', () => {
   eq(startsWithAny('Pantelis is here', ['pan']), null);

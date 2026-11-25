@@ -776,7 +776,7 @@ same grid, `ui/home/ModeIcons.kt`). Home's line and the notification say it too.
 | Normal | everything | when it judges it is spoken to | yes | (default) | microphone |
 | Listen only | everything, voice ID still runs | never | yes, quiet turns are recorded as heard | the person's release words ("you can talk", "back to normal" always), the button | ear |
 | Name only | everything | only lines that start with ΠAN's name or the person's own word | yes | "back to normal", the button | Π |
-| Don't remember | everything | as Normal | nothing (below) | "remember again" or the person's own words, the button, or after 60 minutes | hat with glasses |
+| Don't remember | everything | as Normal | nothing (below) | the button only (no spoken line leaves it, Nov 25), or after 60 minutes | hat with glasses |
 | Mute | nothing (mic off) | nothing | nothing | ONLY the button | crossed microphone |
 
 - **Device:** `audio/ListenMode.kt` holds the mode (prefs `pan_listen_mode`), the person's own words
@@ -2721,6 +2721,37 @@ The dashboard is a SvelteKit app compiled to `service/public/v2/`. It has
 
 Build: `cd service/dashboard && npm run build` → outputs to `service/public/v2/`.
 Must rebuild after editing any `.svelte` file.
+
+---
+
+## AI usage stats (`GET /api/automation/usage`)
+
+- **What:** counts and cost of model calls from the `ai_usage` table, for today, the
+  last 7 days and all time, each split by caller, source and device.
+- **Callers:** dashboard usage widget (`public/index.html`), Settings usage panel
+  (`settings/+page.svelte`), Atlas V2, `scripts/push-pan-system.ps1`.
+- **Handler:** `service/src/server.js`, `app.get('/api/automation/usage'`.
+- **Shape:** `{ today, week, all_time }`. Each has `total_cost_cents`, `total_calls`,
+  `by_caller`, `by_source` (null shows as `internal`), `by_device` (null shows as
+  `(none)`). Map entries are `{ calls, cost_cents }`; today's also carry
+  `input_tokens` and `output_tokens`. Keys come sorted.
+- **Windows:** today is `created_at` from local start of day to the next one; week is
+  `created_at >= now - 7 days` (local time).
+- **Speed (2026-11-25):** it used to run 12 aggregates per call, half of them over the
+  whole table, 2.4 to 3.8 s of main thread SQLite on the hub (`[slow-sql]` lines), so a
+  voice turn waited behind a dashboard poll. Even the week queries scanned every row,
+  because SQLite used `idx_ai_usage_caller` / `_source` for the GROUP BY. Now:
+  - Today and week are one query each over a `created_at` range, forced onto
+    `idx_ai_usage_created` (`INDEXED BY`), grouped by caller, source and device and
+    summed in JS.
+  - All time is built once per Craft in 20k id chunks that yield between them, then
+    topped up on each call with only the rows past the last id seen (primary key
+    range). Rebuilt every 6 hours in case rows are ever removed. So it stays live,
+    with no full scan per call.
+  - Measured on the hub: 3.8 s to 0.4 s for the first call after a swap, about
+    0.12 s after that (most of it network), no `[slow-sql]` lines.
+- **Recent feed:** `GET /api/automation/usage/recent?limit=10` (max 50), newest rows by
+  id, for the "PAN's Mind" panel.
 
 ---
 

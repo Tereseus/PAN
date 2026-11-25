@@ -24,8 +24,12 @@ class ListenModeTest {
         assertNull(ListenMode.commandIn("i don't remember what he said"))
     }
 
-    @Test fun rememberAgainOnlyEndsDontRemember() {
-        inMode(ListenMode.Mode.FORGET) { assertEquals(ListenMode.Mode.NORMAL, ListenMode.commandIn("remember again")) }
+    @Test fun onlyTheButtonEndsDontRemember() {
+        inMode(ListenMode.Mode.FORGET) {
+            assertNull(ListenMode.commandIn("remember again"))
+            assertNull(ListenMode.commandIn("just listen"))
+            assertNull(ListenMode.commandIn("back to normal"))
+        }
         inMode(ListenMode.Mode.LISTEN) { assertNull(ListenMode.commandIn("remember again")) }
     }
 

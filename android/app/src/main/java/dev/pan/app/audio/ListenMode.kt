@@ -15,7 +15,7 @@ import org.json.JSONObject
  *          Out: "back to normal", or the button.
  *  FORGET  "Don't remember": hears and talks as in NORMAL, but nothing is kept, here (no lines on
  *          Home, no history, no uploads, no log lines to the hub) or on the hub (its no-trace turn).
- *          Out: the button, "remember again" or the person's own words, or after FORGET_LIMIT_MS.
+ *          Out: the button only (owner, 2026-11-25), or after FORGET_LIMIT_MS.
  *  Mute is not here: it is the mic being off (PanForegroundService.micEnabled), and only the
  *  button turns it back on.
  *
@@ -94,9 +94,11 @@ object ListenMode {
     /** The device's own check of a whole line that is a mode command (the hub checks too). */
     fun commandIn(lower: String): Mode? {
         val l = lower.trim().replace('’', '\'')
+        // Don't remember ends only with the button (owner, 2026-11-25): no line said in it changes the
+        // mode. "Just listen" used to switch it to Listen only, which keeps everything.
+        if (mode.value == Mode.FORGET) return null
         return when {
             TO_FORGET.matches(l) -> Mode.FORGET
-            mode.value == Mode.FORGET && TO_REMEMBER.matches(l) -> Mode.NORMAL
             TO_LISTEN.matches(l) -> Mode.LISTEN
             TO_NAME.matches(l) -> Mode.NAME
             TO_NORMAL.matches(l) -> Mode.NORMAL
@@ -107,7 +109,7 @@ object ListenMode {
     /** Listen only / Don't remember: the whole line is one of the person's own words that end it. */
     fun isOwnRelease(lower: String): Boolean {
         val l = fold(lower)
-        val words = when (mode.value) { Mode.LISTEN -> releaseWords.value; Mode.FORGET -> rememberWords.value; else -> emptyList() }
+        val words = when (mode.value) { Mode.LISTEN -> releaseWords.value; else -> emptyList() }
         return words.any { fold(it) == l }
     }
 
