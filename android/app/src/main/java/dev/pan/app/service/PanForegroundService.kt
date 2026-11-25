@@ -1651,6 +1651,24 @@ class PanForegroundService : Service() {
         inFlightQuery?.cancel()
         inFlightCall?.cancel()
         inFlightCall = null
+        cancelTentative()
+    }
+
+    // The turn now waiting for its reply had words (the phone's ear wrote some). A clip with no
+    // words that comes in meanwhile is sent tentatively (audio/TurnRules.kt) instead of cancelling it.
+    @Volatile private var inFlightHasWords = false
+    // A tentative turn: its job and HTTP call, kept apart from inFlightQuery/inFlightCall so the
+    // waiting turn is not touched until the hub shows this one was real words for ΠAN.
+    @Volatile private var tentativeJob: kotlinx.coroutines.Job? = null
+    @Volatile private var tentativeCall: okhttp3.Call? = null
+    // Seqs for tentative turns are negative, so speakReply drops their sentences until promoted.
+    private val tentativeSeq = java.util.concurrent.atomic.AtomicInteger(0)
+
+    private fun cancelTentative() {
+        tentativeJob?.cancel()
+        tentativeCall?.cancel()
+        tentativeJob = null
+        tentativeCall = null
     }
 
     // A reply the hub was not sure enough to speak straight away. It sits here
@@ -1773,7 +1791,22 @@ class PanForegroundService : Service() {
         val unanswered = prev != null && now - prev.at < CARRY_ON_OPEN_MS &&
             (inFlightQuery?.isActive == true || replyWaiting.isNotEmpty())
         val wouldJoin = prev != null && prev.seq == replySeq.get() && (now - prev.at < CARRY_ON_MS || unanswered)
-        if (prev != null && dev.pan.app.audio.CallRules.joinsLineBefore(wouldJoin, dev.pan.app.audio.CallAudio.active)) {
+        // A clip the ear wrote no words for, while a question with words waits for its reply: not
+        // joined, nothing cancelled, sent tentatively (audio/TurnRules.kt). In the car road noise
+        // cancelled a question the hub had heard (Nov 24), and a 2 s no-words clip cancelled "send
+        // the logs to the ΠAN thread" (Nov 25).
+        val questionWaiting = inFlightHasWords && (inFlightQuery?.isActive == true || replyWaiting.isNotEmpty())
+        val turnAction = dev.pan.app.audio.TurnRules.decide(
+            unheard = text == dev.pan.app.stt.UNHEARD,
+            questionWaiting = questionWaiting,
+            wouldJoin = prev != null && dev.pan.app.audio.CallRules.joinsLineBefore(wouldJoin, dev.pan.app.audio.CallAudio.active),
+        )
+        val tentative = turnAction == dev.pan.app.audio.TurnRules.Action.TENTATIVE
+        if (tentative) {
+            panLog("Tentative: no words while a question waits, it is not cancelled")
+            VoiceEvents.emit("tentative", "text" to text)
+        }
+        if (prev != null && turnAction == dev.pan.app.audio.TurnRules.Action.JOIN) {
             text = "${prev.text} $text"
             lower = text.lowercase().trim()
             val a = turnAudio
@@ -1785,7 +1818,8 @@ class PanForegroundService : Service() {
             val firstPiece = prev.text
             serviceScope.launch { runCatching { dataRepository.dropUserLine(firstPiece) } }
         }
-        pendingTurn = null
+        // A tentative clip leaves the waiting question as it is, so more of it can still join.
+        if (!tentative) pendingTurn = null
 
         // The card shows the last exchange PAN answered: question, reply and timings are
         // written together when the reply lands (streaming branch), so they always match.
@@ -1924,20 +1958,54 @@ class PanForegroundService : Service() {
         // so taking history after adding it showed him saying it twice, unlike the
         // training data.
         val historyContext = getHistoryContext()
-        addToHistory("User", text)
+        // A tentative clip goes into the history only if it is promoted (it was real words).
+        if (!tentative) addToHistory("User", text)
 
         // He said something new, so whatever the hub is still composing is about
         // the previous thing. Drop it rather than speaking it over him.
-        inFlightQuery?.let {
-            if (it.isActive) {
-                panLog("Superseded — cancelling in-flight query")
-                cancelInFlight()
+        // Not for a tentative clip: the waiting turn is dropped only if the hub answers the clip.
+        var mySeq: Int
+        if (tentative) {
+            cancelTentative()   // an older tentative clip is overtaken by this one
+            mySeq = -tentativeSeq.incrementAndGet()
+        } else {
+            inFlightQuery?.let {
+                if (it.isActive) {
+                    panLog("Superseded — cancelling in-flight query")
+                    cancelInFlight()
+                }
+            }
+            cancelTentative()
+            mySeq = replySeq.incrementAndGet()
+            pendingTurn = PendingTurn(text, turnAudio, now, mySeq)
+            inFlightHasWords = text != dev.pan.app.stt.UNHEARD
+        }
+        // Promoted: the hub streamed a real reply to the tentative clip. The waiting turn is
+        // dropped now and this one takes its place (TurnRules.promotes).
+        var promoted = !tentative
+        val promote: (String, kotlinx.coroutines.Job?) -> Unit = { heard, self ->
+            if (!promoted) {
+                promoted = true
+                panLog("Tentative clip was real: superseding the waiting question")
+                VoiceEvents.emit("tentative_promoted", "text" to text)
+                inFlightQuery?.cancel()
+                inFlightCall?.cancel()
+                inFlightCall = tentativeCall
+                inFlightQuery = self
+                tentativeCall = null
+                tentativeJob = null
+                inFlightHasWords = true
+                mySeq = replySeq.incrementAndGet()
+                mainHandler.post {
+                    pendingTurn = null
+                    addToHistory("User", heard)
+                    cancelHold("tentative clip promoted")
+                }
             }
         }
-        val mySeq = replySeq.incrementAndGet()
-        pendingTurn = PendingTurn(text, turnAudio, now, mySeq)
 
-        inFlightQuery = serviceScope.launch {
+        val turnJob = serviceScope.launch {
+            val selfJob = coroutineContext[kotlinx.coroutines.Job]
             try {
 
             // Skip llama.cpp classifier — was adding 9s overhead
@@ -2146,14 +2214,17 @@ class PanForegroundService : Service() {
             // He spoke again, so a held reply has been overtaken. This is the
             // cancel signal the hold is waiting on - no new mechanism needed,
             // a fresh utterance IS the evidence that the last one was not for us.
-            cancelHold("new utterance")
+            if (!tentative) cancelHold("new utterance")
             sttEngine.queryPending = true
 
             // PanThinkingCard surfaces — flip ON for the duration of this query.
             // Picked filler is shown in the UI. Not spoken.
             val filler = pickFiller()
-            isThinking.value = true
-            currentFiller.value = filler
+            // A tentative clip shows nothing unless promoted: the card is the waiting question's.
+            if (!tentative) {
+                isThinking.value = true
+                currentFiller.value = filler
+            }
             var heardText = text    // the card's "You asked": the hub's words replace these in onHeard
             // The SPOKEN filler is gone. It was scheduled at 1500ms, which used to
             // be comfortably inside the wait - the prompt cut and local streaming
@@ -2205,8 +2276,10 @@ class PanForegroundService : Service() {
                     audio = turnAudio,
                     bench = TestAudio.active,
                     unfinished = unfinished,
+                    tentative = tentative,
                     sincePanMs = if (tts.isSpeaking) 0L else if (panStoppedAt > 0L) System.currentTimeMillis() - panStoppedAt else null,
-                    onCall = { inFlightCall = it },
+                    // A tentative turn's call is kept apart until promoted: the waiting turn's call stays closable.
+                    onCall = { if (promoted) inFlightCall = it else tentativeCall = it },
                     onHeard = { heard ->
                         panLog("Hub heard: $heard")
                         VoiceEvents.emit("heard", "text" to heard)
@@ -2224,6 +2297,9 @@ class PanForegroundService : Service() {
                     onInterpreter = { lang -> setInterpreter(lang) },
                     onSent = { bytes, ms -> sentBytes = bytes; sentMs = ms },
                     onChunk = { chunk ->
+                        // A tentative clip the hub answers was real words for ΠAN: it takes over now.
+                        if (!promoted && dev.pan.app.audio.TurnRules.promotes(chunk)) promote(heardText, selfJob)
+                        if (!promoted) return@askPanStream
                         if (firstChunkTime == 0L) {
                             firstChunkTime = System.currentTimeMillis()
                             VoiceEvents.emit("first_chunk", "ms" to (firstChunkTime - startTime))
@@ -2253,6 +2329,26 @@ class PanForegroundService : Service() {
                         }
                     }
                 )
+
+                // A tentative clip the hub answered without streaming (the reply came only in done):
+                // real words for ΠAN all the same, so it takes over.
+                if (!promoted && response != null) {
+                    val said = response.response_text.trim()
+                    val real = response.intent != "ambient" && response.intent != "cancelled" &&
+                        response.mute != true && (response.hold_ms ?: 0L) == 0L &&
+                        (response.camera == true || (said.isNotBlank() && said != "[AMBIENT]"))
+                    if (real) promote(heardText, selfJob)
+                }
+                // A turn nobody wants any more says nothing. Cancelled, askPanStream returns null rather
+                // than throwing, and this went on to "Your computer isn't answering." (car, Nov 25
+                // 05:20:49). The hub's drop of a turn that arrived late comes back as intent "cancelled".
+                val stillWanted = selfJob?.isActive != false && (!promoted || replySeq.get() == mySeq)
+                if (dev.pan.app.audio.TurnRules.silentNoAnswer(stillWanted, response?.intent)) {
+                    panLog("Turn no longer wanted (${response?.intent ?: "cancelled"}), silent: ${text.take(40)}")
+                    if (response?.intent == "cancelled") VoiceEvents.emit("drop", "reason" to "cancelled", "text" to text)
+                    return@launch
+                }
+                if (!promoted) panLog("Tentative clip not for ΠAN (${response?.intent}/${response?.reason}): the waiting question stands")
 
                 val elapsed = System.currentTimeMillis() - startTime
                 sttEngine.queryPending = false // clear after response received
@@ -2420,12 +2516,16 @@ class PanForegroundService : Service() {
             } catch (e: Exception) {
                 sttEngine.queryPending = false
                 panLog("Server unreachable: ${e.message}")
-                mainHandler.post { panSpeak("I can't reach the server right now. I'm in limited mode without internet.") }
+                // A tentative clip that failed is dropped quietly; the waiting question has its own say.
+                if (promoted) mainHandler.post { panSpeak("I can't reach the server right now. I'm in limited mode without internet.") }
             } finally {
                 // Always clear thinking state — even on exception/timeout — so
-                // the PanThinkingCard doesn't get stuck spinning.
-                currentFiller.value = ""
-                isThinking.value = false
+                // the PanThinkingCard doesn't get stuck spinning. Not for a tentative clip that
+                // was never promoted: the card belongs to the question still waiting.
+                if (promoted) {
+                    currentFiller.value = ""
+                    isThinking.value = false
+                }
             }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 // Cancellation is us: he said something new, or he muted. The
@@ -2440,6 +2540,8 @@ class PanForegroundService : Service() {
                 mainHandler.post { panSpeak("Something broke. ${e.message ?: ""}") }
             }
         }
+        // Until promoted, a tentative turn is kept apart: inFlightQuery stays the waiting question.
+        if (tentative) tentativeJob = turnJob else inFlightQuery = turnJob
     }
 
     // Determine where a command should run based on settings + context

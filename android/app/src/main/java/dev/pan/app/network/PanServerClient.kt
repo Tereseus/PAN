@@ -438,6 +438,7 @@ class PanServerClient @Inject constructor(
         audio: ShortArray? = null,
         bench: Boolean = false,
         unfinished: Boolean = false,
+        tentative: Boolean = false,
         sincePanMs: Long? = null,
         addressed: Boolean = false,
         musicPlaying: Boolean = false,
@@ -462,6 +463,9 @@ class PanServerClient @Inject constructor(
                 if (bench) put("bench", true)
                 // He stopped mid-sentence (SttEngine.turnUnfinished): maybe searching for a word.
                 if (unfinished) put("unfinished", true)
+                // A no-words clip while a question waits (audio/TurnRules.kt): the hub must not cancel
+                // the waiting turn for it unless it turns out to be real words for ΠAN.
+                if (tentative) put("tentative", true)
                 // The assistant button was pressed: this line is for ΠAN (router.js addressed_now).
                 if (addressed) put("addressed_now", true)
                 // Music is playing on this device: the hub answers only lines that name PAN.

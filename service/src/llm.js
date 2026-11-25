@@ -8,11 +8,37 @@ import { readerStream } from './voice-reader.js';
 import { describeWithPhotoReader } from './photo-reader.js';
 import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
 import { tmpdir as osTmpdir } from 'os';
+import { readdirSync, statSync } from 'fs';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { anonymizeForAI } from './anonymize.js';
 import { getSecret } from './secrets.js';
 
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
+
+/**
+ * Which Claude login ΠAN's own calls use. The hub runs as SYSTEM (its start-at-boot task), and Claude
+ * run as SYSTEM reads C:\Windows\System32\config\systemprofile\.claude: a login made once on Aug 7
+ * that had long expired. Every cloud fallback failed, and the slow model on the hub CPU took the turn
+ * (car, Nov 24: his question got no reply for 36 s). Running as SYSTEM, the calls now use the Claude
+ * folder of the person who signs in on this computer (`claude auth login`), the most recently
+ * renewed one if there are several. CLAUDE_CONFIG_DIR, when set, wins. Null = Claude's own default.
+ */
+export function claudeConfigDir(env = process.env, fsx = { readdirSync, statSync }, platform = process.platform) {
+  if (env.CLAUDE_CONFIG_DIR) return env.CLAUDE_CONFIG_DIR;
+  if (platform !== 'win32' || !/\\config\\systemprofile/i.test(env.USERPROFILE || '')) return null;
+  const root = `${env.SystemDrive || 'C:'}\\Users`;
+  let best = null, bestAt = 0;
+  let names = [];
+  try { names = fsx.readdirSync(root); } catch { return null; }
+  for (const name of names) {
+    const dir = `${root}\\${name}\\.claude`;
+    try {
+      const at = fsx.statSync(`${dir}\\.credentials.json`).mtimeMs;
+      if (at > bestAt) { best = dir; bestAt = at; }
+    } catch {}
+  }
+  return best;
+}
 
 /**
  * Options for a plain one-turn Claude call through the Agent SDK: the prompt in, words out, and
@@ -23,10 +49,11 @@ const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
  * file is near it. __tests__/sdk-isolation.test.js checks the options.
  */
 export function sdkPlainOptions(model, abortController, caller = 'unknown') {
+  const cfg = claudeConfigDir();
   return {
     model, maxTurns: 1, persistSession: false, permissionMode: 'default', abortController,
     tools: [], settingSources: [], mcpServers: {}, strictMcpConfig: true, cwd: osTmpdir(),
-    env: { ...process.env, CLAUDE_AGENT_SDK_CLIENT_APP: `pan-server/${caller}`,
+    env: { ...process.env, ...(cfg ? { CLAUDE_CONFIG_DIR: cfg } : {}), CLAUDE_AGENT_SDK_CLIENT_APP: `pan-server/${caller}`,
       ENABLE_CLAUDEAI_MCP_SERVERS: 'false', CLAUDE_CODE_DISABLE_CLAUDE_MDS: '1',
       CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1', CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS: '1' },
   };

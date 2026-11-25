@@ -50,6 +50,19 @@ test('a phone transcript with no punctuation needs two words', () => {
   eq(after('I am not seeing anything back here.', 'here so the second one is better', { began_ms: -200 }), 'here so the second one is better', 'one word, unpunctuated');
 });
 
+test('only PAN\'s own tail, heard while it was still talking: nothing was said', () => {
+  eq(after('I could keep going all day. Do you like that?', 'Do you like that?', { began_ms: -900 }), '', 'four words, under PAN');
+  eq(after('It might be the mic, I think.', 'I think.', { began_ms: -300 }), '', 'two words, under PAN');
+  eq(after('It might be the mic, I think.', 'i think', { began_ms: 0 }), '', 'unpunctuated, right at the stop');
+});
+
+test('only PAN\'s tail, but after it stopped or untimed: still his answer', () => {
+  eq(after('Do you want it right now?', 'Right now.', { began_ms: 400 }), 'Right now.', 'after PAN');
+  eq(after('Do you want it right now?', 'Right now.'), 'Right now.', 'untimed');
+  eq(after('Is that okay?', 'Okay.', { began_ms: -200 }), 'Okay.', 'one word under PAN stays');
+  eq(after('It might be the mic, I think.', 'I think so too.', { began_ms: -300 }), 'I think so too.', 'more than the tail');
+});
+
 test('an old reply, another device, or no reply at all', () => {
   noteSaid('t', "Okay, I've stopped.", 1000);
   eq(dropOwnTail('t', "I've stopped. Now put it in French.", { now: 1000 + 4 * 60_000 }), "I've stopped. Now put it in French.", 'old');

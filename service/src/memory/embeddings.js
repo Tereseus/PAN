@@ -91,7 +91,11 @@ async function _resolveEmbedTarget() {
     const scout = await import('../scout.js').catch(() => null);
     if (scout?.findDeviceWithModel) {
       const hit = scout.findDeviceWithModel(EMBED_MODEL);
-      if (hit) return { url: hit.url, model: hit.model, viaRegistry: true };
+      // Not a machine he has taken ΠAN off (Models tab, Machines; pan_mint_gpu_allowed). When the
+      // hub was busy its own /api/tags check timed out and this pinned the embedder on the Mint's
+      // card, 1.2 GB with no expiry, while WoE benchmarks had the card (Nov 24 and again Nov 25).
+      const cs = hit ? await import('../compute-store.js').catch(() => null) : null;
+      if (hit && (!cs?.pinAllowed || cs.pinAllowed(hit.url))) return { url: hit.url, model: hit.model, viaRegistry: true };
     }
   } catch {}
 

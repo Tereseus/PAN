@@ -48,6 +48,15 @@ export function dropOwnTail(key, heard, { now = Date.now(), began_ms } = {}) {
   while ((m = WORD.exec(text))) { total++; if (head.length < 6) head.push({ w: norm(m[0]), end: m.index + m[0].length }); }
   const punctuated = /[.!?]/.test(text);
 
+  // The whole line is PAN's own tail and began while PAN was still talking: only the echo was heard,
+  // nothing of his. Answering it made PAN reply to itself (Nov 25, by speaker: "Do you like that?",
+  // "I think." came back as his lines and PAN answered them). '' = nothing was said. A line that
+  // began after PAN stopped is still his answer ("Right now."), and so is one word of his own.
+  if (timed && began_ms <= 0 && total >= 2 && total <= head.length) {
+    const tail = mine.words.slice(-total);
+    if (tail.length === total && head.every((h, i) => h.w && h.w === tail[i])) return '';
+  }
+
   for (let k = Math.min(head.length, mine.words.length); k >= 1; k--) {
     if (total - k < 2) continue;                 // he repeated PAN's words and little else: that is his answer
     const tail = mine.words.slice(-k);

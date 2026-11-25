@@ -29,6 +29,7 @@ import { whoseLine, speechLevel } from '../same-line.js';
 import { linkDevice } from '../pan-link-auth.js';
 import { getDataDir as notesDataDir } from '../platform.js';
 import { createScreenControl } from '../screen-control.js';
+import { turnSlots } from '../turn-slots.js';
 
 const execFilePromise = promisify(execFile);
 warmHubAsr();
@@ -179,6 +180,7 @@ const streamControllers = new Map(); // stream_id → { controller, expiresAt }
 // The phone's own send time (sensors.timestamp) of the newest voice turn seen from each device.
 const newestTurnSentAt = new Map();
 const STREAM_TTL_MS = 60_000;
+const turnSlotsLive = turnSlots(streamControllers, newestTurnSentAt, { ttlMs: STREAM_TTL_MS, log: (m) => console.log(`[/query/stream] ${m}`) });
 function registerStream(streamId, controller) {
   streamControllers.set(streamId, { controller, expiresAt: Date.now() + STREAM_TTL_MS });
 }
@@ -2137,26 +2139,20 @@ router.post('/query/stream', async (req, res) => {
   // Turns are ordered by when the phone SENT them, not by when they got here. On a slow link the upload
   // of an older sentence can land after a newer one. The phone had already dropped that older turn, yet
   // here it cancelled the newer one: the real question got "Sorry, I ran into a problem" and the answer
-  // to the line he had moved on from was spoken to nobody (car on a 4G hotspot, 2026-11-17). The gap is
-  // capped so a phone whose clock was set back is not shut out.
+  // to the line he had moved on from was spoken to nobody (car on a 4G hotspot, 2026-11-17).
+  // Tentative turns (a no-words clip while a question waits, car Nov 24 and 25) cancel nothing until
+  // they stream a real reply: turn-slots.js has the rules and the story.
   let sentAt = 0;
   try { sentAt = Number((typeof sensors === 'string' ? JSON.parse(sensors) : sensors)?.timestamp) || 0; } catch {}
-  const newestSent = newestTurnSentAt.get(streamKey) || 0;
-  if (sentAt && sentAt < newestSent && newestSent - sentAt < 120_000) {
-    console.log(`[/query/stream] older turn for ${streamKey} arrived late (sent ${newestSent - sentAt} ms before the newest) - dropped`);
+  const tentative = req.body.tentative === true;
+  const controller = new AbortController();
+  const slot = turnSlotsLive.open({ streamKey, sentAt, tentative, controller });
+  if (slot.late) {
+    console.log(`[/query/stream] older turn for ${streamKey} arrived late (sent ${slot.gapMs} ms before the newest) - dropped`);
     clearInterval(keepaliveInterval);
     send({ type: 'done', result: { intent: 'cancelled', response: '' } });
     return res.end();
   }
-  if (sentAt) newestTurnSentAt.set(streamKey, sentAt);
-  const superseded = streamControllers.get(streamKey);
-  if (superseded) {
-    try { superseded.controller.abort(); } catch {}
-    streamControllers.delete(streamKey);
-    console.log(`[/query/stream] superseded in-flight turn for ${streamKey}`);
-  }
-  const controller = new AbortController();
-  registerStream(streamKey, controller);
 
   // Client-disconnect cleanup — same fix as /recall/stream above. Without
   // this the keepalive interval leaked forever and the underlying socket
@@ -2223,7 +2219,7 @@ router.post('/query/stream', async (req, res) => {
         recordTiming({ turn: turnId, stage: 'other_voice_on_person_device', ms: Date.now() - turnStart });
         send({ type: 'done', result: { intent: 'ambient', response: '', reason: 'other_voice' } });
         clearInterval(keepaliveInterval);
-        if (streamControllers.get(streamKey)?.controller === controller) clearStream(streamKey);
+        slot.release();
         if (!res.writableEnded) res.end();
         return;
       }
@@ -2241,7 +2237,7 @@ router.post('/query/stream', async (req, res) => {
       recordTiming({ turn: turnId, stage: 'pan_own_voice', ms: Date.now() - turnStart });
       send({ type: 'done', result: { intent: 'ambient', response: '', reason: 'pan_own_voice' } });
       clearInterval(keepaliveInterval);
-      if (streamControllers.get(streamKey)?.controller === controller) clearStream(streamKey);
+      slot.release();
       if (!res.writableEnded) res.end();
       return;
     }
@@ -2274,7 +2270,7 @@ router.post('/query/stream', async (req, res) => {
       console.log(`[hub-asr] no words in ${Math.round(Buffer.byteLength(String(audio), 'base64') / 32)} ms of sound the device could not write down either`);
       send({ type: 'done', result: { intent: 'ambient', response: '', reason: 'nothing_heard' } });
       clearInterval(keepaliveInterval);
-      if (streamControllers.get(streamKey)?.controller === controller) clearStream(streamKey);
+      slot.release();
       if (!res.writableEnded) res.end();
       return;
     }
@@ -2293,7 +2289,7 @@ router.post('/query/stream', async (req, res) => {
         recordTiming({ turn: turnId, stage: 'heard_on_another_device', ms: Date.now() - turnStart });
         send({ type: 'done', result: { intent: 'ambient', response: '', reason: 'heard_elsewhere' } });
         clearInterval(keepaliveInterval);
-        if (streamControllers.get(streamKey)?.controller === controller) clearStream(streamKey);
+        slot.release();
         if (!res.writableEnded) res.end();
         return;
       }
@@ -2313,6 +2309,16 @@ router.post('/query/stream', async (req, res) => {
     const audioMs = audio ? Math.round(Buffer.byteLength(String(audio), 'base64') / 32) : null;
     const began = Number.isFinite(sincePan) && audioMs !== null ? sincePan - audioMs : undefined;
     const own = dropOwnTail(tailKey, text, { began_ms: began });
+    if (own === '') {
+      // Only PAN's own last words came back, heard while it was still talking: end quietly.
+      console.log(`[own-tail] only PAN's own words, heard ${began} ms after it stopped: ${JSON.stringify(String(text).slice(0, 60))} -> nothing`);
+      recordTiming({ turn: turnId, stage: 'own_echo', ms: Date.now() - turnStart, bench: !!bench || undefined });
+      send({ type: 'done', result: { intent: 'ambient', response: '', reason: 'own_echo' } });
+      clearInterval(keepaliveInterval);
+      slot.release();
+      if (!res.writableEnded) res.end();
+      return;
+    }
     if (own !== text) {
       console.log(`[own-tail] took PAN's own words off the head (began ${began ?? '?'} ms after it stopped): ${JSON.stringify(String(text).slice(0, 60))} -> ${JSON.stringify(own.slice(0, 60))}`);
       text = own;
@@ -2343,7 +2349,7 @@ router.post('/query/stream', async (req, res) => {
       if (over) send({ type: 'chunk', text: over });
       send({ type: 'done', result: { intent: 'talk', response: over, talk_with: passed.to, talk_room: passed.room, sent: passed.sent, reason: passed.reason, ended: !!passed.ended, addressed: passed.ended ? 1 : undefined } });
       clearInterval(keepaliveInterval);
-      if (streamControllers.get(streamKey)?.controller === controller) clearStream(streamKey);
+      slot.release();
       if (!res.writableEnded) res.end();
       return;
     }
@@ -2401,6 +2407,10 @@ router.post('/query/stream', async (req, res) => {
         turn_id: turnId,
         heard_lang: heardLang,
       })) {
+        // A tentative turn that streams a real reply was words for ΠAN: it takes over the device's turn.
+        if (!slot.promoted && ((event.type === 'chunk' && String(event.text || '').trim()) || (event.type === 'done' && turnSlotsLive.realReply(event.result)))) {
+          if (slot.promote()) console.log(`[/query/stream] tentative turn for ${streamKey} was real words: it takes over`);
+        }
         if (event.type === 'chunk' && !firstChunkSent) {
           firstChunkSent = true;
           recordTiming({ turn: turnId, stage: 'first_chunk_sent', ms: Date.now() - turnStart });
@@ -2496,7 +2506,7 @@ router.post('/query/stream', async (req, res) => {
     // Only clear if this request still owns the slot. A newer turn may have
     // already replaced it, and deleting blindly would unregister THAT one,
     // making the next utterance unable to cancel it.
-    if (streamControllers.get(streamKey)?.controller === controller) clearStream(streamKey);
+    slot.release();
     recordTiming({ turn: turnId, stage: 'total', ms: Date.now() - turnStart, bench: !!bench || undefined });
   }
 

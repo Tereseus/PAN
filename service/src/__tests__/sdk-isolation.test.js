@@ -12,7 +12,7 @@ import { tmpdir } from 'os';
 process.env.PAN_DATA_DIR = mkdtempSync(join(tmpdir(), 'pan-sdk-iso-'));
 process.env.PAN_DEV = '1';
 
-const { sdkPlainOptions } = await import('../llm.js');
+const { sdkPlainOptions, claudeConfigDir } = await import('../llm.js');
 
 let passed = 0;
 let failed = 0;
@@ -35,6 +35,21 @@ await test('the options shut every way the computer\'s Claude set-up gets in', (
     ok(o.env && o.env[k] !== undefined, `env ${k} missing`);
   ok(o.env.ENABLE_CLAUDEAI_MCP_SERVERS === 'false', 'claude.ai connectors must be off');
   ok(o.cwd && !/[\\/]PAN[\\/]?/i.test(o.cwd), `cwd is near a project: ${o.cwd}`);
+});
+
+// The hub runs as SYSTEM, whose own Claude login had expired since Aug 7 (car, Nov 24).
+await test('run as SYSTEM, the calls use the owner\'s newest Claude login', () => {
+  const sys = { USERPROFILE: 'C:\\Windows\\System32\\config\\systemprofile', SystemDrive: 'C:' };
+  const at = { 'C:\\Users\\owner\\.claude\\.credentials.json': 200, 'C:\\Users\\old\\.claude\\.credentials.json': 100 };
+  const fsx = {
+    readdirSync: () => ['Public', 'old', 'owner'],
+    statSync: (p) => { if (!(p in at)) throw new Error('none'); return { mtimeMs: at[p] }; },
+  };
+  ok(claudeConfigDir(sys, fsx, 'win32') === 'C:\\Users\\owner\\.claude', 'picks the newest login');
+  ok(claudeConfigDir({ ...sys, CLAUDE_CONFIG_DIR: 'D:\\c' }, fsx, 'win32') === 'D:\\c', 'an explicit folder wins');
+  ok(claudeConfigDir({ USERPROFILE: 'C:\\Users\\owner' }, fsx, 'win32') === null, 'a normal user keeps Claude\'s default');
+  ok(claudeConfigDir(sys, fsx, 'linux') === null, 'not Windows: default');
+  ok(claudeConfigDir(sys, { readdirSync: () => ['x'], statSync: () => { throw new Error(); } }, 'win32') === null, 'no login anywhere: default');
 });
 
 if (process.env.PAN_LIVE_SDK === '1') {
