@@ -3112,6 +3112,26 @@ async function* personTurn(text, context, withProsody) {
   console.log(`[person] ${person.id} (${person.role}) ${kind} via ${plain ? hubModel : 'the voice chain'}, prompt ${prompt.length} chars`);
   notePath('person');
 
+  // Sums done by code (arith.js, sums.js, money.js): the reply is read whole and its figure checked
+  // before any of it is spoken, as on the owner's path (sums.js keepFigures). A person's device was
+  // told "seven times eight" is fourteen (Nov 24).
+  const loud = outLoud(liveBlock);
+  if (loud.length) {
+    let whole = '';
+    try { for await (const c of stream) whole += c; } catch (e) {
+      if (context.signal?.aborted) throw e;
+      console.error('[person] model error:', e.message);
+    }
+    let reply = String(whole || '');
+    try { const j = JSON.parse(reply.match(/\{[\s\S]*\}/)?.[0] || ''); if (j && typeof j.response === 'string') reply = j.response; } catch {}
+    const kept = keepFigures(speakable(reply).trim(), loud);
+    if (kept.changed) console.log(`[person] the reply changed a worked out figure - saying the code's sentence (model said: ${reply.slice(0, 160)})`);
+    const response = kept.text.trim() || loud.map((x) => x[0].toUpperCase() + x.slice(1)).join('. ') + '.';
+    recordTiming({ turn: context.turn_id, device: context.device_id, stage: 'first_chunk', ms: Date.now() - t0 });
+    yield* say(response);
+    return;
+  }
+
   let buf = '', held = '', out = 0, gate = null, first = true;
   try {
     for await (const c of stream) {

@@ -218,5 +218,15 @@ await test('a line for a person never reaches the owner\'s path', async () => {
   ok(!/events|memories|projects/.test(`${said} ${done?.response || ''}`), `the owner's counts were read out: ${said}`);
 });
 
+// A sum for a person is worked out by code and its figure kept (arith.js, sums.js keepFigures): a
+// person's device was told "seven times eight" is fourteen (Nov 24). No model here, so the code's
+// own sentence is what is said.
+await test('a person\'s sum is answered with the worked out figure', async () => {
+  const { said, done } = await turn('What is seven times eight?', ctx());
+  ok(/fifty-six/i.test(said), `said: ${said}`);
+  ok(!/fourteen/i.test(said), `wrong figure said: ${said}`);
+  eq(done?.intent, 'query', 'answered as a query');
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

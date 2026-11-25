@@ -2432,6 +2432,18 @@ children can have adult-sounding voices and vice versa).
 - **World clock:** "what time is it in Tokyo" reads the hub's clock in that zone, no
   network: any IANA city, plus the countries and states people say ("California", "the
   UK"). Only the place after "in" counts. The voice model cannot do time-zone sums.
+- **Arithmetic (`arith.js`, tool `arith`, live; Nov 24):** a sum said out loud ("what is seven
+  times eight", "20 percent of 85", "the square root of 81", "subtract five from twelve") is
+  worked out by code and handed over as `SUM ... Out loud: "seven times eight is fifty-six"`,
+  like unit sums. The line is read into numbers (money.js `parseNumber`) and operations, with
+  the usual precedence, no `eval`; the words people put around a sum ("what's", "is", "please")
+  are dropped, and if anything else is left the line is not a sum and nothing fires ("seven
+  times out of ten", "three times four dollars"). A sum with no answer (dividing by zero) says
+  so with no figure. Why: a person's device was told seven times eight is fourteen; nothing in
+  the lookups did arithmetic. A person's turn (`router.js` `personTurn`) now also reads the
+  reply whole when its block holds worked out sums and says the code's sentence when the reply
+  changed the figure (`sums.js` `keepFigures`), as the owner's path already did. English only,
+  like the other sums. Tests: `__tests__/arith.test.js`, `person-voice.test.js`.
 - **Decision calculator:** not run inline. It builds its ranges with `gemma4:e4b` on the hub
   CPU (16-20 s) and failed 919 of 919 times inside the deadline, so every "should I" turn
   waited 1.5 s for nothing (`slow: true` in `TOOLS`).

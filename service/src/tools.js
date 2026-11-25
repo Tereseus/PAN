@@ -19,6 +19,7 @@ import { askAI } from './llm.js';
 import { get } from './db.js';
 import { moneyAsk, moneyBlock, CODES as MONEY_CODES, ECB as ECB_CODES } from './money.js';
 import { unitAsk, unitBlock, clockPlace, coinsAsked, sayNumber } from './sums.js';
+import { arithAsk, arithBlock } from './arith.js';
 import { sayMoney } from './money.js';
 import { dayAsk, dayBlock } from './calendar.js';
 import { sunTimes } from './intuition/place.js';
@@ -692,6 +693,7 @@ const TOOLS = [
   { name: 'crypto',   live: true, match: (t) => CRYPTO_RE.test(t) || coinIds(t).length > 0, run: (t) => crypto(t) },
   { name: 'calendar', live: true, match: (t) => !!dayAsk(t, todayHere()), run: (t) => calendarDay(t) },
   { name: 'units',    live: true, match: (t) => !!unitAsk(t), run: (t) => unitBlock(unitAsk(t)) },
+  { name: 'arith',    live: true, match: (t) => !!arithAsk(t), run: (t) => arithBlock(arithAsk(t)) },
   { name: 'air',      live: true, match: (t) => AIR_RE.test(t),      run: (t, s) => airQuality(t, s) },
   { name: 'search',   live: (t) => SEARCH_ASK.test(t) || CURRENT_RE.test(t), match: (t) => SEARCH_RE.test(t) || CURRENT_RE.test(t), run: (t) => webSearch(t) },
   { name: 'page',     live: true, match: (t) => URL_RE.test(t),      run: (t) => readNamedUrl(t) },
@@ -731,7 +733,7 @@ function withDeadline(promise, ms, label) {
 // A lookup the line needed did not arrive. Without this the turn went on with no data and the
 // model gave a figure from its own head, said as fact.
 const lookupFailed = (what) => `\nLOOKUP FAILED: ${what} could not be fetched just now. Tell him in a few words that you could not look it up this time. Do NOT give a figure, a date or a name from memory.\n`;
-const WHAT = { currency: 'the exchange rate', crypto: 'the coin price', weather: 'the weather', air: 'the air quality', clock: 'the time there', sun: 'the sun times', calendar: 'the date', units: 'the sum' };
+const WHAT = { currency: 'the exchange rate', crypto: 'the coin price', weather: 'the weather', air: 'the air quality', clock: 'the time there', sun: 'the sun times', calendar: 'the date', units: 'the sum', arith: 'the sum' };
 
 export async function buildToolBlocks(text, sensors, opts = {}) {
   const t = String(text || '');
