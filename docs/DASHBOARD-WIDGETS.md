@@ -123,6 +123,7 @@ Communication patterns:
 | **CenterChatView** | `widgets/CenterChatView.svelte` | ~50 | Center-column chat view when `terminal.centerView === 'chat'`. Bubbles (user / assistant / tool) + "Thinking…" placeholder + scroll-position persistence. Reads `terminal.centerChatMessages`. Bindable `scrollElBind` so parent can pin scroll-to-bottom. |
 | **ImagePreviewBar** | `widgets/ImagePreviewBar.svelte` | ~35 | Thumbnails of pasted images not yet sent. ✕ to remove. Reads `terminal.pastedImages`. `onRemove(idx)` callback. |
 | **UsagePanel** | `widgets/UsagePanel.svelte` | ~190 | Right-column usage view. Five sections: This Session (derived from active tab's per-tab message map via `getPushed`), Claude Plan Limits OR Gemini CLI Usage, Burn Rate, All Sessions (today/week with cost estimate), PAN Stats. Reads `usage` + `terminal` stores. No props. |
+| **LiveCallPanel** | `widgets/LiveCallPanel.svelte` | ~233 | What is happening on a call, from inside the dashboard: call active and how long, live talk state (topic, phase, waiting question), the Intuition snapshot, the last few turns, and Open call window / End call buttons. Polls every 3 s while open, no model calls. `bind:openCount`. Reads `/api/v1/chat/threads/thread-pan-system/messages` and `/api/v1/intuition/snapshot`. The /comms popup stays the place to be on a call. |
 
 ### Shared utilities
 

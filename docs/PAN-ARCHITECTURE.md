@@ -188,9 +188,9 @@ a device. Owns scheduling, queueing, retries, watchdogs.
 
 | Subsystem | Files |
 |---|---|
-| Job scheduler | `jobs.js` |
+| Job scheduler | `steward.js` (runs every scheduled job; `jobs.js` exists but `startJobRunner` is never called) |
 | Orchestrator | `orchestrator.js` |
-| Service health (auto-restart) | `steward.js`, `dashboard-watchdog.js` |
+| Service health (auto-restart) | `steward.js`, `dashboard-watchdog.js` (opt in since 2026-11-19) |
 | Task runner | `routes/runner.js`, `project-runner.js` |
 
 ---
