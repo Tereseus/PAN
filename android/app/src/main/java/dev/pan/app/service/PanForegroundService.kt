@@ -1660,6 +1660,10 @@ class PanForegroundService : Service() {
     private val CARRY_ON_OPEN_MS = 20_000L
     // 30 s of 16 kHz audio; past that the hub hears the phone's words instead.
     private val CARRY_AUDIO_MAX = 30 * 16000
+    // The turn the hub just called "not for ΠAN" (ambient). A long one stays open for what he says
+    // next (TurnRules.keepsOpenAfterRoomVerdict), so a problem laid out over pauses reaches the hub
+    // whole, with its question.
+    @Volatile private var roomVerdictSeq = -1
 
     private fun cancelInFlight() {
         inFlightQuery?.cancel()
@@ -1802,8 +1806,11 @@ class PanForegroundService : Service() {
         // to the hub as three turns (voicebench, 2026-11-02). The words and the audio go
         // together, and the reply to the first part is cancelled below as superseded.
         val prev = pendingTurn
+        val setupOpen = prev != null && prev.seq == roomVerdictSeq &&
+            dev.pan.app.audio.TurnRules.keepsOpenAfterRoomVerdict(prev.text, now - prev.at)
         val unanswered = prev != null && now - prev.at < CARRY_ON_OPEN_MS &&
-            (inFlightQuery?.isActive == true || replyWaiting.isNotEmpty())
+            (inFlightQuery?.isActive == true || replyWaiting.isNotEmpty() || setupOpen)
+        if (setupOpen) panLog("Joining to the line before, which ΠAN stayed out of: it was a setup")
         val wouldJoin = prev != null && prev.seq == replySeq.get() && (now - prev.at < CARRY_ON_MS || unanswered)
         // A clip the ear wrote no words for, while a question with words waits for its reply: not
         // joined, nothing cancelled, sent tentatively (audio/TurnRules.kt). In the car road noise
@@ -2408,6 +2415,7 @@ class PanForegroundService : Service() {
                         return@launch
                     }
                     notForPanNote(response?.reason)?.let { note -> runCatching { dataRepository.addNote(note) } }
+                    roomVerdictSeq = mySeq
                     return@launch
                 }
 

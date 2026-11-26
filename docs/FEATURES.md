@@ -3074,6 +3074,15 @@ the Nov 26 code.
 
 ## Phone app (entries added Nov 26 review)
 
+- **A long setup the hub stayed out of stays open for the question (app 0.5.58, versionCode 187,
+  Nov 26; `audio/TurnRules.kt keepsOpenAfterRoomVerdict`, `PanForegroundService` `roomVerdictSeq`).**
+  He laid out a popcorn problem over three pauses. The phone joined the first pieces, but the hub
+  called that setup room talk (no question in it yet), and the question 10 s later went alone, so
+  ΠAN answered "I don't know which one you're using". Now a line of 10 or more words the hub called
+  "not for ΠAN" stays open for 20 s: what he says next joins it and the hub judges the whole thing
+  again. Shorter remarks stay closed. Tests: TurnRulesTest (3 new). Also in 0.5.58: Settings > How
+  ΠAN listens no longer shows the dead "Words that end Don't remember" box.
+
 - **Wrong words fixed after the UI inventory (Nov 26, next app build after 0.5.56; `docs/UI-INVENTORY.md`).**
   Home's pairing card pointed at a Devices > Add a device button that does not exist; it now says
   the Pair a phone page. Sound Effects said "a tone when ΠAN hears a command"; only mute plays a

@@ -26,4 +26,11 @@ class TurnRulesTest {
     @Test fun aCancelledTurnSaysNothing() = assertTrue(TurnRules.silentNoAnswer(stillWanted = false, intent = null))
     @Test fun aTurnTheHubDroppedAsLateSaysNothing() = assertTrue(TurnRules.silentNoAnswer(stillWanted = true, intent = "cancelled"))
     @Test fun aWantedTurnWithNoAnswerIsReported() = assertFalse(TurnRules.silentNoAnswer(stillWanted = true, intent = null))
+
+    // Nov 26: a popcorn problem laid out over pauses; the setup was called room talk.
+    @Test fun aLongSetupStaysOpenForTheQuestion() = assertTrue(TurnRules.keepsOpenAfterRoomVerdict(
+        "i have a popcorn bag the microwave has a popcorn button and it burns at sixty per cent", 10_000L))
+    @Test fun aShortRemarkDoesNot() = assertFalse(TurnRules.keepsOpenAfterRoomVerdict("yeah that was funny", 3_000L))
+    @Test fun aSetupClosesAfterTwentySeconds() = assertFalse(TurnRules.keepsOpenAfterRoomVerdict(
+        "i have a popcorn bag the microwave has a popcorn button and it burns at sixty per cent", 21_000L))
 }

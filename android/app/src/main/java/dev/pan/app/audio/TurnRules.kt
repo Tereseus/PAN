@@ -33,6 +33,17 @@ object TurnRules {
         else -> Action.NEW
     }
 
+    /**
+     * A line the hub called "not for ΠAN" stays open for the words after it when it was a long one
+     * (owner, Nov 26: he laid out a popcorn problem over three pauses; the setup had no question in
+     * it yet, the hub called it room talk, and the question that followed 10 s later went alone,
+     * so ΠAN answered "I don't know which one you're using"). A setup is long; a remark is short.
+     */
+    const val SETUP_WORDS = 10
+    const val SETUP_OPEN_MS = 20_000L
+    fun keepsOpenAfterRoomVerdict(text: String, sinceMs: Long): Boolean =
+        sinceMs < SETUP_OPEN_MS && text.trim().split(Regex("\\s+")).count { it.isNotBlank() } >= SETUP_WORDS
+
     /** A tentative turn takes over once the hub streams a real reply to it. */
     fun promotes(firstChunk: String): Boolean = firstChunk.isNotBlank()
 
