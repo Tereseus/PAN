@@ -51,6 +51,18 @@ object ListenMode {
         releaseWords.value = split(p.getString("release_words", "") ?: "")
         rememberWords.value = split(p.getString("remember_words", "") ?: "")
         forgetSince = p.getLong("forget_since", 0L)
+        forgetHourLimit = p.getBoolean("forget_hour_limit", false)
+    }
+
+    /**
+     * Settings > Privacy: Don't remember ends by itself after an hour. Off by default (owner,
+     * Nov 26): the mode shows on Home, so people know they are in it; before, it always ended.
+     */
+    @Volatile var forgetHourLimit = false
+        private set
+    fun setForgetHourLimit(ctx: Context, on: Boolean) {
+        forgetHourLimit = on
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean("forget_hour_limit", on).apply()
     }
 
     fun set(ctx: Context, m: Mode) {
@@ -62,7 +74,7 @@ object ListenMode {
 
     /** Don't remember has run its hour. */
     fun forgetRanOut(now: Long = System.currentTimeMillis()): Boolean =
-        mode.value == Mode.FORGET && forgetSince > 0L && now - forgetSince > FORGET_LIMIT_MS
+        forgetHourLimit && mode.value == Mode.FORGET && forgetSince > 0L && now - forgetSince > FORGET_LIMIT_MS
 
     fun setWords(ctx: Context, name: String, release: String, remember: String) {
         nameWords.value = split(name)

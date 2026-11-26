@@ -1108,8 +1108,10 @@ same grid, `ui/home/ModeIcons.kt`). Home's line and the notification say it too.
   `isBench()`), with his real device and talk, and skips the voice turn record, the turn book, voice
   learning and the spoken-on note (`routes/api.js`). The device keeps no lines on Home, no history
   (`persistHistoryTurn`), no uploads, no photos (`uploadCapture`; `/vision` gets `bench: true`) and
-  ships no log lines (`LogShipper`). Ends by itself after an hour (`FORGET_LIMIT_MS`, the hub's
-  incognito default) on the next line he says. It does NOT use the hub's user-wide incognito switch
+  ships no log lines (`LogShipper`). Lasts until he turns it off; ends by itself after an hour
+  (`FORGET_LIMIT_MS`, the hub's incognito default, on the next line he says) only when Settings >
+  Privacy > "End Don't remember after an hour" is on (`ListenMode.forgetHourLimit`, pref
+  `forget_hour_limit`, off by default; app 0.5.59). It does NOT use the hub's user-wide incognito switch
   (`routes/incognito.js`): that would also hide his Claude threads on every computer. **Still kept:**
   the hub's own console log (carrier.log) prints heard lines as before, and timing lines
   (`voice-timing.jsonl`, no words) are marked bench.
@@ -3073,6 +3075,11 @@ the Nov 26 code.
 ---
 
 ## Phone app (entries added Nov 26 review)
+
+- **Don't remember lasts until it is turned off (app 0.5.59, versionCode 188, Nov 26; task 1067).**
+  The hour limit is now a switch, Settings > Privacy > "End Don't remember after an hour", off by
+  default (`audio/ListenMode.kt forgetHourLimit`, `forgetRanOut` checks it). The mode shows on Home
+  and in the notification, so the person always knows it is on.
 
 - **A long setup the hub stayed out of stays open for the question (app 0.5.58, versionCode 187,
   Nov 26; `audio/TurnRules.kt keepsOpenAfterRoomVerdict`, `PanForegroundService` `roomVerdictSeq`).**

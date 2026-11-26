@@ -425,6 +425,15 @@ fun SettingsScreen(
                     enabled = incognitoAllowed
                 )
             }
+            // Don't remember ends by itself after an hour, only if this is on (ListenMode).
+            var forgetHour by remember { mutableStateOf(dev.pan.app.audio.ListenMode.forgetHourLimit) }
+            SettingToggle(
+                title = "End Don't remember after an hour",
+                description = if (forgetHour) "After an hour ΠAN says so and starts remembering again"
+                              else "Don't remember lasts until you turn it off",
+                checked = forgetHour,
+                onToggle = { on -> forgetHour = on; dev.pan.app.audio.ListenMode.setForgetHourLimit(context, on) }
+            )
             // The lock on the Memory tab. Turning it off takes the fingerprint too.
             var memoryLock by remember { mutableStateOf(dev.pan.app.ui.memory.Fingerprint.lockOn(context)) }
             val hasFingerprint = remember { dev.pan.app.ui.memory.Fingerprint.ready(context) }
