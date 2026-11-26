@@ -3076,6 +3076,21 @@ the Nov 26 code.
 
 ## Phone app (entries added Nov 26 review)
 
+- **Laying out a problem: held until the question (hub Craft 104, Nov 26; task 1087;
+  `service/src/intuition/laying-out.js`, `router.js` after the listening modes, test
+  `__tests__/laying-out.test.js`).** A line that is only "wait, I'm not done" / "hold on, let me
+  finish" / "one sec", a line ending in one ("...1200 watts, wait I'm not done"), a setup opener with
+  no question ("here's the situation...", "let me explain...", "picture this") or a line ending in a
+  colon gets silence (`intent: ambient`, `reason: still_talking`, `laying_out: true`) and is kept.
+  "Wait, I'm not done" alone keeps his line before it, when the talk is recent. The next line within
+  30 s is answered as ONE request with every kept piece in front of it; the phone's joined line is
+  not doubled. "Wait, what time is it" is a question and is answered. Not while interpreting. None
+  of about 2,100 of his past lines is held. **Bench (task 1088):** `service/src/evals/layout/` (gitignored, like every eval)
+  (`run_layout.py`, made up cases): held pieces silent 11 of 11 on the live hub (before: 2 of 11),
+  but the live voice chain (local only, pan-gemma-r4) answered 4 of the 5 joined problems wrongly;
+  dev on another model got 4 right. A bigger model for these is task 1090. His real popcorn lines had
+  none of these words: the 0.5.58 joining after a room verdict is what covers those.
+
 - **Message mode for threads (hub Craft 103, Nov 26; task 1089; `service/src/message-mode.js`,
   `router.js _messageMode`, test `__tests__/message-mode.test.js`).** "ΠAN, message for the PAN
   thread" (the word thread is needed; the name must match a thread, else the line goes on as before)

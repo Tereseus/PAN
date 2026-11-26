@@ -25,6 +25,7 @@ import { searchMemory, warmVectors, searchMemoryByDate, parseWhen, isReadablePre
 import { writeThought } from './thoughts.js';
 import { isBench, benchContext } from './bench-context.js';
 import * as messageMode from './message-mode.js';
+import * as layingOut from './intuition/laying-out.js';
 import { recordTiming } from './voice-timing.js';
 import { noteMealMention } from './intuition/nourishment.js';
 import { noteSignalsInUtterance } from './intuition/signals.js';
@@ -3307,6 +3308,23 @@ export async function* routeStream(text, context = {}) {
     if (shelf.named.length) console.log(`[routeStream] shelf: ${shelf.named.join(', ')} named in this line`);
   } catch (e) { console.warn('[routeStream] shelf failed:', e.message); }
   const talking = Number.isFinite(context.since_pan_ms) ? context.since_pan_ms < TALK_MS : panSpokeWithin(TALK_MS, context.org_id);
+  // Laying out a problem (intuition/laying-out.js, task 1087, the owner Nov 26): "wait, I'm not
+  // done", "here's the situation...", a line ending in a colon: nothing is said and the piece is
+  // kept; the next line is answered as one request with every piece in front of it. His popcorn
+  // problem over three pauses got answers to the pieces, and the question went alone.
+  if (!interpretingFor(context.device_id)) {
+    const lay = layingOut.step(context.device_id || 'default', text, talking && typeof context.conversation_history === 'string' ? context.conversation_history : '');
+    if (lay.hold) {
+      console.log(`[laying-out] not done yet, kept (${lay.pieces} piece${lay.pieces === 1 ? '' : 's'}): ${JSON.stringify(String(text).slice(0, 60))}`);
+      yield { type: 'chunk', text: '' };
+      yield { type: 'done', result: withProsody({ intent: 'ambient', response: '', addressed: 0.9, importance: 0.2, reason: 'still_talking', laying_out: true }) };
+      return;
+    }
+    if (lay.joined) {
+      console.log(`[laying-out] ${lay.joined} kept piece${lay.joined === 1 ? '' : 's'} in front of: ${JSON.stringify(String(text).slice(0, 60))}`);
+      text = lay.text;
+    }
+  }
 
   // Told to mute (mute-ask.js): the device does it, and nothing is said. A device too old to know
   // the flag stays silent for the turn, which is still better than "Got it" with nothing muted.
