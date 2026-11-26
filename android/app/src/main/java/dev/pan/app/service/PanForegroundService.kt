@@ -3677,6 +3677,7 @@ class PanForegroundService : Service() {
         val title = if (!listening) "ΠAN is muted" else when (dev.pan.app.audio.ListenMode.mode.value) {
             dev.pan.app.audio.ListenMode.Mode.LISTEN -> "ΠAN is listening only"
             dev.pan.app.audio.ListenMode.Mode.NAME -> "ΠAN answers to its name only"
+            dev.pan.app.audio.ListenMode.Mode.FORGET -> "ΠAN is listening, not remembering"
             else -> "ΠAN is listening"
         }
         val online = runCatching {

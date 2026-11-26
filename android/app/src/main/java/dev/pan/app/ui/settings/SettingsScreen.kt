@@ -403,7 +403,7 @@ fun SettingsScreen(
 
             SettingToggle(
                 title = "Sound Effects",
-                description = "A tone when ΠAN hears a command",
+                description = "Two soft notes when ΠAN mutes",
                 checked = beepEnabled,
                 onToggle = { viewModel.setBeep(it) }
             )

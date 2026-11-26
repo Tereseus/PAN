@@ -3074,6 +3074,12 @@ the Nov 26 code.
 
 ## Phone app (entries added Nov 26 review)
 
+- **Wrong words fixed after the UI inventory (Nov 26, next app build after 0.5.56; `docs/UI-INVENTORY.md`).**
+  Home's pairing card pointed at a Devices > Add a device button that does not exist; it now says
+  the Pair a phone page. Sound Effects said "a tone when ΠAN hears a command"; only mute plays a
+  sound now. Don't remember mode showed "ΠAN is listening" in the notification; it now says
+  "ΠAN is listening, not remembering". The icon's name is ΠAN, not PAN.
+
 Phone app features that had no entry. Paths are under
 `android/app/src/main/java/dev/pan/app/`. Most other app work is written up as dated release
 notes under "Voice student model (Syrinx, formerly OmniΠ)" and "Phone voice (text to speech)";

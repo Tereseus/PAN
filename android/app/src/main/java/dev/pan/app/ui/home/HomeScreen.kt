@@ -149,7 +149,7 @@ fun HomeScreen(viewModel: MainViewModel) {
                     modifier = Modifier.fillMaxWidth().padding(top = 12.dp)) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text("Pair this phone with your computer", style = MaterialTheme.typography.titleMedium)
-                        Text("On the computer that runs ΠAN, open Devices and choose Add a device. Then scan the code it shows.",
+                        Text("On the computer that runs ΠAN, open its Pair a phone page. Then scan the code it shows.",
                             style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Button(onClick = {
                             context.startActivity(android.content.Intent(context, dev.pan.app.vpn.ScanPairActivity::class.java))
