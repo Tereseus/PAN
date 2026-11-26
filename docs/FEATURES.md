@@ -3349,6 +3349,13 @@ the path says otherwise.
 - **Found while writing:** Settings > How ΠAN listens still had "Words that end Don't remember",
   which nothing has honoured since Nov 25; the box is removed (next app build).
 
+### Tests never read his live dictation hold (hub Craft 102, Nov 26; `router.js` `benchTurn`)
+
+- A bench or replay turn (run inside `benchContext` with bench set, and not Don't remember, which
+  shares that context with `forget`) skips the "dictating to Claude, quiet unless named" check. The
+  Nov 26 replay of his real lines lost 9 questions to it because he was dictating while it ran.
+  `isTestTurn` is unchanged on purpose: widening it would switch test-only features on in benches.
+
 ### Personality per device, and the old pages gone (hub Craft 101, Nov 26)
 
 - **Personality:** `router.js personalityFor(context)`: a turn that carries its own `personality`

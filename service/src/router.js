@@ -23,7 +23,7 @@ import {
 } from './smart-router.js';
 import { searchMemory, warmVectors, searchMemoryByDate, parseWhen, isReadablePreview } from './memory-search.js';
 import { writeThought } from './thoughts.js';
-import { isBench } from './bench-context.js';
+import { isBench, benchContext } from './bench-context.js';
 import { recordTiming } from './voice-timing.js';
 import { noteMealMention } from './intuition/nourishment.js';
 import { noteSignalsInUtterance } from './intuition/signals.js';
@@ -3417,7 +3417,11 @@ export async function* routeStream(text, context = {}) {
   // the phone hears that too: PAN answered what he was telling Claude (2026-11-03). While it
   // lasts, PAN only answers when he says its name or is mid-exchange with it.
   let claudeQuiet = false;
-  if (context.source !== 'dashboard' && !isTestTurn(context) && !interpreting) {
+  // A bench or replay turn never reads his live dictation hold (benchContext, but not Don't remember,
+  // which runs in the same no trace context with forget set): the replay of his real lines went
+  // quiet on 9 questions because he was dictating to Claude while it ran (Nov 26).
+  const benchTurn = benchContext.getStore()?.bench === true && !benchContext.getStore()?.forget;
+  if (context.source !== 'dashboard' && !isTestTurn(context) && !benchTurn && !interpreting) {
     const dictation = dictatingToClaude();
     // The dictation hotkey is recording right now (or stopped seconds ago): he is talking to his
     // computer. Not PAN's line, whatever the voice model would make of it, and even mid-exchange.
