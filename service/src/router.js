@@ -3378,8 +3378,20 @@ export async function* routeStream(text, context = {}) {
   // filters too ("hey Kenji, nice to meet you" is his to say), the memory search and the
   // tools, and goes to the cloud model first with a short prompt (standingPrompt below).
   const ack = interpreterAck(context.device_id || 'default', text);
-  const standing = standingInstruction(context.device_id || 'default', text);
-  const interpreting = !!standing && INTERPRET_RE.test(standing.text);
+  let standing = standingInstruction(context.device_id || 'default', text);
+  let interpreting = !!standing && INTERPRET_RE.test(standing.text);
+  // While interpreting, his own English line that names ΠAN is a request to ΠAN, not a line to
+  // translate (task 1083, the owner Nov 26: "understand when you're asking it a question while
+  // also in the translation"). Lines about the interpreting itself ("ΠAN, say that again", "ask
+  // them...") stay with the interpreter. Only English and only his voice: "pan" is bread in Spanish.
+  if (interpreting && !standing.setting && saysPanName(text) && context.wearer !== false
+    && (context.heard_lang ? String(context.heard_lang).toLowerCase() === 'en' : looksEnglish(text))
+    && !SAY_AGAIN_RE.test(String(text || '')) && !STANDING_CLEAR_RE.test(String(text || ''))
+    && !/\b(?:translat\w*|interpret\w*|ask (?:him|her|them)|tell (?:him|her|them)|say (?:that|it|this)|how do (?:you|i|we) say)\b/i.test(String(text || ''))) {
+    console.log(`[routeStream] interpreting, but he asked ΠAN by name - answered, not translated: ${JSON.stringify(String(text).slice(0, 60))}`);
+    standing = null;
+    interpreting = false;
+  }
   if (ack) {
     yield { type: 'chunk', text: ack };
     yield { type: 'done', result: withProsody({ intent: 'translate', response: ack, addressed: 0.9, importance: 0.3 }) };

@@ -597,7 +597,8 @@ export function enqueueJob({ thread, text, utterance = null, source = null, devi
   ensureThreadRelaySchema();
   const job = {
     id: newId(), host: thread.host, session_id: thread.session_id, title: thread.title,
-    text: String(text).slice(0, 4000), utterance: utterance ? String(utterance).slice(0, 4000) : null,
+    // 20,000: a message mode talk runs for minutes (message-mode.js); 4,000 cut it at about 700 words.
+    text: String(text).slice(0, 20000), utterance: utterance ? String(utterance).slice(0, 20000) : null,
     status: 'queued', source, device_id, created_at: Date.now(), kind: kind === 'status' ? 'status' : 'send',
     convo: convo ? String(convo).slice(-3000) : null, asked_by: asked_by == null ? null : Number(asked_by),
     not_before: hold_ms > 0 ? Date.now() + hold_ms : null,
@@ -676,6 +677,12 @@ async function finish(job) {
     run(`UPDATE thread_relay_jobs SET spoken = 1 WHERE id = :id`, { ':id': job.id });
     waiter(job);
     return { ok: true, delivered_to: 'voice_turn', job };
+  }
+  // Sent from a computer (the /ask API: one thread to another), never asked out loud: no phone is
+  // waiting for it. A handoff to the Mint thread was queued to be read out on his phone (Nov 26).
+  if (job.source === 'api' && !job.device_id) {
+    run(`UPDATE thread_relay_jobs SET spoken = 1 WHERE id = :id`, { ':id': job.id });
+    return { ok: true, delivered_to: 'none', job };
   }
   const speech = spokenOutcome(job);
   try {

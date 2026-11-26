@@ -3076,6 +3076,17 @@ the Nov 26 code.
 
 ## Phone app (entries added Nov 26 review)
 
+- **Asking ΠAN while it translates (hub Craft 105, Nov 26; task 1083; `router.js` after
+  `standingInstruction`).** While interpreting, his own English line that names ΠAN ("Pan, how many
+  people live in Tokyo") is answered as a request, not translated; the interpreting goes on after
+  it. Lines about the interpreting ("ΠAN, say that again", "ask them...", "translate that", "stop
+  translating") stay with the interpreter. Only an English line (heard_lang, else `looksEnglish`)
+  and not another voice (`wearer !== false`): "pan" is bread in Spanish. Checked on dev 7781.
+- **Thread jobs from a computer are not read out on the phone (hub Craft 105; `thread-relay.js
+  finish`).** A job sent by the /ask API (one thread to another) with no device was queued to be
+  spoken on his phone as "Mint ΠΑΝ says..." when it finished; now it is only marked done. Thread
+  jobs now keep 20,000 characters (was 4,000, about 700 words), for message mode.
+
 - **Laying out a problem: held until the question (hub Craft 104, Nov 26; task 1087;
   `service/src/intuition/laying-out.js`, `router.js` after the listening modes, test
   `__tests__/laying-out.test.js`).** A line that is only "wait, I'm not done" / "hold on, let me
