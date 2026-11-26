@@ -477,6 +477,8 @@ class PanServerClient @Inject constructor(
                 // How ΠAN talks on this device (util/Personality.kt), every turn; "" means turned off.
                 // The hub uses it for this turn instead of its own global setting.
                 put("personality", personality)
+                // This device's own name for ΠAN (util/PanName.kt); "" means ΠAN. The hub reads it as "Pan".
+                put("pan_name", dev.pan.app.util.PanName.name)
                 // How long ago PAN last stopped talking: inside 45 s this line is part of a talk.
                 if (sincePanMs != null) put("since_pan_ms", sincePanMs)
                 if (conversationHistory.isNotEmpty()) put("context", conversationHistory)

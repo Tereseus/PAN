@@ -268,6 +268,9 @@ fun SettingsScreen(
             }
             }
             if (page == "voice") {
+            // This device's own name for ΠAN (util/PanName.kt, task 1082).
+            PanNameField()
+            HorizontalDivider()
             // Personality (PAN voice/character — empty = default/off)
             Text("Personality", style = MaterialTheme.typography.titleMedium)
             Text(

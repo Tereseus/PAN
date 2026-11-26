@@ -31,6 +31,7 @@ import { linkDevice } from '../pan-link-auth.js';
 import { getDataDir as notesDataDir } from '../platform.js';
 import { createScreenControl } from '../screen-control.js';
 import { turnSlots } from '../turn-slots.js';
+import { callsOwnName } from '../pan-name.js';
 
 const execFilePromise = promisify(execFile);
 warmHubAsr();
@@ -2280,7 +2281,7 @@ router.post('/query/stream', async (req, res) => {
   if (voice && voicePrintNow) {
     const self = voice.panVoiceLikeness(voicePrintNow);
     // A line that names PAN is his: PAN does not say its own name.
-    const drop = !!self && self.likeness >= voice.PAN_SELF && voiceWho?.verdict !== true && !/\b(pan|pam|pann)\b/i.test(String(phoneText)) && voice.panSelfGateOn();
+    const drop = !!self && self.likeness >= voice.PAN_SELF && voiceWho?.verdict !== true && !/\b(pan|pam|pann)\b/i.test(String(phoneText)) && !callsOwnName(phoneText, req.body?.pan_name) && voice.panSelfGateOn();
     // One line per turn: separate lines went missing from carrier.log (Nov 15).
     if (self) console.log(`[voice-id] self ${self.likeness.toFixed(2)} his ${voiceWho?.likeness?.toFixed(2) ?? '-'} -> ${drop ? 'DROPPED, PAN heard itself' : 'kept'}: ${JSON.stringify(String(phoneText).slice(0, 60))}`);
     if (drop) {
@@ -2449,6 +2450,8 @@ router.post('/query/stream', async (req, res) => {
         mode_words: req.body.mode_words && typeof req.body.mode_words === 'object' ? req.body.mode_words : undefined,
         // App 0.5.57+: this device's own Personality text (router.js personalityFor; per device, Nov 26).
         personality: typeof req.body.personality === 'string' ? req.body.personality : undefined,
+        // App 0.5.61+: this device's own name for ΠAN (pan-name.js, task 1082), '' or left out = ΠAN.
+        pan_name: typeof req.body.pan_name === 'string' ? req.body.pan_name : undefined,
         // App 0.4.73+: how long ago PAN last stopped talking. The bench records no turns, so
         // this is the only thing that tells a talk from a stray line there.
         since_pan_ms: Number.isFinite(req.body.since_pan_ms) ? req.body.since_pan_ms : undefined,

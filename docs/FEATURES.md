@@ -3076,6 +3076,19 @@ the Nov 26 code.
 
 ## Phone app (entries added Nov 26 review)
 
+- **Each device's own name for ΠAN (app 0.5.61 / versionCode 190, hub Craft 107, Nov 26; task
+  1082).** Settings > Voice and sounds > ΠAN's name (`ui/settings/PanNameField.kt`,
+  `util/PanName.kt`, prefs `pan_name`), per phone or pendant; empty = ΠAN. Sent with every turn
+  as `pan_name`. The hub (`service/src/pan-name.js`, `router.js` at the start of routeStream) reads
+  that name as "Pan" where ΠAN is called (start of a line, end, start of a sentence; "I saw Jamie at
+  the shop" is left alone), so every name rule and the voice model work unchanged; the turn is
+  recorded with his own words (`said_as`). ΠAN calls itself by it (`personalityFor` adds the line).
+  Once a device has its own name, a line calling "Pan" is someone else's (`reason: named_other`,
+  quiet). The phone's own mute and unmute words and the local command prefix use the name too; the
+  echo check in `routes/api.js` lets a line with the name through. Checked on dev 7781: "Jamie,
+  what is two plus two" answered, "Pan, ..." quiet, "what is your name" -> "My name is Jamie".
+  Tests: `__tests__/pan-name.test.js`, `PanNameTest`. Not yet seen on a screen.
+
 - **A laid-out problem is worked out by Claude (hub Craft 106, Nov 26; task 1090; `router.js`
   `PROBLEM_MODEL`, path `problem`).** When the laying-out rule joined kept pieces in front of a line,
   the joined problem goes to Claude Sonnet 5.5 (`anthropic:claude-sonnet-5-5`) through the hub's own

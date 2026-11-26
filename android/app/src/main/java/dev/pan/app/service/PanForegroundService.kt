@@ -228,8 +228,9 @@ class PanForegroundService : Service() {
     // Spoken commands match the WHOLE utterance. Substring matching muted PAN on
     // "my commute was long" and unmuted it on "I had to wake up early" (voice plan,
     // phase 1). "pan" may lead or trail, "please" may come along.
-    private val MUTE_CMD = Regex("^(?:(?:hey |ok |okay )?(?:pan|pam)[,.]?\\s+)?(?:please\\s+)?(?:mute(?: yourself)?|be quiet|shut up|stop listening|quiet)(?:\\s+please)?(?:[,]?\\s+(?:pan|pam))?[.!]?$")
-    private val UNMUTE_CMD = Regex("^(?:(?:hey |ok |okay )?(?:pan|pam)[,.]?\\s+)?(?:please\\s+)?(?:unmute(?: yourself)?|wake up|start listening)(?:\\s+please)?(?:[,]?\\s+(?:pan|pam))?[.!]?$")
+    // The name in them is this device's own name for ΠAN when it has one (util/PanName.kt).
+    private val MUTE_CMD get() = dev.pan.app.util.PanName.namePattern().let { n -> Regex("^(?:(?:hey |ok |okay )?$n[,.]?\\s+)?(?:please\\s+)?(?:mute(?: yourself)?|be quiet|shut up|stop listening|quiet)(?:\\s+please)?(?:[,]?\\s+$n)?[.!]?$") }
+    private val UNMUTE_CMD get() = dev.pan.app.util.PanName.namePattern().let { n -> Regex("^(?:(?:hey |ok |okay )?$n[,.]?\\s+)?(?:please\\s+)?(?:unmute(?: yourself)?|wake up|start listening)(?:\\s+please)?(?:[,]?\\s+$n)?[.!]?$") }
     private val STOP_WORDS = Regex("\\b(?:stop|enough|shut up|quiet)\\b")
     // Only a plain report that the last action failed, not any sentence with
     // "not working" in it ("my code is not working" reported a music failure).
@@ -629,6 +630,7 @@ class PanForegroundService : Service() {
         // This device's own personality, sent with every turn (util/Personality.kt). A phone from
         // before 0.5.57 kept the hub's shared text in its settings table: it moves over once.
         dev.pan.app.util.Personality.load(this)
+        dev.pan.app.util.PanName.load(this)
         serviceScope.launch {
             runCatching {
                 if (!dev.pan.app.util.Personality.saved(applicationContext))
@@ -1875,7 +1877,7 @@ class PanForegroundService : Service() {
 
         // Strip "hey pan/pam/ben" prefix so local command matching works
         val stripped = lower
-            .replace(Regex("^(?:hey |hi |ok |okay )?(?:pan|pam|ben|pen)[,.]?\\s*"), "")
+            .replace(Regex("^(?:hey |hi |ok |okay )?" + (if (dev.pan.app.util.PanName.name.isEmpty()) "(?:pan|pam|ben|pen)" else dev.pan.app.util.PanName.namePattern()) + "[,.]?\\s*"), "")
             .replace(Regex("^(?:can you |could you |please )?"), "")
             .trim()
 

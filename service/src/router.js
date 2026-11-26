@@ -26,6 +26,7 @@ import { writeThought } from './thoughts.js';
 import { isBench, benchContext } from './bench-context.js';
 import * as messageMode from './message-mode.js';
 import * as layingOut from './intuition/laying-out.js';
+import { cleanName as cleanPanName, mapName as mapPanName, callsOwnName, nameLine as panNameLine } from './pan-name.js';
 // The model for a problem he laid out over pauses: Claude, through the hub's own Claude login.
 const PROBLEM_MODEL = 'anthropic:claude-sonnet-5-5';
 import { recordTiming } from './voice-timing.js';
@@ -2723,6 +2724,8 @@ async function route(text, context = {}) {
 }
 
 function insertRouterEvent(text, intent, response, context) {
+  // His own words, when his name for ΠAN was read as "Pan" for the turn (pan-name.js).
+  if (context?.said_as) text = context.said_as;
   logEvent(`router-${Date.now()}`, 'RouterCommand', { text, intent, result: response, context });
 }
 
@@ -3235,6 +3238,9 @@ async function* personTurn(text, context, withProsody) {
 // Personality text with every turn (an empty string = off on that device); a turn without one
 // (the desktop, an older app) uses the hub's own setting, as before.
 export function personalityFor(context = {}) {
+  // The device's own name for ΠAN goes with its personality: ΠAN calls itself that (pan-name.js).
+  const named = panNameLine(context.pan_name);
+  if (named) return [named, personalityFor({ ...context, pan_name: '' })].filter(Boolean).join(' ');
   if (typeof context.personality === 'string') return context.personality.trim().slice(0, 600);
   try {
     const row = get("SELECT value FROM settings WHERE key = 'personality'");
@@ -3256,6 +3262,19 @@ export async function* routeStream(text, context = {}) {
     ...(turnPlace ? { participation: turnPlace } : {}) });
   const _turnStart = Date.now();   // for the [routeStream] timing line
   if (context.voice_his === false) alone.heardOther(context.device_id);
+  // This device's own name for ΠAN (pan-name.js, task 1082): read as "Pan" for the turn, so every
+  // rule and the voice model know it. "Pan" itself is then someone else's name, not answered.
+  const ownName = cleanPanName(context.pan_name);
+  if (ownName && !context.said_as) {
+    if (!callsOwnName(text, ownName) && saysPanName(text)) {
+      console.log(`[routeStream] called "Pan", but this device's ΠAN is ${ownName} - quiet: ${JSON.stringify(String(text).slice(0, 60))}`);
+      yield { type: 'chunk', text: '' };
+      yield { type: 'done', result: withProsody({ intent: 'ambient', response: '', addressed: 0.05, importance: 0.1, reason: 'named_other' }) };
+      return;
+    }
+    const mapped = mapPanName(text, ownName);
+    if (mapped !== text) { context = { ...context, said_as: text }; text = mapped; }
+  }
   // The listening modes (listen-mode.js, the owner Nov 24): Listen only, Name only, Mute. The
   // device sends its mode and the person's own words; a mode command or a quiet turn ends here.
   // A quiet turn is still kept (routes/api.js records it) and voice ID still ran on it.
