@@ -3300,6 +3300,18 @@ the path says otherwise.
 
 ### Where he is: what the hub can tell (Nov 26 review)
 
+- **Built the same day (hub Craft 97, app 0.5.56): `intuition/where.js`.** `whereNow` reads the
+  `device_presence` rows of the last hour: a PC row under 90 s old whose `idle_s` (seconds since
+  its last keyboard or mouse input, sent by pan-client from `getIdleSeconds`) puts the last input
+  under 2 min ago is "at the computer (name)"; a phone row with `in_car` (app car mode, a car's
+  Bluetooth or a car unit) or `speed_kmh` of 20 or more in the last 10 min is "in the car"; else
+  the phone's place for 30 min after a voice turn, else "mobile". Newest sign wins, within a
+  minute car beats computer beats phone. `signals.where_kind` carries the kind. Tests:
+  `__tests__/where.test.js` (9). The review notes below describe the state before it.
+- **pan-client Claude probe retries (Nov 26):** `claude --version` gets 20 s (was 5 s; it timed
+  out right after a restart on the G16 and the client said Claude was missing until its next
+  restart), and a failed probe is tried again every 5 minutes.
+
 - **Short version:** nothing on the hub reliably knows "at the PC", "on the phone" or "in the
   car". The one live signal that knows a PC is in use is the pan-client row in
   `device_presence`, and Intuition's `where` does not read it.

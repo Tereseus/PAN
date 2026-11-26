@@ -652,7 +652,7 @@ const _claude = {
   busy:           false,
 };
 
-async function _probeBinary(file, args) {
+async function _probeBinary(file, args, timeoutMs = 5000) {
   return new Promise((resolve) => {
     let out = '', err = '', settled = false;
     try {
@@ -664,7 +664,7 @@ async function _probeBinary(file, args) {
       p.stderr?.on('data', d => err += d.toString());
       p.on('close', (code) => { if (!settled) { settled = true; resolve({ ok: code === 0, stdout: out.trim(), stderr: err.trim() }); } });
       p.on('error', () => { if (!settled) { settled = true; resolve({ ok: false, stdout: out, stderr: err || 'spawn error' }); } });
-      setTimeout(() => { if (!settled) { try { p.kill(); } catch {} settled = true; resolve({ ok: false, stdout: out, stderr: 'timeout' }); } }, 5000);
+      setTimeout(() => { if (!settled) { try { p.kill(); } catch {} settled = true; resolve({ ok: false, stdout: out, stderr: 'timeout' }); } }, timeoutMs);
     } catch (e) { resolve({ ok: false, stdout: '', stderr: e.message }); }
   });
 }
@@ -678,6 +678,7 @@ async function _initLocalClaude() {
     _claude.available = false;
     _claude.lastError = 'claude not on PATH';
     console.log('[ClaudeControl] not available — claude binary not on PATH');
+    _retryLocalClaude();
     return;
   }
   // `where claude` on Windows returns multiple paths — typically the Unix
@@ -696,7 +697,9 @@ async function _initLocalClaude() {
   }
   // Version check via `claude --version`. If this errors, we still report
   // available=false rather than silently letting send calls explode.
-  const ver = await _probeBinary(_claude.binPath, ['--version']);
+  // 20 s: right after a restart on a busy PC the first `claude --version` took over 5 s and the
+  // client then said Claude was missing until its next restart (G16, Nov 26).
+  const ver = await _probeBinary(_claude.binPath, ['--version'], 20_000);
   if (ver.ok) {
     _claude.version = ver.stdout || ver.stderr || 'unknown';
     _claude.available = true;
@@ -705,7 +708,20 @@ async function _initLocalClaude() {
     _claude.available = false;
     _claude.lastError = `version probe failed at ${_claude.binPath}: ${ver.stderr}`;
     console.warn(`[ClaudeControl] version probe failed at ${_claude.binPath}:`, ver.stderr);
+    _retryLocalClaude();
   }
+}
+
+// A failed probe is tried again every 5 minutes, so Claude installed later, or a slow first start,
+// does not leave this PC without it until the client restarts.
+let _claudeRetry = null;
+function _retryLocalClaude() {
+  if (_claudeRetry) return;
+  _claudeRetry = setTimeout(() => {
+    _claudeRetry = null;
+    _initLocalClaude().catch(e => console.warn('[ClaudeControl] retry failed:', e.message));
+  }, 5 * 60_000);
+  _claudeRetry.unref?.();
 }
 
 function sendToLocalClaude(text, timeoutMs = 180_000) {
