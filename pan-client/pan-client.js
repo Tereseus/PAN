@@ -1172,10 +1172,49 @@ function inferActivity(title) {
   return 'active';
 }
 
+// Seconds since the last keyboard or mouse input on this computer, or null when unknown. The hub
+// only counts a computer as where he is when it was touched in the last two minutes
+// (service/src/intuition/where.js, Nov 26): a window title alone said "coding" all night.
+function getIdleSeconds() {
+  try {
+    if (PLATFORM === 'win32') {
+      const script = `
+        Add-Type @"
+          using System;
+          using System.Runtime.InteropServices;
+          public class PanIdle {
+            [StructLayout(LayoutKind.Sequential)] public struct LII { public uint cbSize; public uint dwTime; }
+            [DllImport("user32.dll")] public static extern bool GetLastInputInfo(ref LII p);
+            public static uint Ms() { LII l = new LII(); l.cbSize = (uint)Marshal.SizeOf(l); GetLastInputInfo(ref l); return (uint)Environment.TickCount - l.dwTime; }
+          }
+"@
+        [PanIdle]::Ms()
+      `.trim();
+      const out = execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', script],
+        { timeout: 3000, windowsHide: true }).toString().trim();
+      const ms = Number(out);
+      return Number.isFinite(ms) ? Math.round(ms / 1000) : null;
+    } else if (PLATFORM === 'linux') {
+      const out = execSync('xprintidle 2>/dev/null', { timeout: 2000 }).toString().trim();
+      const ms = Number(out);
+      return out && Number.isFinite(ms) ? Math.round(ms / 1000) : null;
+    } else if (PLATFORM === 'darwin') {
+      const out = execSync(`ioreg -c IOHIDSystem | awk '/HIDIdleTime/ {print int($NF/1000000000); exit}'`, { timeout: 2000 }).toString().trim();
+      const s = Number(out);
+      return out && Number.isFinite(s) ? s : null;
+    }
+  } catch {}
+  return null;
+}
+
 async function sendPresence() {
   try {
-    const screenTitle = await getActiveWindow();
-    const activity = inferActivity(screenTitle);
+    // The window title goes to the hub only while share_window_title is not false in the config
+    // (the review of Nov 26: it was sent every 30 s with no way to turn it off). The idle time
+    // always goes: it says when the computer was last touched, not what is on it.
+    const shareTitle = config.share_window_title !== false;
+    const screenTitle = shareTitle ? await getActiveWindow() : null;
+    const activity = shareTitle ? inferActivity(screenTitle) : 'active';
     const userId = config.owner || NAME;
     await httpRequest('POST', '/api/v1/client/presence', {
       device_id: DEVICE_ID,
@@ -1184,6 +1223,7 @@ async function sendPresence() {
       screen_title: screenTitle,
       confidence: screenTitle ? 70 : 20,  // lower confidence if we only have heartbeat-level data
       platform: PLATFORM,
+      idle_s: getIdleSeconds(),
     });
   } catch {}  // non-critical — don't crash heartbeat loop
 }

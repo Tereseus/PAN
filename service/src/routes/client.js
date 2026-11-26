@@ -486,10 +486,12 @@ router.post('/push-update', async (req, res) => {
 // Lightweight presence signal from pan-client devices. Called every 30s.
 // Body: { device_id, user_id, activity, screen_title, confidence, platform }
 router.post('/presence', (req, res) => {
-  const { device_id, user_id, activity, screen_title, confidence, platform } = req.body || {};
+  const { device_id, user_id, activity, screen_title, confidence, platform, idle_s } = req.body || {};
   if (!device_id) return res.status(400).json({ ok: false, error: 'device_id required' });
   try {
-    upsertDevicePresence({ device_id, user_id, activity, screen_title, confidence, platform });
+    // idle_s: seconds since the PC's last keyboard or mouse input (pan-client, Nov 26), so a PC left
+    // on is not taken as him being there (intuition/where.js).
+    upsertDevicePresence({ device_id, user_id, activity, screen_title, confidence, platform, idle_s });
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });

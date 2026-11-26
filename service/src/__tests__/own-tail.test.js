@@ -76,7 +76,9 @@ test('told to mute', () => {
     'Pan, mute mute yourself, Pan.', 'Wait, hold on. Mute yourself.', 'Shut up.', 'Okay Pan, stop listening please.', 'mute',
     'Can you mute yourself for a bit?', 'Pan, could you please be quiet for a minute.',
     'Pan, mute yourself. The car is somehow not connecting, the whole head unit keeps saying it is not connected and the internet is slow.',
-    'And I told you to mute yourself.', 'Pan, I told you to mute yourself.', 'I already told you to be quiet.']) {
+    'And I told you to mute yourself.', 'Pan, I told you to mute yourself.', 'I already told you to be quiet.',
+    "That's it. Han, mute yourself. Uh version two and likely not almost certain, okay. The parts are standard and two small capacitors have to be tuned to the coil.",
+    'That is here. Pan, mute yourself. Where is your hardware?']) {
     eq(asksToMute(line), true, line);
   }
 });
@@ -85,7 +87,8 @@ test('not told to mute', () => {
   for (const line of ['My commute was long.', 'He told me to shut up.', 'Can you mute the television?', 'Mute yourself when the movie starts and tell me what time it is.',
     'How do I mute a tab in Firefox?', 'I had to be quiet in there.', '',
     'Mute yourself. Then tell me the time and the weather and what is on the calendar today, and read me my messages.',
-    'Pan, what time is it. Mute yourself when the movie starts.', 'She said I told you to mute yourself in the meeting yesterday.']) {
+    'Pan, what time is it. Mute yourself when the movie starts.', 'She said I told you to mute yourself in the meeting yesterday.',
+    'Han Solo was the pilot. He told the crew to be quiet. Then the ship jumped to light speed and everyone cheered.']) {
     eq(asksToMute(line), false, line);
   }
 });

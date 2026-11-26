@@ -412,8 +412,12 @@ function recordVoiceTurn(req, { text, result, deviceId, turnId, sensors }) {
     // computers. A turn PAN answered means he is talking to it on the phone.
     if (deviceId && answered) {
       import('../intuition/index.js').then(({ upsertDevicePresence }) => upsertDevicePresence({
-        device_id: deviceId, user_id: 'owner', activity: 'talking to PAN',
+        device_id: deviceId, user_id: 'owner', activity: sensors?.car ? 'in the car' : 'talking to PAN',
         screen_title: sensors?.phone?.gps?.address || null, confidence: 80, platform: 'android',
+        // The app's car mode (a car's Bluetooth, or it is a car unit) and the GPS speed in km/h
+        // (Android gives m/s): intuition/where.js tells the car from the desk with them (Nov 26).
+        in_car: !!sensors?.car,
+        speed_kmh: Number.isFinite(Number(sensors?.phone?.gps?.speed)) ? Number(sensors.phone.gps.speed) * 3.6 : null,
       })).catch(() => {});
     }
   } catch (e) { console.warn('[query/stream] recording the voice turn failed:', e.message); }

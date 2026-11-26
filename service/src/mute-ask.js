@@ -10,7 +10,8 @@
 // commute was long" and "he told me to shut up" do nothing. It may be the last sentence of a
 // short line ("Wait, hold on. Mute yourself.").
 
-const NAME = /(?:pan|pam|pann)/.source;
+// "Han": the hub's transcript of "Pan" in the car (Nov 26, "Han, mute yourself" three times, not muted).
+const NAME = /(?:pan|pam|pann|han)/.source;
 const COMMAND = new RegExp(
   /^(?:(?:uh+|um+|hey|ok|okay|oh|so|alright|now|just),?\s+)*/.source
   + `(?:${NAME},?\\s+)?`
@@ -30,8 +31,10 @@ export function asksToMute(text) {
   if (!sentences.length) return false;
   // Named and said first, as its own sentence: "Pan, mute yourself." followed by more talk was
   // answered three times and never muted (Nov 21), because only the last sentence was checked.
-  const first = sentences[0];
-  if (NAMED_FIRST.test(first) && (COMMAND.test(first) || AGAIN.test(first))) return true;
+  // Any sentence, not only the first: in the car (Nov 26) he read a long text aloud with
+  // "That's it. Pan, mute yourself." in front, and the first sentence was not the command. A
+  // sentence that is only the name and the command is never part of other talk.
+  if (sentences.some((one) => NAMED_FIRST.test(one) && (COMMAND.test(one) || AGAIN.test(one)))) return true;
   if (sentences.length > 4) return false;
   if (String(text).trim().split(/\s+/).length > 16) return false;
   const last = sentences[sentences.length - 1];

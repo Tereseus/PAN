@@ -62,6 +62,7 @@ import { may, refusal } from './people.js';
 import { ringing, ringQuestion, wantsStop, stoppedWords } from './ringing.js';
 import { alone } from './alone.js';
 import { messageTurn, parseMessage } from './person-messages.js';
+import { asksAboutPast, talkCovers, noRecordAnswer } from './recall-gate.js';
 
 // Recall-intent sniff — only when text matches this do we run a DB lookup on
 // the first pass. Pure conversation never touches FTS5/vector. See task #744
@@ -1397,7 +1398,7 @@ async function handleUnified(text, context) {
   // actually needs facts, and processUnifiedResult handles that path (line 495+).
   // Only the explicit recall sniff bypasses the gate on the first pass.
   let memoryContext = '';
-  if (RECALL_RE.test(text)) {
+  if (asksAboutPast(text, RECALL_RE)) {
     // #461: searchMemory stalls indefinitely when ollama/embeddings are degraded,
     // freezing the whole voice turn past the phone's 30s stream cap (a complex 2nd
     // question hung here and returned null/empty). Bound it — degrade to "answer
@@ -3433,7 +3434,9 @@ export async function* routeStream(text, context = {}) {
   // #NEW-1: intent-gated memory lookup (mirror of handleUnified). Pure
   // conversation never touches FTS5/vector; only explicit recall sniff does.
   let memoryContext = '';
-  if (!interpreting && RECALL_RE.test(text)) {
+  // A question about the past, not a story with the same words in it (recall-gate.js): "You
+  // won't believe what happened today" searched memory and got "nothing recorded about believe".
+  if (!interpreting && asksAboutPast(text, RECALL_RE)) {
     // #461: bound the recall search on the streaming voice path — a degraded /
     // stalled ollama (e.g. the embedding backfill loading the Mini PC) makes
     // searchMemory hang, which freezes the whole voice turn BEFORE the first
@@ -3457,9 +3460,12 @@ export async function* routeStream(text, context = {}) {
     // it is given, a memory block is only noise. In a talk "what did I say" means this talk,
     // however he words it: "what did I say went wrong last time" named nothing in it, and got
     // his notes instead of the salt (conversation test, 2026-11-05).
-    const inTalk = !when && (_historyNames(text, context.conversation_history)
+    // A named day does not skip the talk: "the song I wrote last night", named four turns up,
+    // got "nothing recorded about title from yesterday" (Long conversation test, 2026-11-26).
+    const inTalk = (!when && (_historyNames(text, context.conversation_history)
       || (talking && ASKS_BACK.test(String(text)))
-      || (!!String(context.conversation_history || '').trim() && ABOUT_THIS_TALK.test(String(text))));
+      || (!!String(context.conversation_history || '').trim() && ABOUT_THIS_TALK.test(String(text)))))
+      || talkCovers(_subjectTerms(text), context.conversation_history);
     try {
       if (inTalk) {
         console.log(`[routeStream] recall subject is in the conversation - no memory search: ${JSON.stringify(text.slice(0, 50))}`);
@@ -3511,11 +3517,11 @@ export async function* routeStream(text, context = {}) {
     if (memResults.length > 0) {
       const head = when ? `\nHis own notes from ${when.label}:` : `\nRelevant memories:`;
       memoryContext = `${head}\n${memResults.map(r => `- ${(r.event && r.event.created_at ? r.event.created_at.slice(11, 16) + ' ' : '')}${String(r.preview).replace(/[\s]+/g, ' ').slice(0, 150)}`).join('\n')}`;
-    } else if (inTalk || (!when && _historyMentions(text, context.conversation_history))) {
+    } else if (inTalk || _historyMentions(_subjectTerms(text).join(' '), context.conversation_history)) {
       // It is in the conversation he is having right now, which the model is given
       // below. No memory block: "found nothing, say so" would make it refuse.
       memoryContext = '';
-    } else if (when || OWN_HISTORY_RE.test(text)) {
+    } else if ((when || OWN_HISTORY_RE.test(text)) && noRecordAnswer({ when, history: context.conversation_history })) {
       // ANSWER THIS IN CODE. Do not ask the model.
       //
       // A prompt instruction is not enough. With an explicit "MEMORY SEARCH
@@ -3533,21 +3539,25 @@ export async function* routeStream(text, context = {}) {
       // shared-history pronoun, so world questions never reach this.
       // Name the subject when there was one, or "nothing recorded from today"
       // reads as though the whole day were blank.
-      const nothing = when
-        ? (subjectTerms.length
-            ? `I don't have anything recorded about ${subjectTerms[0]} from ${when.label}.`
-            : `I don't have anything recorded from ${when.label}.`)
-        : `I don't have anything saved about that.`;
+      // Only with no talk going on (noRecordAnswer): mid-talk the model reads the talk, below.
+      // Never one word of his line as the subject: it said "about believe", "about title".
+      const nothing = noRecordAnswer({ when, history: context.conversation_history });
       console.log(`[routeStream] no readable memory for a past-question — answering honestly without the model: ${JSON.stringify(text.slice(0, 60))}`);
       yield { type: 'chunk', text: speakable(nothing) };
       yield { type: 'done', result: withProsody({ intent: 'memory', action: 'recall', response: nothing, addressed: 1, importance: 0.4 }) };
       return;
     } else {
       const what = when ? `from ${when.label}` : `about that`;
-      memoryContext = `\nMEMORY SEARCH FOUND NOTHING ${what.toUpperCase()}.`
-        + `\nYou have no record of it. Say so plainly and ask him which thing he means.`
-        + `\nDo NOT answer from general knowledge, and do NOT explain what the words might mean —`
-        + ` he is asking about HIS OWN work, so anything you invent is wrong.`;
+      memoryContext = String(context.conversation_history || '').trim()
+        // A talk is going on: the answer may be in it in other words ("who was upset" about "my ex
+        // said I was too distracted"). The model reads it; nothing else may fill the gap.
+        ? `\nHIS SAVED MEMORY HAS NOTHING ${what.toUpperCase()}.`
+          + `\nIf the conversation above answers it, answer from the conversation.`
+          + ` If it does not, say plainly that you don't know and ask him. Never invent it.`
+        : `\nMEMORY SEARCH FOUND NOTHING ${what.toUpperCase()}.`
+          + `\nYou have no record of it. Say so plainly and ask him which thing he means.`
+          + `\nDo NOT answer from general knowledge, and do NOT explain what the words might mean —`
+          + ` he is asking about HIS OWN work, so anything you invent is wrong.`;
     }
   }
 
@@ -4613,7 +4623,7 @@ answer an earlier question, and do not narrate what the context blocks mention.`
         // 2026-11-03). Nothing it finds is heard once the reply has streamed, so a reply already
         // out stands, whatever it came from. A named day still searches.
         const spoken = String(spokenReply ?? parsed.response ?? '').trim();
-        if (!when && lastLen > 0) {
+        if (lastLen > 0 && (!when || talkCovers(_subjectTerms(text), context.conversation_history))) {
           console.log(`[routeStream] recall already answered: ${JSON.stringify(spoken.slice(0, 80))}`);
           yield { type: 'done', result: withProsody({ ...parsed, addressed, response: spoken }) };
           return;

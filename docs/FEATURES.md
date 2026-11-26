@@ -11,6 +11,311 @@ Rules:
 
 ---
 
+## Feature index
+
+Every feature in this file, by area, so it can be found by skimming. Many features live inside
+dated notes, not under a heading of their own; for those the index gives the heading and then,
+in quotes, the start of the bold bullet title to search for. Short names used below:
+
+- **Syrinx** = the section "Voice student model (Syrinx, formerly OmniΠ)" (the long dated notes
+  of hub and app work, Nov 3 to Nov 25).
+- **Phone voice** = "Phone voice (text to speech)".
+- **Hub voice path**, **Phone app**, **Hub platform** = the sections "... (entries added Nov 26
+  review)".
+- **Car unit** = "Car unit (the head unit in the car)".
+
+Added Nov 26 2026 from a review of the app, the hub voice path and the hub platform. When you
+add a feature, add its line here too.
+
+### Phone app
+
+- **Tabs: Home, People, Memory, Settings**: the app's layout since 0.5.1. Syrinx: "App 0.5.1: three tabs", "People tab (app 0.5.17"
+- **Home typing box** (`TYPED_LINE`), live words: Syrinx: "One box for typing, on Home and in a conversation"
+- **Home shows the hub's words for his line** (`correctUserLine`): Syrinx: "App 0.5.2 (versionCode 131"
+- **Reply times on lines**, tap for where the time went: Syrinx: "App 0.5.7 (versionCode 136"
+- **"Not for ΠAN" note on Home** (`notForPanNote`): Syrinx: "App 0.5.5 (versionCode 134"
+- **No blank reply lines**: Syrinx: "App 0.5.4 (versionCode 133"
+- **No-answer sentences** (`NoAnswer`: not paired, no internet...): Syrinx: "What a stranger's phone would have hit" > "Three sentences where there was one"
+- **Never paired: Home says so**, "Scan the code": Syrinx: "What a stranger's phone would have hit" > "Never paired: Home says so"
+- **Memory tab behind fingerprint, PIN with no fingerprint** (`PinRule`): Syrinx: "App 0.5.1: three tabs"; "App 0.5.41" > "Memory opens with a PIN"
+- **Forgetting in Memory also clears the talk on Home**: Phone app
+- **Settings as pages, Developer options, Stop / Force Restart**: Syrinx: "A child's messages, and Settings as pages"; "App 0.5.0 (versionCode 129"
+- **Sound Effects and Vibration switches**: Syrinx: "App 0.5.0 (versionCode 129" (4)
+- **Sounds: only mute makes one** (Tone.kt; app 0.5.56, Nov 26): Phone app
+- **Personality box** ("How ΠAN talks"): Phone app
+- **Device name** (`X-Device-Name`): Phone app
+- **Incognito survives a restart** (`ScopeHolder`): Syrinx: "App 0.5.0 (versionCode 129" (1)
+- **Notification text** (listening, connection, Mute / Unmute, Stop talking): Syrinx: "App 0.5.2 (versionCode 131"
+- **People tab**: groups, others, messages, read out switch, child's messages, mute in People: Syrinx: "People tab (app 0.5.17", "Two parts, groups and other names", "Calls and the read out switch", "Met in People", "A child's messages", "One drop down, a plain list", "Mute wherever a call can be made"
+- **Calls between people**: call strip, ringing, answer and decline from the notification: "The voice itself in a call"; "A call with a whole group"; Syrinx: "A call from anywhere", "A call carries the voice", "The owner's first real call"
+- **A call when the network drops** (15 s): Syrinx: "What a stranger's phone would have hit" > "A call when the network drops"
+- **A stuttered "hang up" ends the call**: Syrinx: "What a stranger's phone would have hit" > "A stuttered"
+- **People met** (`MeetCard`): "People met: someone with their own ΠAN"
+- **A person other than the owner on their own device**: Syrinx: "A person other than the owner can talk to ΠAN"; "A person's device leaves the owner's things alone"
+- **A person's words stay out of the owner's log**: Syrinx: "What a stranger's phone would have hit" > "A person's words stay out"
+- **Hub screens in the app** (Services, Intuition, Models tab, Machines): Syrinx: "Hub, the app's own screens", "Hub dashboard, fewer tabs"; "Voice picks and the smartness test" > "Machines"
+- **Send a report, last crash, voice timing, voice speed**: Phone voice: "Voice timing, voice speed, a Models tab and Send a report"
+- **Claude Code approvals as notifications** (Allow / Deny): "Claude Code approvals (permission prompts on the phone)"
+- **Notes on the phone**: Slack replies, alerts, spoken notes, call rings: Phone app; hub side "Notes for a device"
+- **Stop a ringing timer or alarm by voice** (`Ringing.kt`): Hub voice path
+- **Things the phone does by itself**: flashlight, media keys, battery: Phone app; Syrinx: "What a stranger's phone would have hit" > "The flashlight needs the command"
+- **Battery answer only for a real level** (app 0.5.56, Nov 26): Phone app > "Things the phone does by itself"
+- **Calendar and email asks on the old route**: Phone app
+- **"Where am I" goes the normal way**: Syrinx: "App 0.5.6 (versionCode 135"
+- **Questions about past talks go to memory search**: Phone app
+- **Music and directions from a reply** (ResistanceClient): Phone app
+- **Camera**: phone shortcut (`CameraAsk`), back camera, photo answers, talk photos: Syrinx: "Phone shortcut", "Photo answers", "Camera"
+- **Where a look came from** (pendant or phone camera): Syrinx: "Where a look came from"
+- **Camera pendant link over BLE** (`PendantBle`): Phone app
+- **Pendant mic over BLE** (`PendantMic`): Phone voice: "Pendant mic"
+- **What the phone senses goes with every turn** (`SensorContext`): Phone app
+- **Phone Sensors list**, mute is the mic only: "Phone Sensors list"
+- **Location every 30 s and 25 m; address lookup off the main thread**: Syrinx: "App 0.5.41" > "Location"; "What a stranger's phone would have hit" > "The address lookup is off the main thread"
+- **Accessories** (glasses, headphones, watch, Medallion): "Accessories"
+- **Assistant button** (`VoiceAssistActivity`, `ADDRESS_PAN`): "Assistant button"
+- **Screen control** (accessibility service, owner devices only): Syrinx: "Screen control: a command goes to one named device", "Screen control on real open source web apps", "Screen control: ticked state"
+- **Interpreter on the phone** (`InterpreterLoop`, QuickMt, Greek ear): Syrinx: "Interpreting" > "On the phone, no hub and no language model", "The Greek ear", "quickmt"
+- **Interpreting badge, STOP_INTERPRETING, credits page**: Syrinx: "App 0.5.8 (versionCode 137", "App 0.5.10 (versionCode 139"
+- **Japanese reading on lines** (romaji, word meanings): Syrinx: "App 0.5.9 (versionCode 138"
+- **Interpreting extras**: volume to 4/5, a voice per person (`VoiceBook`), everyday Japanese, pieces while talking, ΠAN to ΠAN (`PeerLink`), language per person, wrong language guards, short first piece, `LineClauses`: Phone voice (bullets of those names)
+- **Self update** (`UpdateChecker`, sha256, resume, one check at a time): "Android self-update"
+- **Update at launch only on unmetered network, not in a call** (`UpdatePolicy`): Syrinx: "The owner's first real call" > "The 219 MB update"
+- **Updates over Tailscale; 404 means nothing newer; progress bar**: Syrinx: "Updates download over Tailscale, not PAN Link"; "What a stranger's phone would have hit" > "Updates"; "Nobody sees Tailscale; update progress bar"
+- **Speech models and ΠAN's voice inside the app**: Syrinx: "What a stranger's phone would have hit" > "The models that hear are inside the app"; "ΠAN's voice is inside the app"
+- **Staying alive**: boot start, wake lock, registration, starts muted: Phone app
+- **Full CPU speed for a voice turn** (`CpuBoost`): Phone app
+- **The power button stops ΠAN talking**: Phone app
+- **Transcripts queued for the hub** (`SyncManager`): Phone app
+- **16 KB page aligned native libraries**: Syrinx: "Music in the room, YAMNet"
+
+### Car unit
+
+- **Car mode**: the phone does the work, the car is its speakers, music ducks: Syrinx: "Car mode on the phone"
+- **Car unit self update by patches** (`pan-update.sh`): Syrinx: "App updates as small patches, and the car unit updates itself"; Car unit
+- **Scripts on the unit and `ADB_LIBUSB=0`** (a phone on its USB no longer stops ΠAN; Nov 26): Car unit
+- **Test bench without a car** (`TEST_CAR`): Syrinx: "Test bench without a car"
+- **The link restarts itself after a network change** (USB tether to hotspot): Phone app
+- **Assistant button from the steering wheel**: "Assistant button"
+
+### Voice in: hearing
+
+- **Streaming ear on the phone** (zipformer, Sherpa) and the Google engine switch (`STT_ENGINE`): "Phone end-of-turn detection (Smart Turn)"; Phone app > "Debug actions"
+- **Hub re-transcription** (Parakeet, SenseVoice, Whisper; mu-law upload): "Hub re-transcription (Parakeet)"; Syrinx: "Fixes from his Nov 14 afternoon"
+- **A turn the device could not write down goes to the hub** (`UNHEARD`): Syrinx: "App 0.5.52 (versionCode 181)"
+- **Tentative no-words clip; cancelled turn stays silent** (`turn-slots.js`): Syrinx: "A no-words clip no longer throws away the question"
+- **Turns ordered by send time**: Syrinx: "Fixes from the first car talk on app 0.4.125"
+- **Music in the room** (YAMNet, `media_playing`): Syrinx: "Music in the room, YAMNet"; "Fixes from his Nov 14 afternoon"
+- **Whose voice** (`voice-id.js`, profile learns by itself): Syrinx: "Voice reader (2026-11-05)" > "Whose voice (2026-11-12)"
+- **A person's device takes only its person's voice; one line on two devices**: "Whose voice on a person's device"
+- **Repeat guard** (3 s): Phone app > "Repeat and echo guards"
+
+### Voice in: end of turn
+
+- **Smart Turn**: "Phone end-of-turn detection (Smart Turn)"
+- **Faster end of turn, optional "mm-hm"**: Syrinx: "Faster end of turn, and an optional"
+- **Flow mode and the strong turn override**: Phone app
+- **Carry on: words after a pause join the turn** (`CARRY_ON_MS`): Syrinx: "ΠAN stays quiet while the dictation hotkey records"
+- **Reply waits while he is still talking** (`reply_wait`, `turnOpen`): "Phone mic (LIVE)"
+- **Held reply** (`hold_ms`): Syrinx: "Told, not asked"; Hub voice path > "Who a line is for"
+
+### Voice in: echo and own voice
+
+- **ΠAN's own words taken out of what the phone hears** (`stripEcho`): Phone app; Syrinx: "Test bench without a car" (4)
+- **Echo cooldown after ΠAN stops** (300 ms): Phone app > "Repeat and echo guards"
+- **Words said before ΠAN began are not echo** (`turnHeardBeforePan`): "Phone mic (LIVE)"
+- **The Android voice counts as ΠAN talking**: "Phone mic (LIVE)"
+- **The phone's audio mode while ΠAN talks** (call mode, echo canceller): Phone app
+- **ΠAN does not answer its own voice** (hub, `pan_own_voice`): Syrinx: "PAN does not answer its own voice"
+- **ΠAN's last words at the head of his line** (`own-tail.js`): Syrinx: "Fixes from the car talk of Nov 18" (1)
+- **A clip that is only ΠAN's own last words is dropped**: Hub voice path
+
+### Voice in: interruptions
+
+- **Words stop ΠAN; "yeah" and humming do not; hold, then decide**: Syrinx: "Words stop ΠAN", "Yeah and humming never stop ΠAN", "Stop works on a real phone"
+- **Old cutting in rule** (superseded): "Phone mic (LIVE)" > "Cutting in"
+- **The power button stops ΠAN talking**: Phone app
+- **Stop words while ΠAN talks** (`STOP_WORDS`): Phone app > "Spoken mute and unmute"
+
+### Voice in: mute and listening modes
+
+- **Listening modes** (Normal, Listen only, Name only, Don't remember, Mute): "Listening modes"
+- **One mic switch** (`TOGGLE_MIC`); unmute listens at once (`warmUp`): "Phone mic (LIVE)"
+- **Mic after a restart claims the microphone service type**: Syrinx: "What a stranger's phone would have hit" > "The mic after a restart"
+- **Spoken mute and unmute on the phone** (whole line only): Phone app
+- **Mute on the hub** (`mute-ask.js`, `mute: true`): Syrinx: "Fixes from the car talk of Nov 18" (4)
+- **Mute words in any sentence, and "Han"** (Nov 26, live on hub Craft 97): Hub voice path
+- **`[MUTE]` from the voice model**: Syrinx: "Voice model round 24 live"
+- **Dictating to Claude keeps ΠAN quiet** (`CLAUDE_QUIET_MIN_PAN`), dictation hotkey: Syrinx: "Dictating to Claude no longer mutes PAN", "Dictating to Claude", "ΠAN stays quiet while the dictation hotkey records"
+
+### Hub voice path: who a line is for
+
+- **Who a line is for decides when words leave the hub** (`to`, `addressed`, hold): Hub voice path
+- **Quick paths before any model** (`quickAmbientCheck`, `serverClassify`): Hub voice path
+- **Participation and the firm rules** (`named_other`, `long_line_room`, `backchannel`): Syrinx: "Participation", "Turn book and nightly learner", "Two silences right after it"
+- **Other voice stays quiet** (`other_voice`): Syrinx: "Voice reader" > "Whose voice"
+- **Asked again when he is alone with ΠAN** (`alone.js`): Hub voice path
+- **Ambient veto on a named line** (`saysPanName`, `PAN_SOUND`): Syrinx: "Voice reader" > "Whose voice"; "Two silences right after it"
+- **Lowest bar while in a talk** (`minPan`): Syrinx: "Participation"; "In a talk (2026-11-05)"
+- **Reader probe in the done result** (`p_pan`, `to_top`): Syrinx: "Voice reader"
+- **Turn book, surprise, p_for_pan in shadow**: Syrinx: "Turn book and nightly learner", "p_for_pan in shadow", "p_for_pan v2 in shadow"
+- **Every quiet verdict says why; answering path logged**: Syrinx: "Hub, Nov 17 (Craft 83 to 86"; "Two silences right after it"
+- **Told, not asked** (sent as a hold): Syrinx: "Told, not asked"
+- **Assistant button forces an answer** (`addressed_now`): "Assistant button"
+- **Listening mode on the hub** (`modeTurn`): "Listening modes"
+- **Person turn** (`personTurn`, `people_limits`): Syrinx: "A person other than the owner can talk to ΠAN"
+- **Call lines to the other person, answer shared in a call**: "Messages between people on one ΠAN"; "A call with a whole group"; "In a call: saying no, and ΠAN answering for both"
+- **Messages and calls to a person said by voice**: "Messages between people on one ΠAN"
+- **Thread relay**: voice to any Claude Code thread, names, numbers: "Thread Relay"; Syrinx: "Thread names said out loud", "Threads by number", "Asking for a message to a thread, two more ways", "Fixes from the car talk of Nov 18" (2)
+- **His line is scrubbed before any prompt** (`anonymizeForAI`): Hub voice path
+- **A voice turn that fails still says something, and raises an alert**: Hub voice path
+- **Cancel a stream** (`/cancel`): Hub voice path
+
+### Hub voice path: lookups
+
+- **Voice lookup tools** (weather, currency, crypto, news, world clock, arithmetic, live vs not): "Voice lookup tools"
+- **Money, coins, dates, units, any town's time worked out by code**: Hub voice path
+- **World questions to the bigger model** (`asksTheWorld`): Syrinx: "Questions about the world go to the bigger model"
+- **World questions looked up through the hub's own browser** (`web-lookup.js`): Hub voice path
+- **A follow up on a world question goes the same road**: Hub voice path
+- **Offline Wikipedia first, kept current; search again**: "Voice picks and the smartness test" > "Offline Wikipedia first", "Wikipedia stays current", "Search again"
+- **A question that names one of his things** (shelf notes): Hub voice path
+- **Situation line** (place, daylight, weather, his screens): "Voice situation line: place, daylight, weather"; Syrinx: "Fixes from his Nov 14 morning talk, part 2" (`warmedSituation`)
+- **The brief** (`voice_brief`): Syrinx: "The brief"
+- **Live data short prompt, figures kept**: Syrinx: "Live data"; "Voice lookup tools" > "Arithmetic"
+- **About itself and about him** (`selfPrompt`, `identityAsked`): Syrinx: "About itself and about him"; "Voice model round 15 live"
+- **His own chances** (`kindPrompt`): Syrinx: "His own chances"
+- **Lost or asking about this talk; `about_him` only when touched**: Syrinx: "Fixes from his Nov 15 talks"
+- **Follow up line** (`followUpOf`): Syrinx: "Follow-up questions (2026-11-08)"
+- **Word search mid sentence** (stuck on a word): Syrinx: "Stuck on a word"
+- **Camera asked for** (`camera-ask.js`, `[CAMERA]`): Syrinx: "Camera", "Hub check", "`[CAMERA]` when no photo can be taken"
+- **Photo reader**: Syrinx: "Photo reader"
+- **Photo follow up gets what the photo showed** (`photoInFocus`): Syrinx: "Photo answers"
+- **Interpreting on the hub** (standing instruction, translators, own script): Syrinx: "Interpreting"; "An interpreted line carries its language to the voice"
+- **Reading of a foreign line** (`/reading`): Syrinx: "App 0.5.9 (versionCode 138"
+
+### Hub voice path: recall
+
+- **"What did I say..." from the talk; only a question searches memory**: Syrinx: "“What did I say...”", "Only a question searches memory"
+- **How much of the talk it sees** (40 lines, 30 min talk gap): Syrinx: "How much of the talk it sees"; "Fixes from his Nov 14 morning talk, part 2" (2)
+- **History budget** (`fitHistory`): Syrinx: "Voice reader" > "History budget"
+- **Recall by day** (`parseWhen`, `searchMemoryByDate`): Hub voice path
+- **Phone recall endpoints** (`/recall`, `/recall/stream`): Hub voice path
+- **Vector search on its own thread** (loaded 20 s after a Craft starts): Syrinx: "Vector search"
+
+### Hub voice path: models
+
+- **Voice reader** (`reader:` models on :7786, read ahead `/voice/warm`): Syrinx: "Voice reader (2026-11-05)"
+- **Voice box** (a GPU machine), backup: Syrinx: "Voice box (2026-11-04)"
+- **Voice model rounds live** (r15, r18, r24) and their rollbacks: Syrinx: "Voice model round 15 live", "Round 18 is LIVE", "Voice model round 24 live"
+- **Hub model for world questions and handed up lines** (`voice_world_model`, `voice_hub_paths`): Syrinx: "The bigger model can be one on the hub", "Two hub models side by side", "Phi 4 mini is the hub's one thinking model", "Round 18, Nov 17 to 18"
+- **`[THINK]` hand off; reply capped at 3 sentences; repeated opener cut**: Syrinx: "Phi 4 mini is the hub's one thinking model"; "Fixes from the car talk of Nov 18" (5)
+- **Voice model answers only short talk** (off): Hub voice path
+- **The reader stops writing when the turn stops reading it**: Hub voice path
+- **Not copying itself** (`repeat_penalty`); cloud first for short prompts; closing questions cut: Syrinx: "Not copying itself", "Cloud first, but not for long", "Closing questions"
+- **Bench only hub model; voice picks; smartness test**: "Voice picks and the smartness test"
+- **Hub Claude calls on the signed in person's login; cloud fallback carries nothing**: Syrinx: "The hub's own Claude calls use the Claude login", "The cloud fallback carries nothing"
+- **Smart model at install**: Syrinx: "The smart model at install"
+- **The embedder never lands on a machine ΠAN was taken off**: Syrinx: "The embedder never lands"
+- **Models page and Machines**: "PAN Models page (what runs where)"; "Voice picks and the smartness test" > "Machines"
+- **Nightly voice report**: Syrinx: "Nightly voice report"
+- **Phone voice** (Supertonic 3, trim quiet, other scripts, same loudness, Quicken): Phone voice; Syrinx: "The end of a line is no longer swallowed", "ΠAN's voice is inside the app", "The wrong voice can no longer be silent", "A downloaded voice the app never switched to", "One voice for other languages"; Phone app > "Every line at the same loudness"
+- **Translator server** (MADLAD :7784): Syrinx: "Interpreting" > "The translator server"
+
+### Memory
+
+- **Memory search for threads** (`pan_search`, FTS, meaning, notes first): "MCP Server" (full tool list) > Core Tools
+- **Hybrid memory search, backfill**: Hub platform > "Hybrid memory search"
+- **Memory tiers** (semantic, episodic, procedural): Hub platform
+- **Memory as browsable markdown; memory scopes**: Hub platform
+- **Event filters** (never store, never embed): Hub platform
+- **Notes on his things** (`/api/v1/things`, shelf): Syrinx: "Notes endpoints"; Hub voice path > "A question that names one of his things"
+- **Mid-turn text and the Stop hooks**: Hub platform > "Claude Code hooks shipped in the repo"
+- **Session recap backfill, recap as a plain list**: "Craft main-thread stalls" > "Recap watermark", "Recap text is a plain list"
+- **Incognito; Don't remember mode**: "Incognito Sessions"; "Listening modes"
+- **Personal sync and replication, backups**: "Personal Sync & Replication"; Hub platform > "Hub odds and ends"
+
+### Intuition and presence
+
+- **Where he is: what the hub can tell** (PC, phone, car): Hub platform
+- **Device presence** (`device_presence`): Hub platform
+- **Capture consent and the privacy page**: Hub platform
+- **Webcam watcher, screen watcher, remote screen watcher, activity tracker**: "Webcam Watcher", "Screen Watcher", Hub platform > "Remote screen watcher", "Activity Tracker"
+- **ΠAN's Mind thought stream**: "Identity System" > "PAN's Mind"
+- **Life Needs, mood and wellbeing reading, his clock**: "Identity System" > "Life Needs"
+- **ΠAN's reasoning steps**: Hub platform
+- **Interjections and the action engine**: Hub platform
+- **Situation learner**: Syrinx: "Turn book and nightly learner"
+- **Conversation state**: "Conv-State Watcher"
+- **Identity system design** (faces, voices, child detection): "Identity System" (a spec, not yet built); Hub platform > "Face identity clusters"
+- **Zones**: "Zones & Geofencing"
+
+### Devices and network
+
+- **PAN Link**: device identity, pairing codes, the phone, meets in the middle, bulk stall: "pan-link device identity", "PAN Link pairing codes", "PAN Link on the phone"; Syrinx: "PAN Link bulk stall fixed", "PAN Link meets in the middle"
+- **Tailscale keys for phones; nobody sees Tailscale** (`TailscaleRule`): "Tailscale keys for PAN Link phones"; Syrinx: "Nobody sees Tailscale"; "App 0.5.41" > "The app's own Tailscale starts only where it can do something"
+- **The app no longer guesses a hub** (`HubLocator`): Syrinx: "What a stranger's phone would have hit" > "The app no longer guesses a hub"
+- **Notes for a device** (which device gets a note): "Notes for a device"
+- **Device push WebSocket** (no app uses it): "Device push WebSocket"
+- **PAN client names; Ollama watchdog; commands and upkeep**: "PAN client names", "PAN client Ollama watchdog"; Hub platform > "pan-client commands and upkeep"
+- **Device command queue; multi-device routing; smart router**: Hub platform > "Device command queue", "Smart router and action paths"; "Multi-Device Routing"
+- **Hub discovery on the LAN; public tunnel**: Hub platform
+- **Home Assistant**: Hub platform
+- **Sensor toggles and Hard Off**: Hub platform
+- **xiaozhi boards**: "xiaozhi boards"
+- **Screenshot and clipboard uploads**: "Screenshot and clipboard uploads"
+
+### Install
+
+- **Installer smart device naming**: "Installer" (smart device naming)
+- **Smart model at install** (Claude with the person's sign in): Syrinx: "The smart model at install"
+- **Boot profiles** (full, core, wearable; opt in features): Hub platform
+- **App updates as patches; publishing a build** (`publish-apk.py`): Syrinx: "App updates as small patches"
+
+### Dashboard and hub platform
+
+- **Lifeboat (Craft swap), Restart PAN, Dev Restart, Perf panel**: those headings at the top of this file
+- **Carrier observability and swap history; Super-Carrier**: Hub platform; "Super-Carrier Layer"
+- **Steward, Steward services, Smart Steward**: "Steward (server-side)"; Hub platform
+- **Craft main thread stalls, idle loops off, Cerebras removed**: "Craft main-thread stalls"
+- **Beta Pipeline, AutoDev test suites, benchmark schedule**: "Beta Pipeline", "AutoDev Test Suites"
+- **Dashboard watchdog; self heal layers 3 to 5**: "Dashboard Watchdog"; Hub platform
+- **Panel broadcaster** (`/ws/panels`): Hub platform
+- **Web dashboard pages; Atlas V2; Kanban, Timeline, Kronos; Call page**: those headings
+- **Dashboard tabs and project pieces**: Hub platform
+- **Phone page `/mobile/`** (tabs): "Phone dashboard (WebView)"
+- **AI usage stats**: "AI usage stats"
+- **Accounts, roles and tokens; org admin; audit log; impersonate**: Hub platform; "Organization & Multi-Tenancy System"; "Impersonate Widget"
+- **Chat, email, messaging preferences, PAN Notify**: "Chat & Messaging System", "Email System", "PAN Notify"; Hub platform > "Chat endpoints", "Email endpoints", "Messaging preferences"
+- **Project runner; wrapper apps; screen recorder; activity API**: Hub platform
+- **ServiceNow draft loop**: Hub platform
+- **Hub odds and ends** (diagnostics, windows, backups, Atlas data, context): Hub platform
+- **Trust ladder (removed), Skill Learner (removed)**: those headings
+
+### Claude Code integration and hooks
+
+- **Terminal tabs and the Call ΠAN button; Comms call mode and Intuition traces**: those headings at the top of this file
+- **Thread relay**: "Thread Relay"
+- **Claude Code approvals** (PermissionRequest hook): "Claude Code approvals"
+- **Topic brief for Claude threads** (UserPromptSubmit hook): "Topic brief for Claude threads"
+- **Hooks shipped in the repo** (Stop and UserPromptSubmit): Hub platform > "Claude Code hooks shipped in the repo"
+- **Hook replies are an empty 200** (LIVE, Craft 95, Nov 26): Hub platform > "Claude Code hooks shipped in the repo"
+- **Transcript watcher; Claude Control**: Hub platform
+- **MCP server tools** (incl. `pan_log_exchange`, `pan_quality_*`), MCP Apps, where it finds ΠAN: "MCP Server" (full tool list); umbrella MCP over HTTP: Syrinx: "The smart model at install" > "PAN joins Claude"
+- **Terminal sidebar widgets, perf, cost**: "Terminal Sidebar"
+
+### Debug test actions
+
+- **The full list of the app's debug actions**: Phone app > "Debug actions, the full list"
+- **Conversation benchmark** (`TEST_AUDIO`, `TEST_LIVE`, PANEVT events): "Conversation benchmark (voicebench)"
+- **Voice and interpreting benches** (`TEST_TTS`, `TEST_TTS_BENCH`, `TEST_INTERP_BENCH`, `TEST_PEER`, `TEST_PENDANT_MIC`): Phone voice
+- **Car and network tests** (`TEST_CAR`, `TEST_NET_CHANGE`, `TEST_STOP_RINGING`, `TEST_PLAY`): Syrinx: "Test bench without a car", "Music in the room, YAMNet"; Phone app > "The link restarts itself"; Hub voice path > "Stop a ringing timer"
+- **Call tests** (`TEST_CALL_QUIET`, `TEST_OPUS`), meet tests (`TEST_MEET`, `TEST_MEET_CARD`): "The voice itself in a call"; "People met"
+- **Bench no-trace context** (`-bench` devices, `bench-context.js`): "Conversation benchmark (voicebench)"
+- **Smartness test, answer bench, voice report**: "Voice picks and the smartness test"; Syrinx: "Nightly voice report"
+- **Screen control tests** (`service/tests/screen-control/`): Syrinx: "Screen control on real open source web apps"
+
+---
+
 ## Lifeboat widget (dashboard sidebar)
 
 - **Purpose:** Blue/green swap of the **Craft** process only.
@@ -711,8 +1016,12 @@ asks for its notes every few seconds.
 
 ## Device push WebSocket (`/api/v1/device/push`, `server.js`)
 
+- **Status (Nov 26 review):** no app uses it. The app's `DevicePushClient.kt` was never wired
+  and was deleted in app 0.5.40 (Nov 19). Every signal from the hub to a phone is polled
+  (see "Notes for a device" and "Notes on the phone" under "Phone app (entries added Nov 26
+  review)"). The hub side below still runs.
 - **Calls:** an `upgrade` listener in `server.js` (the Craft). The phone's
-  `DevicePushClient.kt` connects with `?device_id=X&device_type=phone`. On the hub
+  `DevicePushClient.kt` connected with `?device_id=X&device_type=phone` (until app 0.5.40). On the hub
   the path runs Super-Carrier → Carrier → Craft: `initCraftUpgradePassthrough()` in
   `carrier.js` passes it through to the primary Craft byte for byte.
 - **Semantics:** answers `{type:'connected'}` on open and `pong` to `ping`;
@@ -867,13 +1176,22 @@ way his balconies face when a doc from Nov 15 already said.
 
 ## Phone dashboard (WebView)
 
+- **Status (Nov 26 review):** the app has no WebView since app 0.5.32 (Nov 18); its Hub
+  screens are native (see "Hub, the app's own screens" under "Voice student model"). The
+  page `/mobile/` still serves any browser.
 - **Purpose:** Phone-sized mirror of the desktop dashboard.
 - **Source:** `service/public/mobile/index.html` (static HTML, no build step).
+- **Tabs:** Status, Chat, Tasks, Projects, Devices, Services, Sensors, Intuition, Alerts,
+  Dashboards, Library, Data, Settings. Settings holds the capture switches (see "Capture
+  consent and the privacy page"), incognito, the org switch, the model choice and context
+  reset. Live transcript over `/ws/terminal` (2026-08-05), 3 s poll as the fallback.
+  `POST /dashboard/api/phone-ping` every 2 min keeps a phone with the page open online in
+  `devices`.
 - **Send:** `POST /api/v1/terminal/pipe` with session ID from
   `/api/v1/terminal/sessions`.
 - **Receive:** Polls `/api/v1/terminal/messages/<session_id>` every 3s.
-- **Cache:** WebView nukes cache on every load (`LOAD_NO_CACHE` + timestamp
-  bust).
+- **Cache:** the app's WebView nuked its cache on every load (`LOAD_NO_CACHE` + timestamp
+  bust), until app 0.5.32.
 
 ---
 
@@ -1958,7 +2276,7 @@ children can have adult-sounding voices and vice versa).
 - **p_for_pan v2 in shadow (2026-11-23, hub Craft 52).** The turn book also gets `seen.p_for_pan2` (`intuition/for-pan.js` `forPanV2`, weights in `intuition/for-pan-v2.json`): v1's terms plus the tiny model's own reading of the line, the hidden state after layer 15 of SmolLM2-135M averaged over the line's word pieces, which `surprise.js` now returns as `mid` from the same pass (the hub's `model.onnx` got that second output; logits unchanged). Each day left out: log loss 0.285 against v1's 0.385; with misses held at 30 of 412, answers to lines not for PAN 165 against 362 of 923; trained on earlier days only and scored on later ones it held (79 against 140). The 576 numbers are not stored. After the turn, about 100 ms; nothing acts on it. No second output in the model file: `p_for_pan2` stays null. Rollback: hub `*.pre-v2` (routes/api.js, intuition/for-pan.js, intuition/surprise.js) and `models/smollm2-135m/model.pre-mid.onnx`, Craft swap. Numbers: CONVERSATION-ODDS-PLAN.md.
 - **p_for_pan in shadow (2026-11-22, hub Craft 51).** Every real turn written to the turn book now also carries `seen.surprise` (`intuition/surprise.js`: how unexpected the heard line's words are to SmolLM2-135M, Hugging Face, Apache 2.0, exported to ONNX at full precision, 650 MB in `<models>/smollm2-135m/`; mean surprisal per word piece, share of pieces outside the model's top 100 guesses, mean over the first six; about 75 ms on the hub CPU), `seen.p_room` (the voice model's odds of "room" next to "pan", `voice-reader.js` probe) and `seen.p_for_pan` with `for_pan_v` (`intuition/for-pan.js`: one logistic formula over the voice model's log odds, the time since PAN spoke and the surprise, fitted on 1,335 of his judged turns; log loss 0.385 against 0.413 for the odds alone, each day left out). Worked out after the turn in `routes/api.js`, so nothing PAN says waits on it and nothing acts on it yet. Packages: `onnxruntime-node` (MIT), `@huggingface/tokenizers` (Apache 2.0). No model file: both fields stay null. Rollback: the hub's `*.pre-surprise` files (voice-reader.js, router.js, routes/api.js, package.json, package-lock.json), Craft swap. Plan and numbers: CONVERSATION-ODDS-PLAN.md.
 - **Voice model round 24 live (2026-11-22, hub Craft 50).** Setting `voice_student_model` = `reader:syrinx-lfm-r24:latest` (Ollama blob af93a27eb81b). Round 24 learned to answer `[MUTE]` when he tells PAN itself to go quiet, in any language; `router.js` `voiceStream` now ends the turn on it and answers `mute: true` with no words, the same reply `mute-ask.js` gives (a device too old to mute says nothing). Chosen on his own checked turns, not on test talks: reader alone, 155 lines not for PAN and 81 for it, r15 answered 91 and missed 7, r24 answered 68 and missed 6; blind judge on the replies, good 39 against 44. Hub benches: addressed 0.97 to 0.98; conversation bench false speak 0.24 to 0.19, recall 0.49 to 0.35, total p50 2.8 to 2.5 s. Through the whole voice path his lines not for PAN answered 70 (live r15 at the time, with its music and dictation rules, 77); it muted on four of his mute lines that r15 had answered. Rollback: PUT `/api/v1/settings` `{"voice_student_model": "reader:syrinx-lfm-r15:latest"}`, Craft swap, wait for `confirmed`, then end the :7786 reader by PID (the steward relaunches it); router.js.pre-r24 on the hub.
-- **Fixes from the car talk of Nov 18: hub Craft 92 (about 08:35 UTC) and app 0.5.12 (versionCode 141, published on the hub).** Four of the six faults listed under 0.5.11 below, (a) to (d). Rollback: the hub's `router.js.pre-car`, `thread-relay.js.pre-car`, `camera-ask.js.pre-car`, `routes/api.js.pre-car`, and the app pair `app-debug.v140.apk`. (1) **PAN's own voice at the head of his line** (`own-tail.js`, called in `/query/stream` after the hub's transcript is chosen). In the car the mic took the last one to three words of PAN's reply as the start of his next line, each closed by a full stop; a request that followed them no longer read as one. Five of 135 lines in three days. The hub keeps the last reply it sent to each device (`noteSaid`) and takes that tail off the head of the next line (`dropOwnTail`) when: the first words of the line are the last words of the reply, a full stop follows them, and at least two words are left. One word alone is taken only when the timing says his line began before PAN stopped or within 1.5 s (how long ago PAN stopped, minus the length of the turn's audio), and never a word he would say himself (yes, okay, right...). A line that began later is never touched. The app's own filter (`stripEcho`) is unchanged: it wants 80% of PAN's sentence back, which a tail never is. (2) **A thread named anywhere in the line** (`thread-relay.js` `namedAnywhere`). The relay forms wanted the asking at the very start of the line. In the car he asked three times in other shapes (the asking in the middle of a longer line, the thread named first, a complaint that it had not been sent); none matched, the voice model took a photo, then said it had sent the update. Now: a word that asks for something to be passed on (tell, ask, send, push, ping, forward, notify; message, update, pass, relay only as verbs) anywhere in the line, said to PAN and not about himself or the past, plus `<name> thread` where the name is a real thread's at 0.8 or better (the longest run of up to four words before the word thread that matches; a machine after it, as in `on the G16`, limits it to that machine). The whole line goes to the thread, with the last voice turns when the line points back at the talk. Replayed on 618 real heard lines of three weeks: only the car's own asks parse differently. The relay itself was never down: the G16's was polling the whole time. The Mint's relay has not been seen since Nov 16. (3) **A line about a thread is not a look** (`camera-ask.js`): the words for showing PAN a thing no longer ask for the camera when the line names a thread, a session or a conversation. (4) **Mute that mutes** (`mute-ask.js`, `router.js`, app 0.5.12). The device checks its own transcript for the mute command; in the car its ear got the words wrong five times in two days, the line went to the voice model, and it said "Got it" and muted nothing. The hub's transcript had every one right, so the hub checks too (the command is the whole last sentence of a short line, as on the device) and answers `mute: true` with no words; app 0.5.12 mutes on it. An older app says nothing for that turn. (5) **The repeated opener** (`router.js` `plainAsReply`): the round 18 hub model's "Fair point." / "Fair." / "Fair enough." is not said when an answer follows it. A stopgap until a training round caps it. Tests: `__tests__/own-tail.test.js` (9), the old reply cleanup cases plus the opener (15), 16 bench turns through the dev hub and again through the live hub. NOT seen on a device: the mute from the hub (0.5.12) and the tail removal on real car audio. Still open from that talk: (e) the ear's mishearings in the car carried into translation, no Vietnamese voice; (f) asked what should be done next, the hub model answers in general terms, because it knows nothing of the work in the Claude threads; and the hub model saying it did a thing it has no way to do, which the next training round should cover.
+- **Fixes from the car talk of Nov 18: hub Craft 92 (about 08:35 UTC) and app 0.5.12 (versionCode 141, published on the hub).** Four of the six faults listed under 0.5.11 below, (a) to (d). Rollback: the hub's `router.js.pre-car`, `thread-relay.js.pre-car`, `camera-ask.js.pre-car`, `routes/api.js.pre-car`, and the app pair `app-debug.v140.apk`. (1) **PAN's own voice at the head of his line** (`own-tail.js`, called in `/query/stream` after the hub's transcript is chosen). In the car the mic took the last one to three words of PAN's reply as the start of his next line, each closed by a full stop; a request that followed them no longer read as one. Five of 135 lines in three days. The hub keeps the last reply it sent to each device (`noteSaid`) and takes that tail off the head of the next line (`dropOwnTail`) when: the first words of the line are the last words of the reply, a full stop follows them, and at least two words are left. One word alone is taken only when the timing says his line began before PAN stopped or within 1.5 s (how long ago PAN stopped, minus the length of the turn's audio), and never a word he would say himself (yes, okay, right...). A line that began later is never touched. The app's own filter (`stripEcho`) is unchanged: it wants 80% of PAN's sentence back, which a tail never is. Since Nov 25: a line that is only the tail ends the turn at once (see "A clip that is only ΠAN's own last words is dropped" under "Hub voice path (entries added Nov 26 review)"). (2) **A thread named anywhere in the line** (`thread-relay.js` `namedAnywhere`). The relay forms wanted the asking at the very start of the line. In the car he asked three times in other shapes (the asking in the middle of a longer line, the thread named first, a complaint that it had not been sent); none matched, the voice model took a photo, then said it had sent the update. Now: a word that asks for something to be passed on (tell, ask, send, push, ping, forward, notify; message, update, pass, relay only as verbs) anywhere in the line, said to PAN and not about himself or the past, plus `<name> thread` where the name is a real thread's at 0.8 or better (the longest run of up to four words before the word thread that matches; a machine after it, as in `on the G16`, limits it to that machine). The whole line goes to the thread, with the last voice turns when the line points back at the talk. Replayed on 618 real heard lines of three weeks: only the car's own asks parse differently. The relay itself was never down: the G16's was polling the whole time. The Mint's relay has not been seen since Nov 16. (3) **A line about a thread is not a look** (`camera-ask.js`): the words for showing PAN a thing no longer ask for the camera when the line names a thread, a session or a conversation. (4) **Mute that mutes** (`mute-ask.js`, `router.js`, app 0.5.12). The device checks its own transcript for the mute command; in the car its ear got the words wrong five times in two days, the line went to the voice model, and it said "Got it" and muted nothing. The hub's transcript had every one right, so the hub checks too (the command is the whole last sentence of a short line, as on the device) and answers `mute: true` with no words; app 0.5.12 mutes on it. An older app says nothing for that turn. Since Nov 26 (live on hub Craft 97): any sentence of the line that is only the name and the command mutes, and "Han" counts as the name (see "Mute words in any sentence, and Han" under "Hub voice path (entries added Nov 26 review)"). (5) **The repeated opener** (`router.js` `plainAsReply`): the round 18 hub model's "Fair point." / "Fair." / "Fair enough." is not said when an answer follows it. A stopgap until a training round caps it. Tests: `__tests__/own-tail.test.js` (9), the old reply cleanup cases plus the opener (15), 16 bench turns through the dev hub and again through the live hub. NOT seen on a device: the mute from the hub (0.5.12) and the tail removal on real car audio. Still open from that talk: (e) the ear's mishearings in the car carried into translation, no Vietnamese voice; (f) asked what should be done next, the hub model answers in general terms, because it knows nothing of the work in the Claude threads; and the hub model saying it did a thing it has no way to do, which the next training round should cover.
 - **App 0.5.10 published on the hub Nov 18 about 07:37 UTC, then app 0.5.11 (versionCode 140) about 08:15 UTC (the owner: the latest goes on the hub).** 0.5.10 was the first 0.5 build the hub offered, so the car unit could leave 0.4.125 (rollback pairs on the hub: `app-debug.v128.apk` = 0.4.125, `app-debug.v139.apk` = 0.5.10, each with its `output-metadata` file). 0.5.11, from the owner's first talk in the car on 0.5: (1) the Latin letters and word meanings were missing on most Japanese lines. The hub gives a reading for every one of those lines when asked again, so the phone's single request was lost on the road (poor coverage that drive); `attachReading` now tries three times (at once, after 3 s, after 10 s) and writes a line in the shipped log when all three fail. (2) Memory on a device with no fingerprint. The car unit has no reader, so Memory cannot open there. A PIN set in the app was written for that (`ui/memory/Pin.kt`: 4 to 8 digits, salted PBKDF2 hash, rests after five wrong tries) and then SWITCHED OFF the same hour by the owner's call: a device with no fingerprint must not open Memory at all, so a shared screen (a TV, a car) can never search it. `Pin.allowed` is false everywhere and nothing in the app sets it. The code stays for one case only: the owner granting a PIN to one device from his own phone. It must never be a switch on the device itself. Its dialogs have never been seen on a screen. The addressed test after the round 18 switch (`runs\addr_20261117_r18live`): all 0.97, 0 errors, the same as before it. Seen in that car talk and NOT fixed: (a) the tuned hub model opens with "Fair" or "Fair point" again and again when he pushes back; 85 of its 3,611 training answers (2.4%) open that way, nearly all on pushback lines, so the next round must cap an opener like that; (b) the car's mic hears the end of PAN's own voice and puts it in front of his next line, which then no longer reads as an instruction (a request to interpret Cantonese was answered "I can't do that"); (c) asked to send an update to a thread with the words "look at it", the voice model took a photo and described it; (d) asked to mute, it says it has and has not; (e) the ear mishears in the car and the translator carries the wrong word over; a director's name came out as another person's in Cantonese; there is no Vietnamese voice; (f) asked what should be done next, it answers in general terms: it knows nothing of the work in the Claude threads.
 - **Round 18 is LIVE, Nov 18 about 05:00 UTC, and hub Craft 91 (the owner: push it live).** Setting `voice_world_model = ollama:pan-phi-r1:latest` (back: `ollama:phi4-mini:3.8b`, which stays on the hub's disk, unloaded). The model was loaded first, so no turn waited for it. The handed-up lines test through the live path as bench devices: first word 0.4 to 1.2 s once warm, replies short and to the point. Craft 91, `self.js` `handedUpModel` (rollback `self.js.pre-handedup`): asked what it runs on, PAN named the small Gemma, because the facts line named the first model of the cloud chain; with `voice_hub_paths = all` it now names the hub model that answers ("a fine-tune of Microsoft's Phi 4 mini"). Checked on the dev copy, then live. The addressed test was run before the switch (Craft 90, plain Phi: all 0.97, 0 errors) and again after it (`runs\addr_20261117_r18live`).
 - **Round 18, Nov 17 to 18: a tuned Phi 4 mini for the lines the voice model hands up (`pan-phi-r1`), trained and installed on the hub; and hub Craft 90.** Phi 4 mini answered those lines like a help desk and went quiet on lines said to it, and the prompt could not fix that, so it was tuned on PAN's manner: 580 new scenes plus the knowledge, lost, statement and identity scenes of rounds 11 to 17, each handed-up line answered by the 31b teacher in the hub's own prompt (3,810 rows), LoRA rank 16 on Phi-4-mini-instruct (MIT), two epochs, merged, GGUF Q4_K_M as the hub's own copy is. Scored on 637 held-out lines by the 31b on four marks (answers what he said, nothing false, fits the talk, sounds like a friend): all four pass 21% plain, 76% tuned; answers 49 to 93%, fits the talk 36 to 90%, friend 64 to 100%, nothing false 89 to 85% (the weak spot: on the build-on scenes 80 to 68%); quiet on a line said to it 171 to 25; help-desk lines, surveys and repeats 52 to 0. On the owner's 28 real lines of Nov 17 (never trained on): all four 29 to 61%. Same speed (same size, same quantization). Through the real hub path as bench devices (`voice_hub_paths_model = bench=ollama:pan-phi-r1:latest`, so no live turn changed): first word median 1.28 to 1.41 s against 1.30 to 1.33 s plain. Quiet check on 300 real conversation lines in the hub prompt (`quiet18.py --cb`): neither model tells talk for PAN from room talk (that is the voice model's job); the plain one is quiet by kind only (overheard questions 102 of 103, statements 8 of 133), the tuned one is quiet on 47% over all kinds against 37%, so it answers an overheard question the voice model was unsure of about half the time where the plain one almost never did, and is quieter on statements. To put it live: setting `voice_world_model = ollama:pan-phi-r1:latest` (back: `ollama:phi4-mini:3.8b`); the model is in the hub's Ollama, unloaded. Hub Craft 90 (`router.js` `plainAsReply`, rollback `router.js.pre-tidy`): a hub model's spoken reply ends at a square bracket (the tuned model once put the quiet tag after an answer, which would have been read out), and a quote mark left open at the very end is dropped; tested on chunked replies with the hub's own function, on the dev copy, then live. Cost and what went wrong: about $8.50 for a $3.55 run. The first pod had a 3.6 MB/s link, the second hit its stop time unfinished and its disk was then locked on a full machine. What changed in how rounds run: the link is tested first, every step runs on a few rows before the long run (`smoke18.sh`; it caught the GGUF step: llama.cpp's Phi converter needs the base model's own tokenizer files in the merged folder), and every finished stage is copied off the pod at once (`r18/watch18.py`). Files: `F:/pan-finetune/runs/pan-phi-r1.Q4_K_M.gguf` (sha256 c171c4013336d980), the adapter, `eval18_*.json`, `F:/pan-finetune/r18/`. Still wrong in both models: asked what model it runs on, it says the small Gemma (the facts line names the wrong one).
@@ -1973,7 +2291,7 @@ children can have adult-sounding voices and vice versa).
 - **ΠAN stays quiet while the dictation hotkey records; a remark no longer throws a question away (Nov 17 about 05:40 ET; hub Craft 82, app 0.5.3 code 132 on the tablet and the owner's phone by cable, not published).** (1) **Hub:** `POST /api/v1/voice/dictating {on}` (owner only, `server.js`) calls `noteDictation` in `conv-state-watcher.js`. On: quiet for up to 3 minutes; off: quiet for 20 more seconds, because the phone's copy of his last sentence arrives after he stops. `dictatingToClaude()` returns `live: true` in that time, and `routeStream` then answers nothing unless he says ΠAN's name, even in the middle of an exchange (the older rule, known only after the prompt reaches Claude, lets the voice model through at 0.9 and exempts the 45 s after ΠAN spoke). Rollback `conv-state-watcher.js.pre-dict`, `router.js.pre-dict`, `server.js.pre-dict`. (2) **His computer:** `service/bin/Dictate.ahk` `TellHub(on)` posts on start and on every way out, never waiting. The hub's address is one line in `%LOCALAPPDATA%\PAN\hub-url.txt`; no file, nothing sent. **Correction the same hour:** he does not use that hotkey (Windows shows its last microphone use on Oct 10); he dictates with the Claude desktop app's own dictation. `service/scripts/mic-watch.ps1` covers that: it reads Windows capture sessions (state 1 = a program is recording) and posts the same on / off for `-Match claude`. Seen on a real dictation: on at 05:53:53, off at 05:56:18. It runs from a session for now; it is not a startup item yet. (3) **App 0.5.3:** words said while the answer to the last turn is still on its way, or has arrived and is waiting for him to stop talking, join that turn for up to 20 s (`CARRY_ON_OPEN_MS`; it was 5 s from the send, whatever the state). On Home the first piece is removed and the joined line stands in its place (`dropUserLine`). The live box shows the phone's quick guess as a sentence, not in capitals. Tested: with the signal on, a silent typed line from the tablet got no answer (0.7 s, intent ambient); 24 s after off, the next one was answered; two lines sent back to back joined into one turn and one answer covered both. Not tested with real speech: the 5 to 20 s case itself, and the hotkey's own post (first real press after the script restart at 05:30 ET).
 - **App 0.5.2 (versionCode 131, built Nov 17 about 05:15 ET; on the test tablet and the owner's phone by cable, NOT published to the hub).** From the owner's first look at 0.5.1. (1) The name is written ΠAN everywhere a person reads it: screens, toasts, notifications, the pairing screens, and the app's name under its icon (`res/values/strings.xml`). (2) Settings: the "Mm-hm while you think" switch is gone and the section is called Sounds. (3) Home follows the talk: a new line scrolls into view unless he has scrolled up to read. (4) Home shows the hub's words for his line, not the phone's rough ones: when the hub's transcript arrives the line in the phone's own store is replaced (`DataRepository.correctUserLine`). (5) The drop-down notification says what Home says: "ΠAN is listening" or "ΠAN is muted"; then Connected, "No internet on this device" or "Your computer is not answering", with what he is doing; pulled down it adds the last line each way, the mood and who is there. Buttons: Mute / Unmute, Stop talking. The second notification is "ΠAN connection". (6) **Hub, Craft 81, `intuition/reader.js` (rollback `reader.js.pre-swear`):** swearing by itself is no longer a mood. "what the fuck", "fuck this", "this shit", "so much shit" are `register` cues: they count only on a line that also has a real cue of 0.4 or more ("this shit does not work" is still frustrated; "what the fuck happened to it, I just saw it" is not). His reading had sat on Frustrated, urgency High, need "a fix that works" all day from lines like that; after the swap it read Engaged. Checked with nine lines through `toneOf` / `lostBy`. **Found, not fixed:** a second line said before ΠAN answers cancels the first even when it is not a correction (his question was dropped when he made a remark to someone else right after it), and ΠAN answers what he dictates to another program at his desk ("My mistake."). Both are turn-taking work for the voice bench, not the Home box, which only shows the words.
 - **App 0.5.1: three tabs (versionCode 130, built Nov 17 about 04:45 ET; on the test tablet and the owner's phone by cable, NOT published to the hub, so the car unit still has 0.4.125).** Step 3 of docs/MOBILE-APP-PLAN.md. The app's frame is now a bottom bar with Home, Memory and Settings (`ui/navigation/PanNavGraph.kt`); the old single main screen and the typed conversation screen are gone (`ui/main/MainScreen.kt` keeps only the sensor list). One `MainViewModel` for the whole app, owned by the activity. (1) **Home** (`ui/home/HomeScreen.kt`): Π and one connection line ("Connected", "No internet on this device" from Android's own validated-network check, or "Your computer is not answering"); an Incognito badge while it is on; one line for what PAN thinks is going on, tap for who is here, the mood and the topics; "Needs you" with Allow / Deny for Claude's questions and Dismiss for open alerts (`MainViewModel.approvals/alerts`, polled every 5 s); the talk from the phone's own store, his lines right, PAN's left, the day on lines that are not from today; a picture where PAN took one (kept in `files/talk-photos`, newest 60; phone database version 2 adds `conversations.photo` with a real migration, so settings survive); a box that shows his words while he says them (`stt/LiveWords.kt`, set from the speech engine's partial results, empty while PAN talks), and tapped it becomes a text field whose line goes down the same path as a spoken one (service action `TYPED_LINE`); a round mic button. (2) **Memory** (`ui/memory/`): locked by the phone's fingerprint (framework `BiometricPrompt`, biometrics only, never the PIN: `Fingerprint.kt`); it locks again when the tab is left or the app goes to the background, nothing is fetched before it opens, and deleting asks again. A device with no fingerprint set up cannot open it. Inside: search by word, a day picker with back and forward, each thing with its time on the phone's clock, delete one, delete everything a search found, delete the day. (3) **Settings** is a tab: Privacy gained "Lock Memory" (turning it off takes the fingerprint) and the per device sensor switches that were on the main screen; a Data dividend section that says it is not ready and nothing is shared; with Developer options on, buttons for the web Dashboard and the Command log. (4) **Hub, Craft 79 and 80** (`routes/dashboard.js`, `server.js`; rollback `*.pre-mem` on the hub): `GET /dashboard/api/mem?date=YYYY-MM-DD&tz=<minutes east of UTC>` (one day of talk and pictures through the created_at index; tz makes "today" the phone's day when the hub's clock is in another zone; each item carries `ms`), `GET /dashboard/api/mem?q=` (the events_fts index, only talk and pictures, test turns left out), `POST /dashboard/api/mem/forget` with `ids`, `q` or `date` plus `confirm:"yes"`: removes the events, their lines in the search index and the picture files; owner only, and `/dashboard/api/mem` now runs the login check the rest of `/dashboard` never ran. Tested on dev 7781 with seeded rows (by id, by word, by day: only talk and picture rows went, a tool event in the same list and on the same day stayed), then on the hub: one silent typed line from the tablet came back answered in 3.5 s, showed in the search, was forgotten by word, and the day went from 32 things to 31. Seen on the owner's phone: Home and Settings. Not seen: Memory past the lock (it needs his finger). Not built yet: spoken search in Memory, keeping time and timed erase, lockdown, memory answers only to his voice, names on lines when more than one person talks (the phone is not told who spoke), holding a spoken line for a correction by hand (the spoken line still goes when he stops; the box only helps for a typed one), the same Memory page on the dashboard. Forgetting does not yet remove the vector copy of a line or summaries made from it.
-- **App 0.5.0 (versionCode 129, built Nov 17 about 04:06 ET; on the test tablet only, NOT published to the hub yet).** First build of the redesign in docs/MOBILE-APP-PLAN.md. (1) **Incognito survives an app restart.** The switch was only put back into the request header when the Settings screen or the Dashboard opened, so after a restart events went to the main store while the switch showed ON. It is now also kept in SharedPreferences (`ScopeHolder.set/saved`, `di/NetworkModule.kt`) and restored in `PanApplication.onCreate` before anything can send; the first start after an update reads the old value from the settings table once. Proven on the tablet: incognito on, app stopped and started, Settings never opened, one test turn: nothing in the main store; the same with incognito off: the turn is there. (2) **Hub, Craft 78:** `POST /api/v1/logs` keeps nothing from a request marked incognito (the app's log lines carry what was heard and what PAN said, and that table is in the main store); rollback `server.js.pre-inclogs`. (3) **Settings screen:** removed Voice Responses, Device Preference, Music App, Messaging App, Query Answers, the Local AI Model section and the Gemini API Key field (nothing read them, or what they said was no longer true). New switch About > Developer options (SharedPreferences `pan_ui`/`developer`, off by default) shows the PAN Server address, the Tailscale backup block, the voice picker and Stop / Force Restart. Sections are now This device, Connection, Voice, Accessories, Privacy, Personality, App Updates, About; plain words in the incognito and update texts. (4) **Sound Effects and Vibration work:** `FeedbackSounds` reads the two switches (SharedPreferences `pan_feedback`); before, sounds and vibration played whatever they said. Not seen yet: the Settings screen itself on a device (the tablet was locked).
+- **App 0.5.0 (versionCode 129, built Nov 17 about 04:06 ET; on the test tablet only, NOT published to the hub yet).** First build of the redesign in docs/MOBILE-APP-PLAN.md. (1) **Incognito survives an app restart.** The switch was only put back into the request header when the Settings screen or the Dashboard opened, so after a restart events went to the main store while the switch showed ON. It is now also kept in SharedPreferences (`ScopeHolder.set/saved`, `di/NetworkModule.kt`) and restored in `PanApplication.onCreate` before anything can send; the first start after an update reads the old value from the settings table once. Proven on the tablet: incognito on, app stopped and started, Settings never opened, one test turn: nothing in the main store; the same with incognito off: the turn is there. (2) **Hub, Craft 78:** `POST /api/v1/logs` keeps nothing from a request marked incognito (the app's log lines carry what was heard and what PAN said, and that table is in the main store); rollback `server.js.pre-inclogs`. (3) **Settings screen:** removed Voice Responses, Device Preference, Music App, Messaging App, Query Answers, the Local AI Model section and the Gemini API Key field (nothing read them, or what they said was no longer true). New switch About > Developer options (SharedPreferences `pan_ui`/`developer`, off by default) shows the PAN Server address, the Tailscale backup block, the voice picker and Stop / Force Restart. Sections are now This device, Connection, Voice, Accessories, Privacy, Personality, App Updates, About; plain words in the incognito and update texts. (4) **Sound Effects and Vibration work:** `FeedbackSounds` reads the two switches (SharedPreferences `pan_feedback`); before, sounds and vibration played whatever they said. Not seen yet: the Settings screen itself on a device (the tablet was locked). Since Nov 26 (in the code, not yet in a published build): replies and quick answers make no sound; only mute does (see "Sounds: only mute makes one" under "Phone app (entries added Nov 26 review)").
 - **Phone page cleanup, step 1 of docs/MOBILE-APP-PLAN.md (Craft 76, Nov 17 about 03:55 ET; `public/mobile/index.html`, `routes/dashboard.js`, `server.js`; rollback: the `*.pre-step1` copies on the hub, then a Craft swap).** The tabs for building PAN (Intuition, Dashboards, Usage, Tasks, Services, Projects, Data) show only when the hub setting `mobile_developer_tabs` is on; the switch is Settings > Developer > Developer tabs on the phone page. Off for a new hub, turned on for the owner's. Left for everyone: Chat, Alerts, Devices, Library, Sensors, Settings. Fixed: Services counted everything as stopped (the hub says `up`, the page looked for `running`); the Tasks tab had no route (`GET /dashboard/api/tasks`, optional `?project_id=`); Add Device said 24 hours for a code that lasts 30 minutes (and sent `ttl_hours`, which the hub does not read); a sensor switch sent the sensor's name where the route takes its id, with a bare word as a fourth argument that threw; Settings had two Devices sections, one calling every device ever seen Online, now one "Your devices" list with the Devices tab's 5 minute rule; an owner name was the page's fallback user name. `POST /api/v1/terminal/permissions/respond` now answers only for the owner (`isOwner`); with `auth_mode` none every caller is the owner, so this bites once sign-in is real. Checked on the dev copy in a phone-sized browser (tabs hide and show, Services 29 running, no console errors) and on the hub by route.
 - **Fixes from the first car talk on app 0.4.125 (hub only, Craft 75, Nov 17 about 03:05 ET; `routes/api.js`, `router.js`, `self.js`; rollback: the `*.pre-stale` copies beside them on the hub, then a Craft swap).** (1) Voice turns are ordered by when the phone sent them (`sensors.timestamp`), not by when they reach the hub. On a slow link an older sentence could land after a newer one and cancel it: the real question got "Sorry, I ran into a problem" and the answer to the dropped line was spoken to nobody. An older turn that lands late is now ended as `cancelled` at once and cancels nothing (gap capped at 2 minutes, so a phone whose clock was set back is not shut out). (2) A cancelled turn says nothing: `routeStream` rethrows on an aborted signal in place of falling to the full prompt and ending on the error sentence, and raises no voice alert for it. (3) The self line (`buildSelfLine`, now also given the device id) ends with two more facts: the app version on the device he is talking through with the newest build the hub holds, and how fast replies started on the last day of the nightly voice report. Both are cached (10 minutes and 1 hour) and sit at the end of the line, behind the hub model's fixed block. Tested on the dev copy and then on the hub with bench turns: the late older turn came back cancelled in 17 ms and the newer one kept running; asked its version it said "0.4.125", asked its response time "About 3.4 seconds". Not fixed here, they need an app build: a spoken mute does nothing (the app knows only the play_music and navigate actions), the turn's sound is uploaded only after he stops talking (9 to 14 s on long sentences over a relayed 4G link), and the hub does not know a device is the car.
 - **Two hub models side by side, and the hub prompt that reads only what is new (Nov 16 about 12:50 ET, Craft 72). This supersedes parts of the entry below.** The owner, an hour after the one-model switch: "4 seconds is a lot", "losing it on the long prompts is bad", "why not both". **Who does what now:** `phi4-mini:3.8b` answers every line the voice model hands up (`voice_world_model`, `voice_hub_paths = all`); `gemma4:e2b` is back on the long prompts (`ai_model`, `job_models.smart-steward`, `ai_fallback_chain_voice` = `["ollama:gemma4:e2b"]`, `ai_fallback_chain_background`, `model_selections.chat_local`), because it reads 127 to 149 tok/s and writes 21 to 22 where Phi reads 75 to 118 and writes 11 to 14. Still no cloud model in the voice chain. Both stay in memory: 14.4 GB of models, 8 GB of the hub's 29 GB free. A side effect that matters: nothing but voice lines calls Phi now, so what Phi read last time is always a voice prompt. **Gemma is not faster for the handed-up lines** (`paths_cmp.py`, 7 lines x 2 rounds, new talk each line): first word median 2.8 s against Phi's 2.4 s, right 12 of 14 against 13 of 14 (it repeated the wrong resin answer and said it runs on "the NVIDIA Parakeet model"). New setting `voice_hub_paths_model` (same values as `voice_world_model`, empty now) lets those lines use another hub model than the world questions. **Checked again on the new layout in one continuing talk (Nov 16 about 14:35 ET, `talk_cmp.py`, 9 turns x 2 rounds each; only name / who are you / what did I ask / can I pull this off switch model, Phi answers the world questions in both):** first word the same, median 1.24 to 1.26 s Gemma against 1.19 to 1.23 s Phi, so the layout works for either model. Gemma's answers were worse on those four kinds: it mixed up "I" and "you" in all 4 identity answers ("You are PAN, his personal AI", "I am a language model developed by Google DeepMind"), listed the whole talk for "what did I just ask you" both times, and had one 11.3 s first word (most likely its first read of the fixed block). Phi: 7 of 8 right. Phi keeps the handed-up lines. **The fix for the 4 s: `HUB_FIXED` + `hubPrompt(kind, middle, selfLine)`** in `router.js` (replaces `plainPrompt()`). The model keeps what it read last time as long as the next prompt starts the same. Before, each kind of line put its own rule near the top, so each kind started differently and the talk was read again. Now: one block that never changes (first line, `HUB_PRONOUNS`, all twelve rules `HUB_RULES`), then the facts about PAN (`buildSelfLine`, always), then the talk, the clock, any data, his line, and last `Kind of line: X.` with a few words for two kinds (`HUB_HINTS`). The background line (what he is doing) is left out of hub prompts. For SELF his name goes in once more just ahead of his line (`hubOwnerLine`): with the facts a block away Phi said "PAN" to "what's my name?". The fixed block is read once 25 s after the code starts (log line `hub model ... read its fixed block in N ms`, 2 to 11 s). **Measured, one continuing talk through the real hub path (`talk_test.py`, 9 turns, bench device):** old layout first word median 1.2 to 1.9 s with "what's my name" at 3.8 to 4.9 s, "who are you" 4.2 to 7.3 s, "what did I just ask" 2.7 to 4.8 s; new layout median 1.2 to 1.4 s with those three at 1.3 to 1.5 s; slowest normal turn about 2 s (one 4.8 s outlier in 5 runs). Straight to the model with nothing else on the CPU it was 0.6 s on every kind (`cache_test.py`). A brand new talk still pays for reading its first lines. All 11 lines of `paths_test.py` pass on Craft 72. Still weak: "what did I just ask you" names the wrong earlier question about 1 time in 3. The rules in `HUB_RULES` are copies of the cloud prompts' rules in plain-words form: change one, change the other. **Gemini Nano is not an answer for the hub:** it only runs inside Android (AICore) and inside Chrome, it is a tuned small Gemma (v3 on Gemma 3n, v4 on Gemma 4), so about what gemma4:e2b already is, and Chrome's own flag text says not for factual accuracy.
@@ -2191,12 +2509,28 @@ children can have adult-sounding voices and vice versa).
   explicit memory search ran anyway: 12-37 s that could not be heard, then "the provided
   messages do not contain an answer" kept as PAN's line (round 10, hub recall bench 2026-11-03:
   31 of 32 right, slowest turn 6 s).
+- **Only a question searches memory, and the talk comes first even with a day named
+  (`recall-gate.js`, Nov 26).** The Long conversation test through ΠAN's own path found story
+  lines on the memory route: "You won't believe what happened at the gardening class today"
+  matched the recall words and "today", and the coded refusal said "I don't have anything
+  recorded about believe from today" (10 of 50 test talks had a line like it: "tell me about
+  it", "I've got to remember to pack the charger"). Now a line searches memory only when a
+  sentence in it is a question (a question mark, or a question's word order after a greeting
+  or the name) and carries the recall words (`asksAboutPast`; `handleUnified` too). A named
+  day no longer skips the talk: when the talk holds at least half of the words the question
+  names (`talkCovers`, five letter stems, no time words) the search is skipped, and a recall
+  Syrinx already answered stands. The coded "nothing saved" answer is only for a question with
+  no talk going on (`noRecordAnswer`), and never names one word of the line; mid-talk the
+  model reads the talk, told his saved memory has nothing and to say it does not know rather
+  than invent. Test: `__tests__/recall-gate.test.js`.
 - **How much of the talk it sees:** the phone sends the last 40 lines (app 0.4.73), dropped ten
   at a time so the hub's read of the start stays good. At ten lines Syrinx answered 0 of 4
   questions about the start of a talk; at forty, 4 of 4, with no retraining.
 - **Vector search:** on its own thread with the main database's vectors in memory
-  (`memory-vector-worker.js`, about 650 MB, loaded on the first voice turn, topped up at each
-  search). sqlite-vec has no index, so its scan read every vector through SQLCipher: 8 s on a
+  (`memory-vector-worker.js`, about 650 MB, topped up at each search). Loaded on the first
+  voice turn until Nov 23; since then 20 s after a Craft starts (`warmVectors`, commit
+  16477efc), because the first turn after a swap spent 49 s of CPU loading 198,506 vectors and
+  the voice model missed its time. On their own the hub loaded 198,831 vectors in 29 s. sqlite-vec has no index, so its scan read every vector through SQLCipher: 8 s on a
   quiet hub, 21.7 s on a busy one, and because better-sqlite3 is synchronous it froze every
   request in the hub for that long. In memory: 0.5 s, same top 20 in the same order. A voice
   recall waits 4 s for it (`vecTimeoutMs`), then goes on with what FTS found.
@@ -2504,7 +2838,9 @@ children can have adult-sounding voices and vice versa).
 - **Interpreted lines in pieces:** `tts/LineClauses.kt` splits a line at its first clause (at least about 10 letters each side, never inside "1,200"). `prepareLine` builds only that piece early, and the rest builds in whole sentences while it plays (app 0.4.76).
 
 - **Where:** on the phone, never the hub (`tts/TtsManager.kt`, `tts/PiperTtsEngine.kt`,
-  sherpa-onnx). Settings → Voice picks it (`voice_quality` in `pan_tts_prefs`).
+  sherpa-onnx). Settings → Voice picks it (`voice_quality` in `pan_tts_prefs`). Since app
+  0.5.0 (Nov 17) the voice picker shows only under About > Developer options, and it still
+  offers "Supertonic Fast", the Supertonic 2 voice that slurred words (see Default below).
 - **Default:** Supertonic 3 (`supertonic3`, app 0.4.59; sid 9, speed 1.20 and 4 refinement
   steps, per voice in `VOICES`). 3 steps lost the last word of 12% of real lines and 45% of
   short ones; 4 is as good as 5 (3% and 19%). Lines of three words or fewer go at speed 1.0:
@@ -2555,6 +2891,812 @@ children can have adult-sounding voices and vice versa).
   search count as live only for a real ask (`WEATHER_ASK`, `SEARCH_ASK`): their match words
   also fire on "wind chimes" or "what happened to my build", and the "switch on your
   location" note is never live data.
+
+---
+
+## Hub voice path (entries added Nov 26 review)
+
+Parts of a voice turn on the hub that had no entry of their own. Most of the voice path is
+written up inside the dated notes under "Voice student model (Syrinx, formerly OmniΠ)"; the
+"Feature index" at the top of this file points to each of those. Line numbers below are from
+the Nov 26 code.
+
+- **Who a line is for decides when words leave the hub (router.js `readAddressGate` 2820, `ADDRESSED_SPEAK` 0.50, `ADDRESSED_HOLD` 0.15, `ADDRESSED_HOLD_MS` 1200 at 2757 to 2759; end of `routeStream` 4369 to 4722).**
+  Nothing is spoken until the gate opens. The voice model's first field `"to"` decides at once
+  (`pan` opens it, anything else mutes). A model that writes `addressed` instead: 0.50 or more
+  speaks at once, 0.15 to 0.50 is a hold (the done event carries the reply and `hold_ms` 1200;
+  the phone speaks it only if he stops talking), under 0.15 is quiet (`not_addressed`). A held
+  reply that is only the quiet tag is a mute. No number by the time the reply starts: the old
+  yes or no from the intent. No intent at all: the gate opens (broken output is spoken, not
+  swallowed). The thresholds are set for safety: 0.50 keeps 44 of 45 lines that were for ΠAN
+  answered at once. The stream is read up to the closing brace, so the JSON parses and a local
+  model's slot is freed. Spoken text passes `speakable` and `releasableEnd`; a placeholder in
+  square brackets is never spoken. Tests: no unit test found; the voice test matrices
+  (docs/VOICE-ROUTER-TEST-MATRIX.md) cover it.
+
+- **Quick paths before any model (router.js `serverClassify` 872, `tryQuickSystem` 1296, `quickAmbientCheck` 1261).**
+  A few shapes are answered or dropped with no model: "status" style system asks are answered
+  from the database; a voice line that opens by greeting someone else by name, a family word
+  ("mom", "guys"), or an "I'll call you back" style line is ambient at once (`not_addressed`).
+  The exclusion word list is the whole rule: anything it catches never reaches a model. Full
+  write-up: docs/CONVERSATION-AND-INTERJECTION.md.
+
+- **His line is scrubbed before any prompt (router.js `safeText = anonymizeForAI(text)` 3595; `anonymize.js`).**
+  Emails, phone numbers, SSN and card shapes, IP addresses, GPS pairs and street addresses are
+  replaced with placeholders in the line every voice prompt quotes (local and cloud alike); the
+  stream calls then skip a second pass (`_skipAnonymize`). Tests: not sure.
+
+- **Asked again when he is alone with ΠAN (`service/src/alone.js`; router.js 4552; Nov 21, commit f70cf4c7).**
+  When the model calls a question not for ΠAN and its reply was the quiet tag, the line is asked
+  once more (hub kind `WORDS_ALONE`; the model may still say it was not for ΠAN) when: voice ID
+  says it is his voice (`voice_his`, even while `voice_id_gate` only observes), nobody else is in
+  the talk (`participationOf` others 0), and no other voice was heard on that device for 10
+  minutes (`OTHER_VOICE_MS`, set by `heardOther` on every turn with `voice_his: false`). Why: a
+  plain question about his own day got silence while he was alone. Tests:
+  `__tests__/alone.test.js`.
+
+- **Voice model answers only short talk, off (`service/src/reader-alone.js`; router.js `readerAloneOn` 331, used at 4272; Nov 21, commit b2242285).**
+  With setting `voice_reader_alone` = `all` or `bench`, the voice model keeps only lines of 6
+  words or fewer (`SHORT_WORDS`) and lines whose intent is an action ΠAN runs itself; every other
+  line goes to the hub model the `[THINK]` way. Unset (off) on the hub: on real lines it bought
+  little for about 3 s more per turn. Tests: `__tests__/reader-alone.test.js` (3).
+
+- **World questions looked up through the hub's own browser (`service/src/web-lookup.js`, `web-lookup-helper.js`; router.js `startLookup` 4016, `worldAsk` 4033, settings read at 255 to 295; Nov 20, commits 4307a43b, 370c89f5, 5a5a81cf, 113db939, 66be9e8e).**
+  When the bigger model answers a question about the world, the hub's own browser opens a search
+  page and code hands the model the few lines that answer it, under the `LOOKED` rule (answer
+  first in one sentence, then only what the notes say; names, scores and figures only from the
+  notes). A real window parked off screen, because headless mode got a bot check from DuckDuckGo
+  every time. Throwaway profile, wiped on close; the browser closes after 5 idle minutes. A bot
+  check is never worked around: that engine rests 30 minutes and the next one is tried once
+  (DuckDuckGo, Bing, Qwant, Brave; the person's choice first). About 450 characters of notes;
+  the search site's own summary box leads them when it shows one. The same question inside 10
+  minutes is not searched again; a talk keeps its last page 10 minutes so a follow up can use
+  it; at most 300 lookups a day. A turn waits at most 3 s (`WEB_LOOKUP_MS`); past that the model
+  answers from what it knows. Looked up at once while ΠAN is in the talk, otherwise only once the
+  voice model starts a spoken answer, so a question on the TV is not searched. With it on, the
+  keyword tools `search` and `wikipedia` leave world questions to it (`toolSkips`). Under the
+  system account the browser never runs: the hub asks `web-lookup-helper.js` on 127.0.0.1:7796
+  (`PAN_LOOKUP_HELPER`, `PAN_LOOKUP_PORT`), which must run as the person; what starts the helper
+  on the hub: not sure, no starter found in the repo. Settings: `web_lookup` (`all`, `bench`,
+  else off), `web_lookup_engine` (`duckduckgo` default, `bing`, `qwant`, `brave`).
+  `lookupStatus()` (engine in use, which rest and until when, lookups today) is served only by
+  the helper's `GET /status`; no hub route found. Right answer bench, 88 general questions (Nov
+  20): model alone 58 right, 18 false; with the notes 80 right, 7 false. Offline Wikipedia now
+  comes first (see "Offline Wikipedia first" under "Voice picks and the smartness test"). Tests:
+  `__tests__/web-lookup.test.js`.
+
+- **A follow up on a world question goes the same road (router.js `followsWorld` 3970, `searchWords` 4015; Nov 20, commit a928bc4a).**
+  A line that follows up on a question about the world counts as one itself, is searched
+  together with the question it follows, and a looked up answer that shows an earlier reply was
+  wrong says so (`LOOKED` rule). Before, such a follow up went to the voice model, which answered
+  from its own head and then agreed with its own mistake when pushed. Tests: none specific
+  (`__tests__/follow-up.test.js` covers `followUpOf` only).
+
+- **A question that names one of his things goes to the bigger model with its note (router.js shelf 3236 to 3243, `asksAboutHisThing` 3974, `startLookup` 4017; `intuition/shelf.js`; Nov 23, commit f8f7c9ca).**
+  Every line of the owner's is checked for the names of his things (`shelfForTurn`); their notes
+  are ready for the turn (`shelf.block`), and private notes are held back when two or more other
+  voices were heard in the last 2 minutes. A line that names one and ends in a question mark goes
+  to the hub model with the note, and is never searched on the web (a project name would find
+  the dictionary word). The voice model never sees the notes. A note being written in the
+  background stops for the turn (`pauseForTalk`, also at the top of `/query/stream`: with one
+  running, the hub's speech recognizer once took 56.6 s on a line). Design:
+  docs/INTUITION-STATE.md section 11. Tests: not sure.
+
+- **Lookups worked out by code: money, coins, dates, units, any town's time (`money.js`, `calendar.js`, `sums.js`, `tools.js` `TOOLS` 690; Nov 19, commits 1e89cddb, 5e08d38a, e4f8005b, 1b7a98bf, ad6387ec).**
+  The model only says the result. Money: which sum is asked is read from the line and the talk
+  before it (`moneyAsk`; a follow up with no money word or no amount is read from the talk), from
+  the runtime's list of 159 currencies; a shared word like pesos means his own money when his
+  uses it; telling is not asking. Rates: European Central Bank (Frankfurter) for 30 currencies,
+  the public daily currency files (two hosts asked at once) for the rest, kept 3 hours, no key.
+  His money: setting `home_currency` (an ISO code, default USD). Coins: from the price source's
+  own list, the daily files behind it. Dates (`calendar.js` `dayAsk`): when a holiday falls, what
+  weekday a date is, how many days until it, from the rules and the runtime's Islamic, Hebrew
+  and Persian calendars; Lunar New Year from a published table (the runtime's Chinese calendar
+  is a day off in 2027 and 2030). Units (`sums.js` `unitAsk`), sunrise and sunset for a named
+  place (`sunForPlace`), the time in any town or country through the geocoder
+  (`clockAnywhere`). A live lookup that was wanted and did not arrive hands the model a line
+  saying so, with no figure (tools.js 733). Why: right answer bench, 191 spoken questions: 55%
+  right and 38% false said as true; currencies outside the old 30, 1 of 17; dates 15 of 21
+  wrong; a slow rate file once let the model give a made-up conversion from its own head.
+  Arithmetic is in "Voice lookup tools". Tests: `__tests__/money.test.js` (17), `sums.test.js`
+  (6), `calendar.test.js` (5).
+
+- **Recall by day (router.js 3453 to 3561 and 4606 to 4681; `memory-search.js` `parseWhen` 763, `searchMemoryByDate` 838).**
+  A question about his own past that names a time ("what did I do yesterday") reads that day's
+  record, at most 8 events and only those that hold the words he named, instead of a relevance
+  search that cannot match a day; the subject is never silently widened to the whole day. Hook
+  envelope rows are dropped (`isReadablePreview`) and hits that share nothing distinctive with
+  the question are treated as no record (`_recallIsRelevant`). Without a day, the turn's search
+  is FTS only with a 2.5 s cap; when the model then tags the turn as a recall, the hub searches
+  FTS and vectors (8 s cap) and a short call writes 1 to 3 sentences from only those hits
+  (caller `recall-synthesis`, 220 tokens, 15 s), else says it has nothing. Since Nov 26 (in the
+  code): the coded "no record" answer never names a word of his line as the subject and only
+  fires with no talk going on (`recall-gate.js`). Tests: `__tests__/recall-gate.test.js` covers
+  the gate, not the day search.
+
+- **Phone recall endpoints (`routes/api.js` `POST /api/v1/recall` 1254, `POST /api/v1/recall/stream` 1385).**
+  A question about past talk, searched over all event types (FTS plus recent events) and summed
+  up in 1 to 3 sentences by a short model call (caller `recall`); the stream form sends SSE
+  chunks so the first sentence is spoken at once. Called by the app's
+  `PanServerClient.recallStream` (see "Questions about past talks go to memory search" under
+  "Phone app (entries added Nov 26 review)"). Whether the current app build still reaches it:
+  not sure. The app's comment still names Cerebras, which was removed on Nov 18.
+
+- **Stop a ringing timer or alarm by voice (hub `service/src/ringing.js`, router.js `voiceStream` 4178, `routes/api.js` `/slack/pending` 1013; app `audio/Ringing.kt`, app 0.5.49; Nov 21, commit f70cf4c7).**
+  The app watches Android's players for anything with the alarm usage, and while one rings it
+  says so on its regular ask for notes (`ringing=1` and the device's model name). While one of
+  the person's own devices rings (reported in the last 15 s), the hub model is asked one yes or
+  no question first (`ringQuestion`, 4 tokens, temperature 0): does he want it stopped, said any
+  way at all. A plain yes (`wantsStop`) sends the stop to every ringing device of his, picked up
+  on its next ask (dropped after 30 s), and ΠAN says "Stopped it on your <device>." (intent
+  `device`, action `stop_ringing`, path `ring`). The app stops the timer, then the alarm, with
+  Android's own dismiss actions, which the clock app honours on a locked phone. A no, or no
+  answer, and the turn goes on as usual. Nothing changes while nothing rings. Not on a test
+  turn, not while dictating to Claude. Why: asked to turn a ringing timer off, ΠAN said it could
+  not search for that. Proven by hand on a Pixel 6 Pro, Nov 21. Debug: `TEST_STOP_RINGING` stops
+  it 3 s later. Tests: `__tests__/ringing.test.js` (10), `RingingTest`.
+
+- **A voice turn that fails still says something, and raises an alert (router.js `replyStream` 4384, `_raiseVoiceAlert` 2938, fallbacks 4515, 4724; since 2026-08-03, commit 504eb0f4).**
+  A reply stream that dies before any word was spoken is answered by the voice model instead.
+  When every model fails: "Sorry, I ran into a problem thinking that through. Try again." and a
+  `voice_failed` alert in the Alerts panel, at most one per 5 minutes, re-armed by the next turn
+  that produces output. No JSON at all: "I didn't catch that, could you try again?". A cancelled
+  turn (a newer line, or the phone hung up) says nothing and raises nothing. `/query/stream`
+  itself answers "Something went wrong." on an error that is not an abort. Tests: not sure.
+
+- **The reader stops writing when the turn stops reading it (`llm-fallback.js` `askAIStreamWithFallback` 544 to 550, `voice-reader.js`; Nov 24, commit 1740ffd5).**
+  When routeStream leaves the voice model's stream early (a world question, `[THINK]`,
+  `[CAMERA]`, `[MUTE]`), the request is aborted so the model server stops at once. Before, it
+  wrote its unused reply for about 1.4 s and the next turn waited (reader first token 1,944 ms
+  after a cut turn against 533 ms). Answer bench, 88 world questions: first word 2.2 s to 0.8 s,
+  right answers 64 both. Also in docs/SPEEDS.md.
+
+- **A clip that is only ΠAN's own last words is dropped (`own-tail.js` `dropOwnTail` returns empty; `routes/api.js` 2357 to 2367; Nov 25, commit 58e075f2).**
+  When the whole line is the tail of ΠAN's last reply and it began while ΠAN was still talking,
+  the turn ends at once: ambient, reason `own_echo`, timing stage `own_echo`. The tail rule
+  itself is in "Fixes from the car talk of Nov 18" (1) under "Voice student model". Tests:
+  `__tests__/own-tail.test.js`.
+
+- **Mute words in any sentence, and Han (`mute-ask.js`; Nov 26; live on hub Craft 97 since Nov 26, voice benches running; rollback copy `mute-ask.js.pre-anysentence`).**
+  The hub finds the mute command in any sentence of the line that is only the name plus the
+  command, not only in the first or the last sentence. "Han" counts as the name: it is the hub's
+  transcript of "Pan" in the car. Why: a long text read aloud ended with the name and the
+  command, and three asks with the misheard name did not mute. Replaces "the command is the
+  whole last sentence of a short line" in "Fixes from the car talk of Nov 18" (4). Tests:
+  `__tests__/own-tail.test.js`.
+
+- **Cancel a stream (`routes/api.js` `POST /api/v1/cancel` 346, `GET /api/v1/cancel/active` 357).**
+  `{stream_id}` aborts an in flight stream; an unknown id is not an error. `/cancel/active` lists
+  live streams for debugging. A voice turn's own key is `phone:<device>` (`turn-slots.js`). Also
+  in the voice test matrix docs.
+
+---
+
+## Phone app (entries added Nov 26 review)
+
+Phone app features that had no entry. Paths are under
+`android/app/src/main/java/dev/pan/app/`. Most other app work is written up as dated release
+notes under "Voice student model (Syrinx, formerly OmniΠ)" and "Phone voice (text to speech)";
+the "Feature index" at the top points to each.
+
+- **Spoken mute and unmute (whole line only; `service/PanForegroundService.kt:231` `MUTE_CMD`, `UNMUTE_CMD`, handled in `onSpeech`; first in git Nov 3).**
+  The phone mutes itself on a line that is only the command: "mute", "mute yourself", "be
+  quiet", "shut up", "stop listening", "quiet", with "ΠAN" or "hey ΠAN" before or after and
+  "please" allowed. Unmute is "unmute", "wake up", "start listening". A sentence that only holds
+  the word does nothing (a sentence about a commute used to mute it). Mute is silence both ways
+  (`muteNow`): speech stops, the query in flight is cancelled, a held reply is dropped, the mic
+  goes off. "[PAN muted]" and "[PAN unmuted]" go in the talk on Home. When the hub hears a mute
+  the phone missed, the done event's `mute: true` does the same (see "Mute words in any
+  sentence, and Han" under "Hub voice path"). While ΠAN is talking, a line holding stop,
+  enough, shut up or quiet stops it (`STOP_WORDS`, line 233); any other line while it talks is
+  dropped as echo. The sound mute makes: see "Sounds: only mute makes one". Tests: none on the
+  phone; the hub's wording is in `service/src/mute-ask.js`.
+
+- **Sounds: only mute makes one (`audio/FeedbackSounds.kt`, `audio/Tone.kt`; app 0.5.56 (versionCode 185), Nov 26).**
+  Replies and quick answers make no sound any more. They played the device's notification
+  sound, which on the car unit sounds like a system error. Muting plays ΠAN's own sound, two
+  soft notes going down (`FeedbackSounds.onMuted`, made by `Tone.kt`). The Sound Effects switch
+  in Settings still turns it off.
+
+- **Repeat and echo guards before a line is used (`service/PanForegroundService.kt:170`, `:194`).**
+  The same words within 3 s are dropped (`DEDUP_WINDOW_MS`). Words in the 300 ms after ΠAN stops
+  are dropped as its own echo (`TTS_COOLDOWN_MS`), unless the turn was heard before ΠAN began.
+  It was 600 ms, then 1200 ms (May 1), then 300 ms. A typed line, the assistant button, the stop
+  interpreting badge and `TEST_SAY` clear both first, or they would be lost without a word.
+
+- **ΠAN's own words taken out of what the phone hears (`stt/SherpaStreamingStt.kt:556` `stripEcho`, `:508` `interrupts`).**
+  The phone keeps ΠAN's last 10 lines, each counted as said until about 0.4 s a word after it
+  started, then 3 s more (`TTS_ECHO_WINDOW_MS`). When more than 80% of a line's longer words come
+  back in what was heard, they are taken out. A short piece made only of ΠAN's words is dropped
+  whole ("night" after a line ending "late at night"). What is left must be 2 words or more when
+  anything was taken out; a line with no echo is kept even at one word ("yes", "why"). The
+  room's ring after ΠAN stops opens no turn for 300 ms (`ECHO_TAIL_MS`). A turn with echo taken
+  out is not sent to the hub for re-transcription (see "Hub re-transcription (Parakeet)"). The
+  80% rule dates from May 1 (it was 50% and ate real questions). No unit test.
+
+- **Flow mode and the strong turn override (`stt/SherpaStreamingStt.kt:106` to `:118`, `:282`).**
+  A turn committed less than 2.5 s after the last one means he is explaining, not asking: then a
+  finished clause is not enough, he has to stop for 1.1 s (`FLOW_SILENCE_MS`). Before it, one
+  monologue made eleven turns and ΠAN answered nine. A Smart Turn score of 0.9 or more ends the
+  turn even when the last word is on the dangling list (a plain question that ended on "have"
+  was held 1.4 s). Silence with no speech in it needs 2.4 s; one utterance is cut at 20 s. See
+  also "Phone end-of-turn detection (Smart Turn)".
+
+- **The phone's audio mode while ΠAN talks (`service/PanForegroundService.kt:772`).**
+  While ΠAN speaks the phone is put in call mode (`MODE_IN_COMMUNICATION`) on the loudspeaker,
+  so the hardware echo canceller has ΠAN's voice as its reference, and back to normal after (not
+  during a call). Not in car mode or while interpreting, where the voice plays on the media path
+  (`TtsManager.plainPath`). In the car, audio focus with ducking is held while ΠAN talks. With
+  the Google recogniser (not the default) a separate energy monitor (`audio/BargeInMonitor.kt`,
+  AEC plus noise suppressor, 1.2 s calibration, 2.2x headroom) stops ΠAN instead.
+
+- **Every line at the same loudness (`tts/PiperTtsEngine.kt:54`, `TARGET_PEAK`; Oct 24).**
+  Each Supertonic line is scaled to a peak of 0.95, at most 8x (`MAX_GAIN`), so near silence is
+  not blown up into hiss. Engines differed by up to 13 dB at their peaks, so a voice change also
+  changed the volume.
+
+- **Things the phone does by itself (`service/PanForegroundService.kt:2702` `handleInstantHardware`, `service/InstantWords.kt`).**
+  With no hub: the flashlight (whole command only; see "The flashlight needs the command" under
+  "What a stranger's phone would have hit" in "Voice student model"), media keys for "play", "pause", "stop music", "next", "skip", "previous" (the
+  whole line), and the battery level. "Turn it off" right after the flashlight means the
+  flashlight (`lastActionContext`, Mar 22). Time and date shortcuts were taken out Nov 2. Tests:
+  `InstantWordsTest`.
+  - **Battery (app 0.5.56, Nov 26):** answered only when the whole line is a
+    battery question, and only with a level from 0 to 100. A car unit has no battery and said
+    "-2147483648 percent"; now such a device leaves the question to the hub.
+
+- **Calendar and email questions on the old route (`service/PanForegroundService.kt:241`, `:1868`, `:3007`; calendar first in git Mar 24, wording tightened by Nov 3).**
+  A line that plainly asks about the calendar or schedule ("what's on my calendar", "do I have
+  meetings") is answered from the phone's own calendar (Android CalendarProvider, the next 7
+  days) when the app has calendar permission. Otherwise, and for email asks ("check my email",
+  "send an email"), the words go to the desktop terminal (`sendTerminalCommand`), ΠAN says "Let
+  me check." and polls for Claude's answer for up to 45 s. With no terminal it asks the hub's old
+  one-shot route. "open gmail" and the like are not caught. This branch is still on the old
+  route and has the risk the location branch had (see "where am I goes the normal way" under
+  "Voice student model").
+
+- **Questions about past talks go to memory search (`service/PanForegroundService.kt:2028`, recall branch `:2159`).**
+  A line that names a past talk ("what did we talk about", "do you remember", "did I mention")
+  on word boundaries goes to the hub's `/recall/stream` (see "Phone recall endpoints" under "Hub
+  voice path") and is spoken sentence by sentence. Only when this talk has no history yet, or the
+  line says "do you remember", "remember when", "previous conversation" or "earlier
+  conversation"; otherwise the normal route reads the talk the turn carries. Fixed Nov 3:
+  "conversational" used to match "conversation".
+
+- **Music and directions from a reply (`service/PanForegroundService.kt:320` `dispatchActions`, `service/ResistanceClient.kt`; first in git Mar 22).**
+  A reply with a `play_music` action (or route `music`, or text starting "Playing ") plays on
+  the phone through ResistanceClient: the preferred app first (Spotify or YouTube when named),
+  then the next path in its order, and the result is reported to the hub. "That didn't work"
+  said alone reports the last music path as failed and tries the next (`DIDNT_WORK`, line 236).
+  A `navigate` action opens Google Maps navigation. `show_notification` is logged as not built.
+  Also in docs/INSTALL-PLAN.md.
+
+- **Notes on the phone: Slack replies, alerts, spoken notes, calls (`service/PanForegroundService.kt:1169` `startSlackPolling`, `:1285`, `:1414`, `:3495`; first in git Aug 8).**
+  The phone asks `GET /api/v1/slack/pending` every 5 s, every 1 s while the hub says `fast` (a
+  call), and at once when a timer starts or stops ringing. A Slack note becomes a high priority
+  notification with a Reply box (Android RemoteInput, typing or the keyboard's voice); the reply
+  goes to the hub and the notification shows Sending, Sent, or Failed. A `speak` note (a
+  thread's late answer) is spoken and also shown; a `ring` call note rings or vibrates (see "A
+  call from anywhere" under "Voice student model"). Any other note is a plain "ΠAN alerts"
+  notification that opens the app, except a call line the person is already hearing live. A
+  message or call note refreshes People at once. Channels: `pan_slack`, `pan_alerts`,
+  `pan_calls`, `pan_calls_quiet`, `pan_permissions`. The answer's `voice` flag starts and stops
+  the call's sound. The hub side is "Notes for a device".
+
+- **The link restarts itself after a network change (app 0.5.50, Nov 21; `vpn/LinkRecovery.kt`, `vpn/LinkManager.kt:295`).**
+  After a network change the app checks the link every 15 s and logs how it stands. If no
+  handshake with the hub came within 20 s of the change it restarts the link, at most once a
+  minute, and stops checking 10 minutes after the change. Why: in the car the link stayed down
+  after the USB tether dropped and the unit moved to a phone's hotspot. Debug:
+  `TEST_NET_CHANGE` (`--ez dead true` acts as if no handshake came). Tests: `LinkRecoveryTest`.
+
+- **Full CPU speed for a voice turn (`util/CpuBoost.kt`, called at `service/PanForegroundService.kt:2257`; first in git Nov 3).**
+  Just before a turn is sent, the app tells Android (PerformanceHintManager, ADPF) how long the
+  last burst took against the time wanted, which raises the CPU floor for the app's threads. With
+  the screen off, Smart Turn took 470 to 526 ms against 136 to 204 ms with it on, and Supertonic
+  2 to 2.5x longer (Pixel 10 Pro, Nov 2). No test.
+
+- **The power button stops ΠAN talking (`service/PanForegroundService.kt:590`, `MainActivity.kt:96`; Mar 24).**
+  Turning the screen off stops the line being spoken. Volume keys pass through and only change
+  the volume; they used to be swallowed and cut ΠAN off.
+
+- **Staying alive on the phone (`service/BootReceiver.kt`, `service/PanForegroundService.kt` onCreate).**
+  The service starts at boot. A boot start cannot hold Android 14's microphone service type, so
+  it starts as a connected device service and claims the microphone when the mic is turned on
+  (Sep 7: before this the service crashed on every boot). With no mic permission it runs without
+  sound instead of crashing (Nov 15). It asks once to be left out of battery optimisation, holds
+  a partial wake lock (so a muted phone in a pocket still rings), registers the device with the
+  hub until that works (backoff to 60 s), loads the last half hour of talk on owner devices,
+  starts PAN Link, and brings back the app's Tailscale if it was used before, fetching a key from
+  the hub first when it has none. The app starts muted.
+
+- **Camera pendant link on the phone (`ble/PendantBle.kt`, upload at `service/PanForegroundService.kt:994`; Sep 7).**
+  The service scans for the pendant ("PAN-CAM", Seeed XIAO ESP32-S3 Sense) by its service UUID
+  and takes JPEG frames over BLE notifications: each starts with a 2 byte sequence number, frame
+  0 is a "PANF" header with length and size. Missing pieces drop the frame. Each frame goes to
+  the hub as a photo with `analyze: false`, so it is stored, not read (about 0.1 s a frame on the
+  hub). A scan that finds nothing is started again (a one-shot scan lost the device). Firmware
+  notes: `firmware/pendant/README.md`.
+
+- **What the phone senses goes with every turn (`sensor/SensorContext.kt:251` `getContextEnvelope`; Mar 24).**
+  Each voice turn carries the phone's sensor reading: GPS with a street address (looked up off
+  the main thread), compass, accelerometer, gyroscope, barometer, light, proximity, and the step
+  counter (off by default). A sensor switched off in the Sensors list is sent as null. The hub's
+  situation line reads it (see "Voice situation line: place, daylight, weather"). The car mode
+  flag does NOT go with the turn (see "Where he is: what the hub can tell").
+
+- **Personality (Settings, Voice and sounds; `ui/settings/SettingsScreen.kt:291`, `SettingsViewModel.kt:183`).**
+  A free text box, "How ΠAN talks" (for example "sarcastic, witty"). Saved to the hub setting
+  `personality`, read back from the hub first. The hub's `handleUnified` and its full JSON prompt
+  add it with "Always stay in character" (`service/src/router.js:1546`, `:3659`). Not sure the
+  voice reader (Syrinx) path reads it.
+
+- **Device name (Settings, This device; `di/NetworkModule.kt:22`, header at `:118`).**
+  The name typed there is sent as `X-Device-Name` on every request to the hub, and by the screen
+  control service. Device registration still uses the phone's model name.
+
+- **Forgetting in Memory also clears the phone's own talk (`ui/memory/MemoryViewModel.kt:94` to `:118`; Nov 17).**
+  Deleting one thing, a search, or a day in Memory also deletes the matching lines in the talk
+  on Home: lines holding the heard words (4 letters or more) or the said words (8 or more), the
+  searched word, or every line of that day.
+
+- **Transcripts queued for the hub (`network/SyncManager.kt`, `data/DataRepository.kt`).**
+  Every heard line is also queued on the phone as an audio record (transcript only, no sound)
+  and sent to the hub every 5 s when it answers `/health`. Owner devices only (see "A person's
+  device leaves the owner's things alone" under "Voice student model"). Nothing in the app
+  queues photos or sensor records any more, though the queue takes them.
+
+- **Debug actions, the full list (`service/PanForegroundService.kt:3171` onwards; debug builds only).**
+  `adb shell am startservice -n dev.pan.app/.service.PanForegroundService -a <ACTION>`.
+  - `TEST_SAY --es text`: a line as if heard (routing, hub, reply, voice; clears dedup and
+    cooldown first).
+  - `TEST_SPEAK --es text`: the voice only.
+  - `TEST_PING --es n --es gap_ms`: hub round trips on the voice path, for the Wi-Fi's idle sleep.
+  - `STT_ENGINE --es which sherpa|google`: saved, applies on the next service start.
+  - `TEST_HUM` (the "mm-hm" alone), `TEST_BACKCHANNEL --ez on`, `TEST_READ_BELOW --ez on` (read
+    the mic under ΠAN's voice and only report it), `TEST_AEC_DUMP --ez on` (raw mic, processed
+    mic and ΠAN's lines to `aecdump/`). Also in docs/TURN-TAKING.md.
+  - `TEST_NET_CHANGE [--ez dead true]`, `TEST_STOP_RINGING`, `TEST_PLAY --es path` (a song as a
+    music app plays it), `TEST_CAR --ez on`.
+  - Written up elsewhere in this file: `TEST_AUDIO`, `TEST_RESET`, `TEST_AUDIO_END`, `TEST_LIVE`
+    ("Conversation benchmark (voicebench)"); `TEST_TTS` ("Phone voice"); `TEST_TTS_BENCH`,
+    `TEST_LOUD`, `TEST_INTERP_BENCH`, `TEST_PEER`, `TEST_PENDANT_MIC` ("Phone voice");
+    `TEST_MEET`, `TEST_MEET_CARD` ("People met"); `TEST_CALL_QUIET`, `TEST_OPUS` ("The voice
+    itself in a call").
+  - Not debug gated (any build): `TOGGLE_MIC [--ez on]`, `SET_LISTEN_MODE`, `TYPED_LINE`,
+    `ADDRESS_PAN`, `STOP_INTERPRETING`, `STOP_TTS`, `CALL_ANSWER`, `CALL_DECLINE`,
+    `PERMISSION_RESPOND`, `SLACK_REPLY`.
+
+---
+
+## Car unit (the head unit in the car)
+
+The car unit is an Android head unit that runs the ΠAN app and Termux. The phone is the main
+device in the car ("Car mode on the phone" under "Voice student model"); the unit runs ΠAN
+too, and updates itself.
+
+- **Self update by patches:** `android/car/pan-update.sh` in Termux checks the hub every two
+  minutes from boot and installs a patch or the whole build over the unit's own debug port.
+  See "App updates as small patches, and the car unit updates itself" under "Voice student
+  model". A patch from build 181 to 184 (`p181-184`) was made by hand and put on the hub for
+  the unit on Nov 26.
+- **Scripts on the unit:** `~/.termux/boot/start-car.sh` (starts ΠAN and the reverse camera
+  watcher at boot), `~/pan-update.sh` (the update loop), and the Termux widget shortcut
+  `~/.shortcuts/Fix PAN`.
+- **A phone on the unit's USB no longer stops ΠAN (Nov 26).** All three scripts now
+  `export ADB_LIBUSB=0`. With a phone plugged into the unit's USB, the Termux adb server died at
+  start, which stopped ΠAN, the reverse camera watcher and updates.
+- **No battery:** the unit has none, so the phone's own battery answer is left to the hub
+  there (see "Things the phone does by itself", Battery).
+- **Sounds:** the reply sound was the unit's notification sound, which sounded like a system
+  error; see "Sounds: only mute makes one".
+
+---
+
+## Hub platform (entries added Nov 26 review)
+
+Hub features outside the voice path that had no entry. Code is under `service/src/` unless
+the path says otherwise.
+
+### Where he is: what the hub can tell (Nov 26 review)
+
+- **Short version:** nothing on the hub reliably knows "at the PC", "on the phone" or "in the
+  car". The one live signal that knows a PC is in use is the pan-client row in
+  `device_presence`, and Intuition's `where` does not read it.
+- **Intuition `now.where`** (`intuition/index.js:457-490`) scans the last 40 `events` rows.
+  "desktop" ("at the hub") is set only by `TerminalMessage` or `DashboardView` events, and no
+  code writes either. "phone" comes from a row with `device_type:'phone'` and from the newest
+  `RouterCommand` with `source:'phone-voice'` (any age). So `where` is the phone's place if the
+  last voice turn is under 30 min old, else "Mobile", for ever after the first voice turn;
+  never "at the hub", never "car". Read by `router.js:500` (the prompt's "Where:" line),
+  `router.js:1482`, and `intuition/action.js:38` (which device gets an interjection).
+- **Intuition `signals.active_apps`** comes only from `WrapHeartbeat` events of the Tauri
+  wrapper apps (see "Wrapper apps"), so it is likely empty ("None Detected").
+- **The activity tracker, screen watcher and webcam watcher** are off by default and watch the
+  hub's own screen, which has none (see their entries).
+- **What would make it work:** Intuition reading `device_presence` (a fresh pan-client row with a
+  meaningful title beats an older phone row), or pan-client sending an idle time; for
+  `active_apps`, feeding it from the pan-client rows; for the car, the app sending `carMode` and
+  the car's device name with the turn or as a presence row, read by Intuition; and fixing or
+  removing the dead `TerminalMessage`/`DashboardView` branch.
+
+### Device presence (`device_presence` table; `intuition/index.js:125`, `upsertDevicePresence` at `:153`)
+
+- **What:** one row per device: who, activity, screen title, confidence, platform, time. The
+  only live record of which device is in use.
+- **Writers:** pan-client every 30 s via `POST /api/v1/client/presence` (`routes/client.js:488`;
+  the foreground window title, an activity guessed from the title by `inferActivity` in
+  `pan-client/pan-client.js:1161`, confidence 70, or 20 with no title). The phone after each
+  answered voice turn (`routes/api.js:410`; "talking to PAN", confidence 80). The remote screen
+  watcher (confidence 85).
+- **Readers:** `router.js screenTitlesNow` (the situation line, 2 min window, computers only),
+  `speak-router.js` and `mic-router.js` (60 s, confidence 50 or more), the org Intuition device
+  list (10 min).
+- **Not read by:** the personal Intuition snapshot (`now.where`, `now.activity`).
+- **Limits:** no idle check (a PC left alone keeps saying "coding" at confidence 70); no consent
+  switch (window titles go to the hub whenever pan-client runs); no car signal.
+- **Tests:** none found.
+
+### Capture consent and the privacy page (`capture-consent.js`, `routes/capture.js`; 2026-06-15)
+
+- **What:** one switch per thing that watches the person: `identity` (webcam and face ID),
+  `screen` (screenshot and vision), `activity` (foreground window). Turning one on or off starts
+  or stops the watcher at once, no restart.
+- **Order:** env `PAN_ENABLE_<NAME>=1/0` wins, then setting `capture_<name>` ("on"/"off"), then
+  the default, which is off everywhere (`profiles.js captureDefault`). An env pin makes the page
+  refuse the toggle with 409.
+- **Per device:** `capture_screen@<device_id>` gates the remote screen watcher for one computer.
+  Default on. Only `screen` exists per device (`DEVICE_CAPTURE_FEATURES`). The client is not
+  told; the hub just stops asking.
+- **API:** `GET /api/v1/capture` (state plus device list), `POST /api/v1/capture/:name` body
+  `{enabled, device_id?}` (`routes/capture.js:47,52`).
+- **Page:** `/privacy` and `/status` serve `public/status.html` (`server.js:3227`). The mobile
+  page's Settings uses the same API.
+- **Boot:** `applyCaptureConsentAtBoot()` 20 s after boot, prod only (`server.js:6024`).
+- **Not covered:** pan-client presence (window titles every 30 s) has no consent switch.
+- **Tests:** none found.
+
+### Remote screen watcher (`remote-screen-watcher.js`)
+
+- **What:** every 60 s asks each trusted connected computer with the `screenshot` capability for a
+  screenshot, describes it with the vision model, and writes the description to
+  `device_presence` (confidence 85).
+- **On/off:** off unless `PAN_ENABLE_REMOTE_SCREEN=1` (`profiles.js`; opt in since 2026-11-19,
+  because it logged nothing past its start line). Per device `capture_screen@<device_id>`.
+- **Started:** `server.js:6026`, 20 s after boot, prod only.
+
+### Boot profiles (`profiles.js`; 2026-06-12, wearable 2026-07-13)
+
+- **What:** `PAN_PROFILE` = `full` (default), `core` (memory subset, no watchers or loops) or
+  `wearable` (voice, notify, device mesh, dashboard kept). Gates which subsystems start and which
+  route groups mount; the code is still loaded.
+- **Opt in features** (off in every profile unless `PAN_ENABLE_<NAME>=1`): `remote_screen`,
+  `dashboard_watchdog`, `dashboard_health`, `vision_verifier`, `forge_dashboard`,
+  `benchmarks_daily`, `public_tunnel`.
+- **Full only:** `smart_steward`, `personal_sync`, `routes_runner`, `routes_audit`,
+  `routes_zones`, `routes_orgs`, `routes_teams`, `routes_wrap`, `routes_messaging_prefs`,
+  `routes_benchmark`, `routes_quality_log`. `terminal_server` is full and core.
+- **Unknown names fail open** (`featureOn` returns true).
+- **Tests:** `__tests__/profiles.test.js`.
+
+### Steward services and their names (`steward.js:335-924`)
+
+- **What:** the real scheduler (the job runner `jobs.js` is never started). Each service has an
+  id, a display name, an interval and the profiles it runs in.
+- **List:** Claude Control `claude-control` (always on, full and wearable); Local Intelligence
+  `ollama`; Resonance `embeddings` (on demand); Whisper STT `whisper` (workers off since
+  2026-07-31/08-03); Voice Shell `voice-shell` (full); Augur `classifier` (5 min); Intuition
+  `intuition` (60 s); Cartographer `stack-scanner` (6 h, full); Dream Cycle `dream` (6 h);
+  Archivist `consolidation` (12 h); Situation learner (24 h, every profile); Voice report
+  (24 h); Scout (12 h); Orchestrator (4 h); Evolution Engine `evolution` (6 h); Forge `autodev`
+  (1 h); Tether `tailscale`; Translator `translate`; Voice reader; Photo reader; Core
+  `pan-server`.
+- **Dev:** Steward does not run on dev (7781). See also "Steward (server-side)".
+
+### Smart Steward (`smart-steward.js`; 2026-06-05)
+
+- **What:** every few minutes looks at open alerts, services down and failed restarts, and when
+  something is wrong asks Claude what to do. Started at `server.js:6297` when `smart_steward` is
+  on (full profile).
+- **Tests:** none found.
+
+### Carrier observability and swap history (`carrier-observability.js`; 2026-05-17)
+
+- **What:** Carrier output goes to `<data>/../logs/carrier.log` (10 MB, rotates to .1 and .2).
+  Each Craft keeps its last stderr lines. Every swap phase is recorded.
+- **API:** `GET /api/carrier/swap-history` (why a swap rolled back, `triggered_by`, reason),
+  `/lifeboat/status|confirm|rollback`,
+  `/api/carrier/status|health|ready|heal|clients|client-send|shadow|shadow/promote|shadow/stats|shutdown`,
+  `/api/dashboard/bundle-hash` (all in `carrier.js`).
+- **Rollback:** 30 s window after a swap (`ROLLBACK_TIMEOUT_MS`, `carrier.js:121`); a Craft that
+  dies in it rolls back by itself. See also "Lifeboat widget".
+
+### Hybrid memory search (`memory-search.js`)
+
+- **What:** FTS5 word search and sqlite-vec meaning search over `events`, merged by reciprocal
+  rank fusion. Date search: `parseWhen` and `searchMemoryByDate` (`memory-search.js:763,838`;
+  see "Recall by day"). The embed call has a hard 500 ms cap (2026-05-10).
+- **API:** `GET /api/v1/memory/search` (also in the MCP section),
+  `GET /api/v1/memory/backfill-status`, `POST /api/v1/memory/backfill-abort`,
+  `POST /api/v1/memory/backfill-disable` (`server.js:4384,4496,4508`).
+- **Tests:** `__tests__/event-search.test.js`, `search-again.test.js`.
+
+### Memory tiers (`memory/`)
+
+- **Semantic** (`semantic.js`): subject, predicate, object facts with embeddings. A new fact that
+  matches an old one above 0.85 with a different object replaces it.
+- **Episodic** (`episodic.js`): what happened, with importance and decay; recalled by meaning
+  plus recency plus importance. Project filled from the session since 2026-09-01.
+- **Procedural** (`procedural.js`): learned step lists with success rates.
+- **Context builder** (`context-builder.js`): facts, then episodes, then procedures, inside a
+  token budget.
+- **Archivist** (`consolidation.js`, steward `consolidation`, 12 h) writes the tiers.
+- **Tests:** none found.
+
+### Memory as browsable markdown (`memory/wiki.js`; 2026-08-24)
+
+- **What:** `GET /api/v1/memory/wiki?dir=` (`server.js:4396`) writes the memory out as markdown
+  files. Rebuilt on each call, never read back, no model call.
+
+### Memory scopes (`db-registry.js`)
+
+- **API:** `GET /api/v1/memory/scopes` lists DB scopes; `POST /api/v1/memory/scope/:scope/wipe`
+  deletes a scope's data and refuses `main` (`server.js:4379,4740`).
+
+### Event filters (`event-filters.js`; 2026-07-14, tracked 2026-08-03)
+
+- **What:** `NEVER_STORE` event types are dropped before they reach `events`; `NEVER_EMBED` types
+  are stored but never vectorized. Telemetry like heartbeats, tool hooks and swap markers.
+  `screen_context` stays searchable on purpose.
+- **Rule:** only types nothing reads may go in NEVER_STORE.
+
+### Panel broadcaster (`panel-broadcaster.js`)
+
+- **What:** the `/ws/panels` WebSocket. Pushes the data of the main dashboard panels (services,
+  progress, devices list, automation status) on a timer straight into the dashboard's cache, so
+  a panel opens without a fetch. Started at `server.js:6133`.
+
+### ΠAN's reasoning steps (`intuition/reasoning.js`, `intuition/synthesis.js`; 2026-05-15)
+
+- **What:** each thought is a typed step (observe, recall, infer, contradict, question, doubt,
+  intend, commit) with confidence, evidence refs and parent steps. The synthesis paragraph is a
+  rendering of the latest cycle.
+- **API:** `GET /api/v1/pan/reasoning/recent`, `GET /api/v1/pan/reasoning/cycle/:id`,
+  `GET /api/v1/pan/reasoning/why/:stepId`, `POST /api/v1/pan/reasoning/cycle`
+  (`server.js:2091-2140`); `GET /api/v1/pan/synthesis`.
+
+### Interjections and the action engine (`intuition/action.js`)
+
+- **What:** when Intuition decides to speak up, it sends to the ΠAN chat thread, a WebSocket
+  broadcast `pan_interjection`, and connected clients (speak or notify). The device is chosen
+  from `now.where` and the last chat message's source (`action.js:30-60`; see "Where he is").
+- **API:** `GET /api/v1/interjections?user=&limit=`, `POST /api/v1/interjections/:id/feedback`
+  (`server.js:2185,2198`). Feedback feeds the dismissal block in the voice prompt.
+
+### Hub discovery on the LAN (`discovery.js`; 2026-08-10)
+
+- **What:** answers the UDP broadcast "PAN_DISCOVER" on port 7778 with
+  "PAN_HERE:{name, port, version, hostname}" so an installer finds the hub. Adds a Windows
+  firewall rule once if it can.
+- **On:** the `lan_discovery` profile flag and `answersDiscovery()` (a ΠAN on 127.0.0.1 only
+  answers nothing, 2026-11-19). `server.js:6212`.
+
+### Public tunnel (`cloudflare-tunnel.js`; opt in since 2026-08-07)
+
+- **What:** Tailscale funnel, else a Cloudflare Quick Tunnel (downloads `cloudflared`), giving a
+  public URL. Off unless `PAN_ENABLE_PUBLIC_TUNNEL=1`: it once served settings with keys to
+  anyone.
+- **API:** `GET /api/v1/tunnel/status`, `POST /api/v1/tunnel/start` (`server.js:3871,3901`).
+
+### Privacy pipeline and anonymizing (`routes/privacy.js`, `compute-to-data.js`, `anonymize.js`, `anonymizer.js`, `sensitivity.js`)
+
+- **What:** before a cloud model call, text can be stripped of emails, phones and addresses
+  (`anonymize.js`), classified for sensitivity, and only a local summary sent
+  (`compute-to-data.js queryWithPrivacy`, used by `context-router.js`). `anonymizer.js` is the
+  typed placeholder version for exports. On the voice path: see "His line is scrubbed before
+  any prompt".
+- **API:** `GET /api/v1/privacy/status|dp|routing|sensitivity|c2d`,
+  `POST /api/v1/privacy/config|classify|route`.
+- **Not sure** how much of the rest sits on the live voice path today.
+
+### Home Assistant (`home-assistant.js`, `routes/homeassistant.js`; 2026-08-09)
+
+- **What:** voice and API control of smart home devices through Home Assistant, and an event
+  stream of state changes (sampled, not every change). `resolveEntity` turns a spoken room or
+  device name into an entity id.
+- **API:** `GET /api/v1/ha/status|entities|resolve`,
+  `POST /api/v1/ha/control|service|config|connect|disconnect`.
+- **Settings:** `ha_url` (setting), `hass_token` (secret); the stream does nothing without a
+  token. Started at `server.js:6051`.
+- **See:** docs/HOME-ASSISTANT.md.
+
+### Dashboard self heal layers 3 to 5 (2026-05-16, all opt in)
+
+- **Render health** (`dashboard-render-health.js`, `dashboard_health`): files a bug when a widget
+  reports empty or error while the server has data. `POST /api/v1/dashboard/health`,
+  `GET /api/v1/dashboard/render-health/debug`, `POST /api/v1/dashboard/render-health/run`.
+- **Vision verifier** (`dashboard-vision-verifier.js`, `vision_verifier`): every 2 min a vision
+  model checks the dashboard picture against the markup state. `POST /api/v1/dashboard/vision/run`.
+- **Forge auto fixer** (`forge-dashboard.js`, `forge_dashboard`, setting
+  `forge_dashboard_autofix`): runs `claude -p` on one of those bugs.
+  `POST /api/v1/forge/dashboard/run`.
+- **Off since 2026-11-19:** a hub with no screen never shows the dashboard. See also "Dashboard
+  Watchdog".
+
+### Sensor toggles and Hard Off (`routes/sensors.js`)
+
+- **What:** on/off per sensor for the person (`GET /api/sensors/toggles`,
+  `PUT /api/sensors/toggles/:sensor`, `POST /api/sensors/toggles/bulk`), a Hard Off that only
+  the personal org has (`GET /api/sensors/toggles/hard-off`), and per device sensor policy and
+  attach (`PUT /api/sensors/devices/:deviceId/:sensorId/policy|attach/:attachTo`,
+  `POST /api/sensors/devices/:deviceId/init`). The phone's list is "Phone Sensors list".
+
+### Face identity clusters (`routes/identity.js`)
+
+- **What:** faces the webcam sees are grouped into clusters; the owner binds a cluster to a
+  person or rejects it. `GET /api/v1/identity/clusters[/:id]`, `POST .../bind|reject`,
+  `POST /api/v1/identity/observe`, `POST /api/v1/identity/enroll-face`,
+  `GET /api/v1/identity/face-status|thumb/:id|voice/:id`.
+- **Needs:** `capture_identity` on.
+
+### Accounts, roles and tokens (`routes/auth.js`)
+
+- **What:** sign in by Google or GitHub id token, ΠAN API tokens, users, roles and power levels.
+  `POST /api/v1/auth/oauth|google-callback|github-callback|logout|mode|dev-token|users`,
+  `GET /me|providers|tokens|roles|power-map`, `PUT /users/:id/name|role|power`,
+  `PUT /roles/:id`, `DELETE /users/:id`, `DELETE /tokens/:id`. Dashboard password:
+  `POST /dashboard/api/verify-password|change-password`.
+- **Rule:** a change to a person holds from their device's next request.
+
+### Org admin beyond CRUD (`routes/orgs.js`, `org-db.js`, `org-policy.js`)
+
+- **API:** `POST /api/v1/orgs/switch`; invites `POST/DELETE /orgs/:id/invites`,
+  `POST /orgs/join/:token`; member role and removal; `POST /orgs/:id/isolate` (move an org to its
+  own DB file `pan.<scope>.db`); cross org shares `POST/GET/DELETE /orgs/:id/share(s)`;
+  `GET /orgs/:id/storage`; `GET /api/v1/org/policy` (incognito and blackout allowed, used by the
+  phone to grey out toggles). See also "Organization & Multi-Tenancy System".
+
+### Audit log (`routes/audit.js`, full profile)
+
+- **What:** a per org audit log with an HMAC chain. `GET /api/v1/audit/log|verify|export|stats`.
+
+### Messaging preferences (`routes/messaging-prefs.js`, full profile)
+
+- **What:** how ΠAN reaches a person: default channel per media type for a user or org, per
+  contact overrides, usage learning. `GET /resolve|defaults|contacts`,
+  `POST /default|contact|usage`.
+
+### Chat endpoints not in the Chat section (`routes/chat.js`)
+
+- **Calls:** `POST /api/v1/chat/calls/start`, `/calls/:id/answer|end|signal`,
+  `GET /calls/:id/signals|active|incoming` (WebRTC signalling for `/v2/call`).
+- **Mail and inbox:** `GET /chat/inbox|outbox|unified-inbox|mail|unread`, `POST /chat/compose`,
+  `GET /chat/contacts|contact-search|contact-channels/:id`, `PUT /chat/contacts/:id`,
+  `POST /chat/threads/dm|group|:id/read`, `POST /chat/pan-reply`, calendar
+  `GET/DELETE /chat/calendar`.
+
+### Email endpoints (`routes/email.js`)
+
+- **API:** `GET /api/v1/email/status|config|folders|messages|presets`,
+  `POST /email/test|sync|send|mark-read`. IMAP receive, SMTP send. "Email System" says send
+  returns 400 (task #394); not checked whether that is still true.
+
+### pan-client commands and upkeep (`pan-client/pan-client.js`, `routes/client.js`)
+
+- **Commands from the hub:** `ping`, `shell_exec`, `notification`, `open_app`, `open_url`,
+  `tts_speak`, `screenshot`, `audio_capture`, `media_control`, `display_control`,
+  `file_transfer`, `restart_service`, `eval_window`, `wrap_app`, `stream_receive`, `ble_scan`,
+  `smart_home`, `send_to_local_claude`, `self_update`.
+- **Hub side:** `POST /api/v1/client/shell` (streamed shell output), `POST /client/push-update`
+  (git pull or bundle, 2026-06-05), `POST /client/metrics` (CPU, RAM, disk, network every 30 s),
+  `POST /client/:id/approve|deny`, `GET /client/audit-log`, `GET /client/status[/:id]`. Scripts
+  served at `/client/pan-client.js`, `/client/PAN-tray.ps1`, `/client/PAN-status.ps1`.
+- **Presence:** every 30 s, see "Device presence".
+- **Local status file:** `pan-client/pan-status.json` (connected, approved, mode, heartbeat age),
+  read by the tray. See also "PAN client names" and "PAN client Ollama watchdog".
+
+### Device command queue (`routes/devices.js`)
+
+- **API:** `GET /api/v1/devices/list`, `PATCH /devices/:id/rename`, `POST /devices/command`,
+  `GET /devices/commands/pending|history|:id/logs`, `POST /devices/commands/:id/status`. Phone
+  host names are forced to `phone-<id>` (bug #681).
+
+### Activity API (`routes/activity.js`)
+
+- **API:** `POST /api/v1/activity` (any device may log a focus event), `GET /activity/recent`,
+  `GET /activity/preferences` (opens per app, average time), `GET /activity/match?q=` (fuzzy
+  app or title match for voice). See "Activity Tracker".
+
+### Claude Code hooks shipped in the repo (`service/src/hooks/`, `routes/hooks.js`)
+
+- **behavioral-lock-breaker.js** (Stop): spots Claude stuck giving the same stock reply to short
+  probes and pushes a nudge (bug #769, 2026-05-22). Registered in the user's Claude settings.
+- **capture-mid-turn.js** and **mid-turn-text.js** (Stop): text Claude wrote between tool calls
+  reaches memory. Test `__tests__/mid-turn-text.test.js`.
+- **session-reporter.js** (Stop): tells ΠAN what a session did so the phone can say it; scoped by
+  cwd.
+- **bug-logging-rule.js** (UserPromptSubmit, project settings): reminds Claude of the bug logging
+  rule when the prompt says something broke.
+- **Also:** "Topic brief for Claude threads" (UserPromptSubmit) and "Claude Code approvals"
+  (PermissionRequest) have their own entries.
+- **Hub endpoints:** `/hooks/internal/session-report|session-nudges|session-watermark|transcript-sync|recap-inspect`,
+  and `POST /hooks/:eventType` stores any hook as an event.
+- **Hook replies are an empty 200 (`routes/hooks.js`; LIVE on the hub since Craft 95, Nov 26).**
+  The hub answers a Claude Code hook with an empty 200 instead of `{"ok":true}` or
+  `{"ok":false}`. With the JSON body the Claude desktop app showed "A hook gave no usable
+  answer". Hooks that hand back real content (the topic brief, approvals) are not changed by
+  this.
+
+### Transcript watcher (`transcript-watcher.js`)
+
+- **What:** watches Claude Code JSONL transcripts per project folder and pushes new messages to
+  subscribers (the dashboard), one watcher per cwd, torn down with the last subscriber.
+
+### Claude Control (`claude-control.js`; 2026-06-10)
+
+- **What:** an always on Claude PTY per machine for computer control by voice.
+  `POST /api/v1/claude-control/send`, `GET /output|status`, `POST /restart`
+  (`server.js:2896-2938`). Steward service `claude-control` (full, wearable).
+
+### ServiceNow draft loop (`servicenow-loop.js`)
+
+- **What:** `POST /api/v1/sn-loop/draft` (`server.js:1082`): a work machine posts a Slack
+  conversation; ΠAN returns a drafted reply. ΠAN never sends. Stateless.
+
+### Hub odds and ends (`server.js`)
+
+- **Diagnostics:** `GET /api/v1/diagnostics` (pid, uptime, Tailscale, for phone settings),
+  `GET /api/v1/processes`, `GET /api/v1/logs/summary`, `GET /api/v1/tailscale/peers`,
+  `GET /api/v1/ollama-url`, `GET /api/v1/mode`.
+- **Windows of the Tauri shell:** `POST /api/v1/windows/open|focus|close` (`server.js:6479-6506`).
+- **Backups:** `POST /api/v1/backup/create`, `GET /api/v1/backup/list` (beside
+  `/api/v1/replication/*`).
+- **Cartographer:** `GET /api/v1/stacks`, `POST /api/v1/stacks/scan` (stack scanner, 6 h).
+- **Atlas data:** `GET /api/v1/atlas/services|summary|service/:id|apps`,
+  `POST /atlas/register-app`, `DELETE /atlas/apps/:id`.
+- **Internal:** `POST /api/internal/event`, `POST /api/internal/pan-notify`,
+  `POST /api/admin/restart`.
+- **Context:** `POST /api/v1/context/reset`, `GET /api/v1/context/size`,
+  `GET /api/v1/context-briefing`.
+- **Dev:** `POST /api/v1/dev/start`, `ALL /api/v1/dev/proxy/*`.
+
+### Project runner (`project-runner.js`, `routes/runner.js`, full profile)
+
+- **What:** starts and stops services a project lists in its `.pan` file.
+  `GET /api/v1/runner/projects|project|running|logs`, `POST /start|stop|stop-all`. Page
+  `public/runner.html`.
+
+### Wrapper apps (`routes/wrap.js`, full profile)
+
+- **What:** Tauri webviews around third party apps (Discord, Slack and so on) with an injected
+  script. `POST /wrap/open/:service`, `/wrap/inbound` (message, ready, heartbeat, debug),
+  `/wrap/scan`, `/wrap/send/:service`, `GET /wrap/messages|services`. Heartbeats are the only
+  source of Intuition's `active_apps`.
+
+### Screen recorder (`screen-recorder.js`)
+
+- **What:** FFmpeg screen capture at 2 frames a second for bug reports, frames extractable. Used
+  from router.js and api.js. Not sure it is reachable by voice today.
+
+### Dashboard tabs and project pieces (`routes/dashboard.js`)
+
+- **Open tabs:** `POST /dashboard/api/open-tabs`, `PUT /:sessionId`, `PATCH /:sessionId/rename`,
+  `POST /:id/reopen`, `DELETE /:id/purge`, `GET /all-tabs`.
+- **Projects:** milestones, sections and section items, bulk tasks, team, task reorder and
+  search.
+- **Scout findings:** `GET /dashboard/api/scout`, `POST /scout/scan|run|:id/status`,
+  `PATCH /scout/:id`.
+- **Other:** `POST /dashboard/api/phone-ping` (the mobile page's heartbeat every 2 min),
+  `GET /dashboard/api/photos`, `DELETE /photos/:file`, `GET /dashboard/api/jobs` (Windows
+  scheduled tasks, not `jobs.js`).
+
+### Smart router and action paths (`smart-router.js`, `resistance.js`)
+
+- **What:** `smartPickApp`, `pickDevice` and `detectCorrection` choose a device and app for an
+  action and learn from a correction naming another device. `resistance.js` keeps several ways
+  to do an action with success rates and tries the likeliest first. Both used by router.js and
+  api.js. The phone's side is "Music and directions from a reply".
+- **See:** docs/MULTI-DEVICE-ROUTING.md.
 
 ---
 
@@ -2637,8 +3779,12 @@ children can have adult-sounding voices and vice versa).
 
 - **Purpose:** Continuous presence detection via the PC webcam. Primary signal
   for "who is at the desk" in the identity system.
+- **Status (Nov 26 review):** off by default since 2026-06-15: it runs only when the
+  `identity` capture switch is on (setting `capture_identity`, or `PAN_ENABLE_IDENTITY=1`;
+  see "Capture consent and the privacy page"). It runs on the computer the hub runs on, which
+  is a headless mini PC, so on the hub it sees no one.
 - **File:** `service/src/webcam-watcher.js`
-- **Polling:** Every 30s (unlocked) or every 5 min (identity locked)
+- **Polling:** every 60 s (`webcam-watcher.js:52`; this entry said 30 s before) or every 5 min (identity locked)
 - **Burst mode:** Up to 3 frames per cycle; stops on first face detection
 - **Debounce:** Needs 2 consecutive misses before flipping to "desk empty"
 - **Idle gate:** If keyboard/mouse active in last 2 min, stays locked even if
@@ -2652,13 +3798,19 @@ children can have adult-sounding voices and vice versa).
 
 ## Screen Watcher
 
-- **Purpose:** Vision AI analysis of what's on screen every 60s. Used by
-  intuition.js as the #1 activity signal (overrides webcam context).
+- **Purpose:** Vision AI analysis of what's on screen every 120 s (`screen-watcher.js:62`;
+  60 s until it was raised). Feeds Intuition's `now.activity`.
+- **Status (Nov 26 review):** off by default since 2026-11-19 (commit 7920d7a3, "nothing
+  watches a screen by itself"): it runs only when the `screen` capture switch is on (setting
+  `capture_screen`, or `PAN_ENABLE_SCREEN=1`; see "Capture consent and the privacy page"). It
+  watches the screen of the computer the hub runs on, which on the hub is a headless mini PC.
+  Another computer's screen is the remote screen watcher's job (see "Remote screen watcher").
 - **File:** `service/src/screen-watcher.js`
 - **Capture:** FFmpeg gdigrab (Windows) or Tauri shell (port 7790 if available)
-- **Analysis:** Resizes to 640px wide JPEG → minicpm-v → stores `screen_context` event
-- **Idle skip:** After 3 min inactivity, stops capturing
-- **Stale timeout:** Context older than 120s is ignored by intuition.js
+- **Analysis:** Resizes to 640px wide JPEG → vision model (minicpm-v, then moondream since
+  2026-05-01) → stores `screen_context` event
+- **Idle skip:** disabled (`IDLE_THRESH = Infinity`). It was 3 min, then 30 min.
+- **Stale timeout:** Context older than 240 s is ignored by Intuition (was 120 s)
 - **Burst mode:** `startBurst(durationMs, burstMs)` — rapid captures during Craft
   swap / reload events (default: every 5s for 60s)
 - **Status endpoint:** `GET /api/v1/screen-watcher/status`
@@ -2782,16 +3934,22 @@ Must rebuild after editing any `.svelte` file.
 
 ## Activity Tracker
 
-- **Purpose:** Track which app/window is in focus on the desktop PC. Primary
-  activity signal for presence and intuition context.
+- **Purpose:** Track which app/window is in focus on the computer the hub runs on.
+- **Status (Nov 26 review):** off by default: it runs only when the `activity` capture switch
+  is on (setting `capture_activity`, or `PAN_ENABLE_ACTIVITY=1`; `profiles.js captureDefault`
+  returns false). It writes `device_id: 'hub'`, so on the hub (a headless mini PC) it watches
+  no one. Which window is in front on his other computers comes from pan-client instead (see
+  "Device presence").
 - **File:** `service/src/activity-tracker.js`
 - **How:** Polls the active foreground window every 3 seconds using Windows
   Win32 API (via PowerShell `GetForegroundWindow`). Logs focus changes to
   `activity_events` table. Tracks process name + window title + duration.
 - **Platform:** Windows only. No-op on other platforms.
-- **Data:** `activity_events` table — `process_name`, `window_title`,
-  `focused_at`, `duration_ms`
-- **Used by:** intuition.js (primary activity context), screen watcher (idle check)
+- **Data:** `activity_events` table: `process_name`, `window_title`,
+  `created_at`, `duration_ms` (this entry said `focused_at` before; the column is `created_at`)
+- **Used by:** `router.js` (the recent surfaces block), `speak-router.js`, `mic-router.js` and
+  `/api/v1/activity/*` (see "Activity API"). NOT read by Intuition and not by the screen
+  watcher; this entry said both before, and the comment at `intuition/index.js:824` still does.
 - **Status endpoint:** N/A (data via `GET /dashboard/api/events?type=activity`)
 
 ---
@@ -2861,7 +4019,8 @@ Must rebuild after editing any `.svelte` file.
   to zones (e.g. "only allow recording at home", "mute when at work").
 - **File:** `service/src/routes/zones.js`
 - **API:** `getActiveZones()`, `findZonesForPoint(lat, lng)`
-- **Used by:** voice router (location-aware commands), privacy enforcement
+- **Used by:** only `routes/zones.js` and `server.js` (Nov 26 review). This entry said the
+  voice router and privacy enforcement use it; neither does.
 - **Storage:** `zones` table — name, boundary polygon, rules JSON
 
 ---
@@ -2947,6 +4106,8 @@ The MCP server (`service/src/mcp-server.js`) exposes tools to Claude Code.
 | `pan_terminal_send` | Send text to an active PTY terminal session |
 | `pan_browser` | Browser control: list_tabs, navigate, click, type, screenshot |
 | `pan_guardian` | Security scanning: status, decisions, scan, config |
+| `pan_log_exchange` | Saves one exchange (what the person wanted, what Claude concluded, a topic, the surface) to memory so it is searchable later. For the surfaces PAN does not capture by itself (desktop app, Claude.ai, Cowork, Chrome). One `session_id` per conversation. `mcp/pan-tools.js`, `routes/exchange.js`. Added to this list Nov 26 review. |
+| `pan_quality_compute`, `pan_quality_log_attempt`, `pan_quality_get_round`, `pan_quality_best_seed`, `pan_quality_history` | The Quality Log for rated creative attempts (songs, art, game mechanics): score ratings without saving (q_avg, q_geo, q_min), log an attempt, a round with its running best, the best seed for the next round, recent history. All call `/api/v1/quality-log/*`. `mcp/quality-log-tools.js`; the stdio server `quality-log-mcp.js` names them without the prefix (`compute_q`, `log_attempt`, `get_round`, `best_seed`, `get_history`) and adds a stub `fit_weights`. Added to this list Nov 26 review. |
 
 ### Router Tool (`pan`) — All Actions
 
@@ -3079,7 +4240,13 @@ Decides whether a pause means **"he's finished"** or **"he's just thinking"** �
 **Files:** `android/app/src/main/java/dev/pan/app/stt/SherpaStreamingStt.kt` (the decision), `SmartTurn.kt` (the model), `WhisperLogMel.kt` (its audio features).
 
 ### How a turn ends
-1. **Candidate:** sherpa's endpoint fires after `ENDPOINT_SILENCE_S` = 0.35 s of trailing silence.
+Since app 0.4.123 (Nov 15) the candidate is 200 ms of VAD quiet, with a first look at 96 ms,
+and the phone looks again every 0.2 s while it holds a turn (see "Faster end of turn, and an
+optional mm-hm" under "Voice student model", and docs/TURN-TAKING.md row 1). Flow mode and
+the strong score override are in "Flow mode and the strong turn override" under "Phone app
+(entries added Nov 26 review)". The steps below are the design as first built.
+
+1. **Candidate:** sherpa's endpoint fired after `ENDPOINT_SILENCE_S` = 0.35 s of trailing silence (until app 0.4.123).
 2. **Judge:** [Pipecat Smart Turn v3.2](https://github.com/pipecat-ai/smart-turn) listens to the last 8 s of the current turn's audio and returns P(finished). Once per pause, keyed on when he last spoke; runs off the audio thread (AudioRecord's ~160 ms buffer would otherwise drop the words after the pause).
 3. **Commit** only if P ≥ 0.5 **and** the last word is not dangling (`isTurnComplete` — "to", "because", "the"…). Otherwise hold up to `INCOMPLETE_MAX_WAIT_MS` (1.4 s), then commit anyway. Flow mode (`FLOW_SILENCE_MS`) is unchanged.
 
@@ -3135,7 +4302,8 @@ The phone's streaming zipformer decides WHEN a turn ends; the hub decides WHAT w
 ## Phone mic (LIVE)
 
 - **One switch:** the LIVE card on the main screen (`TOGGLE_MIC`) starts and stops
-  listening, and this phone's own Microphone row under Sensors is the same switch
+  listening (since app 0.5.1, Nov 17, there is no main screen: the switch is the mic button on
+  Home and in People, and `TOGGLE_MIC` still works), and this phone's own Microphone row under Sensors is the same switch
   (`MainViewModel.isOwnMic`, app 0.4.65). Before, that row was a separate permission that
   could sit off while PAN listened. Other devices' sensor rows are unchanged.
 - **Unmute listens at once:** `SherpaStreamingStt` loads its recognizer while muted
@@ -3161,7 +4329,10 @@ The phone's streaming zipformer decides WHEN a turn ends; the hub decides WHAT w
   reply to the first half is superseded. `turnOpen` is there for "hey pan" said on its own: the
   reply to it started on his first pause, just before the real line committed, and the line was
   dropped. Logged `reply_wait` / `reply_go`.
-- **Cutting in** (app 0.4.73): 700 ms of him over PAN's own bleed stops PAN. The run ends only
+- **Cutting in** (app 0.4.73; superseded Nov 15 by app 0.4.121 to 0.4.125: words stop ΠAN,
+  "yeah" and humming do not, hold then decide; see "Words stop ΠAN", "Yeah and humming never
+  stop ΠAN" and "Stop works on a real phone" under "Voice student model". What follows is the
+  old rule): 700 ms of him over PAN's own bleed stops PAN. The run ends only
   after 160 ms with nothing over the threshold (`BARGE_IN_GAP_MS`): when one quiet 32 ms window
   ended it, a real sentence took 3.3 s to stop PAN. The recogniser then gets the last 1.2 s of
   audio, so the start of what he said is not lost.
@@ -3187,7 +4358,7 @@ PAN's Android app updates itself from the user's own PAN server — no Play Stor
   Returns 404 if the APK hasn't been built yet.
 
 ### Client side (`UpdateChecker.kt`)
-1. On a fresh `MainActivity.onCreate` (not a rotation), after an 8-second delay (lets Tailscale come up), call `UpdateChecker.check()` and show a toast with what it found: "Update X found, downloading…", "PAN X is up to date", or "Couldn't check for updates: …". If there is an update, call `UpdateChecker.checkAndInstall()`; a failure shows "Update failed: …".
+1. On a fresh `MainActivity.onCreate` (not a rotation), after an 8-second delay (lets Tailscale come up), call `UpdateChecker.check()` and show a toast with what it found: "Update X found, downloading…", "PAN X is up to date", or "Couldn't check for updates: …". If there is an update, call `UpdateChecker.checkAndInstall()`; a failure shows "Update failed: …". Since app 0.5.39 (Nov 19) the launch check fetches a build by itself only on a network that is not metered and not during a call (`UpdatePolicy`); the Settings button still fetches at once.
 2. GET `${baseUrl}/api/v1/apk/version` via the same Hilt `OkHttpClient` everything else uses (Tailscale-aware, falls back to LAN).
 3. Bail if `applicationId != BuildConfig.APPLICATION_ID` — never let the server replace this app with a different one.
 4. If `versionCode > BuildConfig.VERSION_CODE`:

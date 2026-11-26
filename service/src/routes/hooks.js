@@ -1150,7 +1150,6 @@ router.post('/:eventType', (req, res) => {
           );
           console.log(`[PAN #769] UPS injecting nudge id=${pending.id} session=${sessionId.slice(0, 8)}`);
           return res.status(200).json({
-            ok: true,
             hookSpecificOutput: {
               hookEventName: 'UserPromptSubmit',
               additionalContext: brief ? `${pending.body}\n\n${brief}` : pending.body,
@@ -1164,14 +1163,17 @@ router.post('/:eventType', (req, res) => {
 
     if (brief) {
       return res.status(200).json({
-        ok: true,
         hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: brief },
       });
     }
-    res.status(200).json({ ok: true });
+    // An empty 200 is Claude Code's "no output, carry on". A JSON body is checked against its hook
+    // output rules: {"ok":true} is not one of its fields, and the desktop app showed "A hook gave no
+    // usable answer, so it didn't check this action" on tool calls (Nov 26). {"ok":false} is how a
+    // prompt hook blocks, so the error reply could have read as a block.
+    res.status(200).end();
   } catch (err) {
     console.error(`[PAN] Error handling ${eventType}:`, err.message);
-    res.status(200).json({ ok: false, error: err.message });
+    res.status(200).end();
   }
 });
 

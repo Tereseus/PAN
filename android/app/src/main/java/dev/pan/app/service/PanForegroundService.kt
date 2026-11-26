@@ -615,6 +615,7 @@ class PanForegroundService : Service() {
         serviceScope.launch {
             accessoryHub.car.collect { car ->
                 val on = car != null || carForced
+                sensorContext.car = car?.toString() ?: if (carForced) "car" else null
                 if (tts.carMode != on) {
                     tts.carMode = on
                     panLog(if (on) "Car mode on: $car" else "Car mode off")
@@ -1731,7 +1732,7 @@ class PanForegroundService : Service() {
             panLog("PAN muted by voice command")
             VoiceEvents.emit("drop", "reason" to "mute_command", "text" to text)
             muteNow()
-            feedbackSounds.onCommandSent()
+            feedbackSounds.onMuted()
             serviceScope.launch { dataRepository.addUserMessage(text) }
             serviceScope.launch { dataRepository.addPanResponse("[PAN muted]") }
             return
@@ -2365,7 +2366,7 @@ class PanForegroundService : Service() {
                     panLog("PAN muted, the hub heard the command: $text")
                     VoiceEvents.emit("drop", "reason" to "mute_command_hub", "text" to text)
                     runCatching { dataRepository.addPanResponse("[PAN muted]") }
-                    feedbackSounds.onCommandSent()
+                    feedbackSounds.onMuted()
                     withContext(Dispatchers.Main) { muteNow() }
                     return@launch
                 }
@@ -2756,10 +2757,12 @@ class PanForegroundService : Service() {
         // model answers "what time is it in Tokyo" too. The shortcut answered that with the
         // local time and never asked the hub.
 
-        // Battery
-        if (lower.contains("battery") && (lower.contains("how much") || lower.contains("what") || lower.contains("level"))) {
+        // Battery: only when the whole line asks it, and only a real level (a car unit has no battery;
+        // then the hub answers).
+        if (dev.pan.app.service.InstantWords.battery(lower)) {
             val bm = getSystemService(BATTERY_SERVICE) as android.os.BatteryManager
-            return "Battery is at ${bm.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY)} percent."
+            val level = dev.pan.app.service.InstantWords.batteryLevel(bm.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY))
+            if (level != null) return "Battery is at $level percent."
         }
 
         return null // Everything else → LLM classification

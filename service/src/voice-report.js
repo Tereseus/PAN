@@ -16,6 +16,7 @@ import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, rea
 import { join } from 'path';
 import { all, get } from './db.js';
 import { getDataDir } from './platform.js';
+import { timingFilesFor } from './voice-timing.js';
 
 const DIR = join(getDataDir(), 'voice-reports');
 const JUDGE_MODELS = ['gemini:gemini-3.5-flash-lite', 'gemini:gemini-3.1-flash-lite', 'ollama:gemma4:e4b'];
@@ -41,8 +42,8 @@ function stats(xs) {
 function readTimings(day) {
   const byTurn = new Map();
   const totals = [];   // [at, turn] for turns with no RouterCommand (silences)
-  for (const f of ['voice-timing.jsonl.1', 'voice-timing.jsonl']) {
-    const p = join(getDataDir(), f);
+  const [y, m, dd] = day.split('-').map(Number);
+  for (const p of timingFilesFor(new Date(y, m - 1, dd, 12).getTime())) {
     if (!existsSync(p)) continue;
     for (const line of readFileSync(p, 'utf8').split('\n')) {
       if (!line) continue;

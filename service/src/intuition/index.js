@@ -20,6 +20,7 @@
 //   GET /api/v1/intuition/current → {snapshot, as_of}
 
 import fs from 'fs';
+import { whereNow } from './where.js';
 import path from 'path';
 import http from 'http';
 import { db, get, all } from '../db.js';
@@ -137,6 +138,10 @@ export function ensureIntuitionSchema(database) {
   // Migrate existing intuition_snapshots tables that predate the org_id column
   const migrations = [
     `ALTER TABLE intuition_snapshots ADD COLUMN org_id TEXT DEFAULT 'org_personal'`,
+    // Where he is (where.js, Nov 26): seconds since the PC's last input, car mode, GPS speed.
+    `ALTER TABLE device_presence ADD COLUMN idle_s INTEGER`,
+    `ALTER TABLE device_presence ADD COLUMN in_car INTEGER`,
+    `ALTER TABLE device_presence ADD COLUMN speed_kmh REAL`,
   ];
   for (const sql of migrations) {
     try { d.exec(sql); } catch {} // ignore "duplicate column" on fresh DBs
@@ -150,20 +155,25 @@ export function ensureIntuitionSchema(database) {
 
 // ─── Device Presence ───
 // Called by POST /api/v1/client/presence — upserts one row per device.
-export function upsertDevicePresence({ device_id, user_id, activity, screen_title, confidence, platform }) {
+export function upsertDevicePresence({ device_id, user_id, activity, screen_title, confidence, platform, idle_s, in_car, speed_kmh }) {
   if (!device_id) return;
+  const num = (v) => (Number.isFinite(Number(v)) && v !== null && v !== '' ? Number(v) : null);
   try {
     db.prepare(`
-      INSERT INTO device_presence (device_id, user_id, activity, screen_title, confidence, platform, as_of)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO device_presence (device_id, user_id, activity, screen_title, confidence, platform, as_of, idle_s, in_car, speed_kmh)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(device_id) DO UPDATE SET
         user_id = excluded.user_id,
         activity = excluded.activity,
         screen_title = excluded.screen_title,
         confidence = excluded.confidence,
         platform = excluded.platform,
-        as_of = excluded.as_of
-    `).run(device_id, user_id || null, activity || null, screen_title || null, confidence || 0, platform || null, Date.now());
+        as_of = excluded.as_of,
+        idle_s = excluded.idle_s,
+        in_car = excluded.in_car,
+        speed_kmh = excluded.speed_kmh
+    `).run(device_id, user_id || null, activity || null, screen_title || null, confidence || 0, platform || null, Date.now(),
+      num(idle_s), in_car ? 1 : 0, num(speed_kmh));
   } catch (e) {
     console.warn('[DevicePresence] upsert failed:', e.message);
   }
@@ -488,6 +498,14 @@ function buildSnapshot(trigger = 'heartbeat') {
   } else if (lastDeviceSource === 'phone') {
     where = (newestVoice?.place && now - voiceTime < 30 * 60_000) ? newestVoice.place : 'mobile';
   }
+  // The devices' own presence rows (where.js, Nov 26): a computer he is typing on, the car, or the
+  // phone, whichever showed him last. Overrides the guess above when it knows anything.
+  let whereKind = null;
+  try {
+    const rows = db.prepare(`SELECT device_id, activity, platform, as_of, idle_s, in_car, speed_kmh FROM device_presence WHERE as_of > ?`).all(now - 3600_000);
+    const w = whereNow({ rows, voice: voiceTime ? { at: voiceTime, place: newestVoice?.place || null } : null, now });
+    if (w.kind) { where = w.label; whereKind = w.kind; lastDeviceSource = w.kind === 'computer' ? 'desktop' : w.kind; }
+  } catch (e) { console.warn('[Intuition] where:', e.message); }
 
   // ─── SCREEN CONTEXT — vision-based activity (highest priority signal) ───
   // Screen watcher captures a screenshot every 30s and runs it through vision AI.
@@ -810,6 +828,7 @@ function buildSnapshot(trigger = 'heartbeat') {
     },
     signals: {
       device_source: lastDeviceSource,
+      where_kind: whereKind,
       sensors_active: [...sensorsActive],
       active_apps: [...activeApps],
       screen_context: screenCtx ? { description: screenCtx.description, age_ms: now - screenCtx.ts } : null,

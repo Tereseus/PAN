@@ -36,7 +36,21 @@ class SensorContext @Inject constructor(
 
     companion object {
         private const val TAG = "PanSensor"
+
+        /** A car unit (Joying and the like) has no battery; a phone or tablet always has one. */
+        fun isCarUnit(ctx: Context): Boolean = runCatching {
+            val b = ctx.registerReceiver(null, android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED))
+            b != null && !b.getBooleanExtra(android.os.BatteryManager.EXTRA_PRESENT, true)
+        }.getOrDefault(false)
     }
+
+    /**
+     * In the car now: the car's name (its Bluetooth audio, from AccessoryHub) or "car unit" when this
+     * device is the car's own screen. Sent with every turn as "car", so the hub knows he is in the
+     * car (service/src/intuition/where.js, Nov 26). Null when not in a car.
+     */
+    @Volatile var car: String? = null
+    private val carUnit by lazy { isCarUnit(context) }
 
     private val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
     private val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
@@ -291,6 +305,7 @@ class SensorContext @Inject constructor(
             "tz" to java.util.TimeZone.getDefault().id
         )
         if (phoneSensors.isNotEmpty()) envelope["phone"] = phoneSensors
+        (car ?: if (carUnit) "car unit" else null)?.let { envelope["car"] = it }
         if (pendantSensors.isNotEmpty()) envelope["pendant"] = pendantSensors
 
         return envelope

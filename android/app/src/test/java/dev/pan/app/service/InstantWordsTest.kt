@@ -16,4 +16,19 @@ class InstantWordsTest {
             "do you think a flashlight would help", "tell her to turn on the flashlight when she gets there", "the olympic torch", ""))
             assertFalse(line, InstantWords.flashlight(line))
     }
+
+    @Test fun aBatteryQuestionIsTheWholeLine() {
+        for (line in listOf("what's my battery", "What is the battery level?", "battery level", "how much battery do I have left",
+            "pan, how much battery", "hey pan what's the battery at", "how's my battery", "my battery percentage"))
+            assertTrue(line, InstantWords.battery(line))
+        for (line in listOf("the battery is at 2000 mAh and two small capacitors have to be tuned to the coil",
+            "what battery should we buy for the medallion", "how much does the battery cost", "battery", "what level are we on", ""))
+            assertFalse(line, InstantWords.battery(line))
+    }
+
+    @Test fun onlyARealLevelIsSaid() {
+        assertTrue(InstantWords.batteryLevel(57) == 57)
+        assertTrue(InstantWords.batteryLevel(Int.MIN_VALUE) == null)
+        assertTrue(InstantWords.batteryLevel(211) == null)
+    }
 }
