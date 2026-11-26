@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Where ΠAN thinks you are · How to use ΠAN</title>
+<link rel="stylesheet" href="guide.css">
+</head>
+<body>
+<main>
+<a class="back" href="index.html">Back to all topics</a>
+<h1>Where ΠAN thinks you are</h1>
+<p class="lead">ΠAN keeps a simple guess of where you are and what you are doing. It uses the guess to answer better, and to pick which device should speak.</p>
+
+<figure>
+<svg viewBox="0 0 340 300" role="img" aria-labelledby="d10t">
+  <title id="d10t">Three signs feed ΠAN's guess: your keyboard or mouse on a computer with ΠAN, your car's Bluetooth or car speed, and your phone's place. The newest sign wins.</title>
+  <defs>
+    <marker id="d10a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path class="ah" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+  </defs>
+  <rect class="box" x="10" y="8" width="320" height="50" rx="10"/>
+  <text class="t" x="170" y="39" text-anchor="middle">You used a computer with ΠAN</text>
+  <rect class="box" x="10" y="70" width="320" height="50" rx="10"/>
+  <text class="t" x="170" y="101" text-anchor="middle">Car Bluetooth, or car speed</text>
+  <rect class="box" x="10" y="132" width="320" height="50" rx="10"/>
+  <text class="t" x="170" y="163" text-anchor="middle">Your phone's place</text>
+  <line class="arrow" x1="170" y1="184" x2="170" y2="222" marker-end="url(#d10a)"/>
+  <text class="ts" x="182" y="208">newest sign wins</text>
+  <rect class="box-home" x="40" y="226" width="260" height="66" rx="10"/>
+  <text class="tb" x="170" y="252" text-anchor="middle">ΠAN's guess</text>
+  <text class="t" x="170" y="276" text-anchor="middle">computer, car or out</text>
+</svg>
+<figcaption>No camera or screen watching is used for this guess.</figcaption>
+</figure>
+
+<h2>How ΠAN guesses</h2>
+<ul>
+  <li><b>At the computer:</b> you typed or moved the mouse in the last two minutes on a computer that has ΠAN on it.</li>
+  <li><b>In the car:</b> your phone is on a car's Bluetooth, or it moved at car speed in the last ten minutes.</li>
+  <li><b>Out:</b> otherwise, the place your phone was in when you last talked to ΠAN.</li>
+</ul>
+
+<h2>What you see</h2>
+<p>Under the connection line on <span class="ui">Home</span>, a short line says what ΠAN thinks you are doing. Tap it to see more: <span class="ui">With</span> (who is around), <span class="ui">Mood</span> and <span class="ui">Lately</span> (recent topics).</p>
+
+<h2>What ΠAN uses it for</h2>
+<ul>
+  <li>Answers about your place: <span class="say">where am I?</span>, <span class="say">is it going to rain?</span>, <span class="say">when is sunset?</span></li>
+  <li>Picking the device that should speak up.</li>
+</ul>
+<p>Your exact position is never put in what ΠAN reads. It uses the name of the place. To stop ΠAN using your location, turn location off under <span class="ui">Settings</span>, <span class="ui">Privacy</span>, <span class="ui">What each device may use</span>.</p>
+
+<h2>When ΠAN speaks up by itself</h2>
+<p>Most of the time ΠAN only answers. It speaks without being asked when:</p>
+<ul>
+  <li>Someone on your ΠAN sends you a message, and <span class="ui">Read messages out loud</span> is on.</li>
+  <li>Someone calls you. Your phone rings.</li>
+  <li>You get stuck looking for a word. ΠAN may offer it.</li>
+</ul>
+<p>The hub owner can choose which of their devices reads messages and reminders out. Go to <span class="ui">Settings</span>, <span class="ui">Voice and sounds</span>, <span class="ui">Reminders and messages</span>. Pick <span class="ui">Send them here</span> for this device, or <span class="ui">Follow me</span> for the device you last talked to ΠAN on.</p>
+<p>Things the hub wants you to see show on <span class="ui">Home</span> under <span class="ui">Needs you</span>. Tap <span class="ui">Dismiss</span> when you have read one.</p>
+<p>ΠAN starting a short talk with you on its own, for example to suggest a break, is <span class="coming">Coming</span>.</p>
+
+<nav class="pager">
+  <a href="car.html">Back: In the car</a>
+  <a href="index.html">Back to all topics</a>
+  <a href="models.html">Next: Models</a>
+</nav>
+</main>
+</body>
+</html>

@@ -22,9 +22,10 @@ fun ListenWordsSection() {
     var nameText by remember(name) { mutableStateOf(name.joinToString("\n")) }
     val rememberW by ListenMode.rememberWords.collectAsState()
     var releaseText by remember(release) { mutableStateOf(release.joinToString("\n")) }
-    var rememberText by remember(rememberW) { mutableStateOf(rememberW.joinToString("\n")) }
-    val changed = nameText.trim() != name.joinToString("\n") || releaseText.trim() != release.joinToString("\n") ||
-        rememberText.trim() != rememberW.joinToString("\n")
+    // No words end Don't remember any more, only the button (owner, Nov 25), so the box for them is
+    // gone (Nov 26); what was saved stays untouched.
+    val rememberText = rememberW.joinToString("\n")
+    val changed = nameText.trim() != name.joinToString("\n") || releaseText.trim() != release.joinToString("\n")
 
     Text("How ΠAN listens", style = MaterialTheme.typography.titleMedium)
     Text(
@@ -45,12 +46,6 @@ fun ListenWordsSection() {
         value = releaseText, onValueChange = { releaseText = it },
         label = { Text("Words that end Listen only") },
         placeholder = { Text("\"You can talk\" always works") },
-        modifier = Modifier.fillMaxWidth(), minLines = 2
-    )
-    OutlinedTextField(
-        value = rememberText, onValueChange = { rememberText = it },
-        label = { Text("Words that end Don't remember") },
-        placeholder = { Text("\"Remember again\" always works") },
         modifier = Modifier.fillMaxWidth(), minLines = 2
     )
     Button(onClick = { ListenMode.setWords(ctx, nameText, releaseText, rememberText) }, enabled = changed) { Text("Save") }

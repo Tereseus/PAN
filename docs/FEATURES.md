@@ -3328,6 +3328,18 @@ too, and updates itself.
 Hub features outside the voice path that had no entry. Code is under `service/src/` unless
 the path says otherwise.
 
+### How to use ΠAN: the guide (`service/public/guide/`, Nov 26, first version)
+
+- **What:** 14 plain pages for regular people (what ΠAN is, getting started, talking, listening
+  modes, memory, people, translating, showing things, the car, where you are, models, using your
+  computer, privacy, updates and help), inline SVG diagrams, works offline, light and dark. Served
+  by the hub at `/guide/` (the root static folder). Teaches only the items marked regular in
+  `docs/UI-INVENTORY.md`; anything not built is marked Coming. Where each claim came from, and the
+  ones not sure: `docs/GUIDE-SOURCES.md`.
+- **Not yet:** shown in app Settings, read by ΠAN to answer how-to questions, on a computer page.
+- **Found while writing:** Settings > How ΠAN listens still had "Words that end Don't remember",
+  which nothing has honoured since Nov 25; the box is removed (next app build).
+
 ### Personality per device, and the old pages gone (hub Craft 101, Nov 26)
 
 - **Personality:** `router.js personalityFor(context)`: a turn that carries its own `personality`

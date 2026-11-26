@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Getting started · How to use ΠAN</title>
+<link rel="stylesheet" href="guide.css">
+</head>
+<body>
+<main>
+<a class="back" href="index.html">Back to all topics</a>
+<h1>Getting started</h1>
+<p class="lead">You pair your phone with your hub once. After that the phone finds the hub by itself.</p>
+
+<figure>
+<svg viewBox="0 0 340 120" role="img" aria-labelledby="d2t">
+  <title id="d2t">The hub shows a code, the phone scans it, you tap Pair and the phone is connected.</title>
+  <defs>
+    <marker id="d2a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path class="ah" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+  </defs>
+  <rect class="box" x="4" y="20" width="92" height="80" rx="10"/>
+  <text class="t" x="50" y="54" text-anchor="middle">Hub shows</text>
+  <text class="t" x="50" y="76" text-anchor="middle">a code</text>
+  <line class="arrow" x1="98" y1="60" x2="121" y2="60" marker-end="url(#d2a)"/>
+  <rect class="box" x="124" y="20" width="92" height="80" rx="10"/>
+  <text class="t" x="170" y="54" text-anchor="middle">Phone</text>
+  <text class="t" x="170" y="76" text-anchor="middle">scans it</text>
+  <line class="arrow" x1="218" y1="60" x2="241" y2="60" marker-end="url(#d2a)"/>
+  <rect class="box" x="244" y="20" width="92" height="80" rx="10"/>
+  <text class="t" x="290" y="54" text-anchor="middle">Tap Pair</text>
+  <text class="t" x="290" y="76" text-anchor="middle">Connected</text>
+</svg>
+<figcaption>Pairing takes about a minute.</figcaption>
+</figure>
+
+<h2>Pair your phone</h2>
+<ol class="steps">
+  <li>On the hub computer, open the <span class="ui">Pair a phone</span> page. ΠAN's setup opens it for you when it finishes. If you closed it, type <b>localhost:7777/pair</b> into the hub computer's web browser.</li>
+  <li>Tap <span class="ui">Show a pairing code</span>. A square code appears.</li>
+  <li>Open the ΠAN app on your phone. Android asks for a few permissions. They are explained below.</li>
+  <li>On <span class="ui">Home</span> you see <span class="ui">Pair this phone with your computer</span>. Tap <span class="ui">Scan the code</span>.</li>
+  <li>Android asks to use the camera. Allow it, then point the phone at the code on the hub's screen.</li>
+  <li>The app asks if you want to pair with your hub. Tap <span class="ui">Pair</span>.</li>
+  <li>The line at the top of <span class="ui">Home</span> now says <span class="ui">Connected</span>.</li>
+</ol>
+<div class="note">A pairing code works once, and only for a few minutes. If it runs out, tap <span class="ui">Show a pairing code</span> again. Show the code only to the phone you are pairing.</div>
+<p>To pair again later, or with a new hub, go to <span class="ui">Settings</span>, <span class="ui">This device</span>, <span class="ui">Scan a pairing code</span>.</p>
+
+<h2>Turn ΠAN on</h2>
+<p>The app starts muted, so it does not listen until you say so. <span class="ui">Home</span> says <span class="ui">ΠAN is muted.</span> Tap the round microphone button at the bottom right. Now <span class="ui">Home</span> says <span class="ui">ΠAN is listening.</span> Just talk.</p>
+<p>While ΠAN runs, Android shows a ΠAN notification at the top of the screen. It tells you whether ΠAN is listening or muted, and it has <span class="ui">Mute</span> and <span class="ui">Stop talking</span> buttons.</p>
+
+<h2>What the app asks for, and why</h2>
+<table>
+  <tr><th>Permission</th><th>Why ΠAN needs it</th></tr>
+  <tr><td>Microphone</td><td>To hear you. When you mute ΠAN, the microphone is off.</td></tr>
+  <tr><td>Location</td><td>To answer <span class="say">where am I</span>, to know the weather and daylight where you are, and to tell when you are in the car.</td></tr>
+  <tr><td>Calendar</td><td>So you can ask <span class="say">what's on my calendar</span>. ΠAN reads your phone's own calendar for the next week.</td></tr>
+  <tr><td>Nearby devices</td><td>To use Bluetooth headphones, glasses and your car.</td></tr>
+  <tr><td>Notifications</td><td>To show that ΠAN is on, to ring when someone calls you, and to show messages.</td></tr>
+  <tr><td>Camera</td><td>Asked when you first scan a code. ΠAN also uses it when you ask it to look at something.</td></tr>
+  <tr><td>Battery</td><td>The app asks to be left out of battery saving, so it keeps listening with the screen off.</td></tr>
+  <tr><td>Install apps</td><td>Asked the first time ΠAN updates itself. See <a href="updates-and-help.html">Updates and help</a>.</td></tr>
+</table>
+<p>You can turn the microphone, location, camera and other sensors off for each device later. Go to <span class="ui">Settings</span>, <span class="ui">Privacy</span>, <span class="ui">What each device may use</span>.</p>
+
+<h2>Give your phone a name</h2>
+<p>Go to <span class="ui">Settings</span>, <span class="ui">This device</span>, <span class="ui">Device Name</span>. This is the name your other devices see.</p>
+
+<nav class="pager">
+  <a href="what-is-pan.html">Back: What ΠAN is</a>
+  <a href="index.html">Back to all topics</a>
+  <a href="talking.html">Next: Talking to ΠAN</a>
+</nav>
+</main>
+</body>
+</html>
