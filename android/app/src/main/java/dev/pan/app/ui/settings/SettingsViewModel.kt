@@ -7,8 +7,6 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dev.pan.app.BuildConfig
-import dev.pan.app.ai.LocalLlm
-import dev.pan.app.ai.MediaPipeLlm
 import dev.pan.app.data.DataRepository
 import dev.pan.app.network.PanServerApi
 import dev.pan.app.network.PanServerClient
@@ -26,7 +24,6 @@ class SettingsViewModel @Inject constructor(
     private val dataRepository: DataRepository,
     private val api: PanServerApi,
     private val serverClient: PanServerClient,
-    private val localLlm: LocalLlm,
     private val application: Application,
     private val updateChecker: UpdateChecker,
     val remoteAccessManager: RemoteAccessManager,
@@ -43,9 +40,6 @@ class SettingsViewModel @Inject constructor(
     private val _serverUrl = MutableStateFlow(Constants.DEFAULT_SERVER_URL)
     val serverUrl: StateFlow<String> = _serverUrl
 
-    private val _triggerWord = MutableStateFlow("hey pan")
-    val triggerWord: StateFlow<String> = _triggerWord
-
     private val _deviceName = MutableStateFlow(android.os.Build.MODEL)
     val deviceName: StateFlow<String> = _deviceName
 
@@ -58,9 +52,6 @@ class SettingsViewModel @Inject constructor(
     private val _vibrationEnabled = MutableStateFlow(true)
     val vibrationEnabled: StateFlow<Boolean> = _vibrationEnabled
 
-    private val _voiceResponseEnabled = MutableStateFlow(true)
-    val voiceResponseEnabled: StateFlow<Boolean> = _voiceResponseEnabled
-
     // Device target: "auto", "phone:<this>", or a device hostname
     // auto = nearest connected device (server connected → PC, otherwise phone)
     // phone = always handle locally
@@ -72,37 +63,9 @@ class SettingsViewModel @Inject constructor(
     private val _devices = MutableStateFlow<List<DeviceItem>>(emptyList())
     val devices: StateFlow<List<DeviceItem>> = _devices
 
-    // App preferences
-    private val _preferredMusicApp = MutableStateFlow("Auto")
-    val preferredMusicApp: StateFlow<String> = _preferredMusicApp
-
-    private val _preferredMessagingApp = MutableStateFlow("Auto")
-    val preferredMessagingApp: StateFlow<String> = _preferredMessagingApp
-
     // Query answer source: "local" (on-device LLM), "cloud" (Haiku/API), "auto"
     private val _queryAnswerSource = MutableStateFlow("cloud")
     val queryAnswerSource: StateFlow<String> = _queryAnswerSource
-
-    // Dual model selection: classifier + conversation
-    private val _classifierModel = MutableStateFlow("qwen3-0.6b")
-    val classifierModel: StateFlow<String> = _classifierModel
-
-    private val _conversationModel = MutableStateFlow("")
-    val conversationModel: StateFlow<String> = _conversationModel
-
-    // Keep for backward compat with UI status display
-    private val _selectedLlmModel = MutableStateFlow("qwen3-0.6b")
-    val selectedLlmModel: StateFlow<String> = _selectedLlmModel
-
-    private val _llmStatus = MutableStateFlow("not_downloaded")
-    val llmStatus: StateFlow<String> = _llmStatus
-
-    private val _llmDownloadProgress = MutableStateFlow(0f)
-    val llmDownloadProgress: StateFlow<Float> = _llmDownloadProgress
-
-    // Track which model is currently being downloaded — StateFlow so Compose observes it
-    private val _downloadingId = MutableStateFlow<String?>(null)
-    val downloadingId: StateFlow<String?> = _downloadingId
 
     val isServerConnected: StateFlow<Boolean> = serverClient.isConnected
 
@@ -110,13 +73,6 @@ class SettingsViewModel @Inject constructor(
     val remoteAccessEnabled: StateFlow<Boolean> = remoteAccessManager.enabled
     val remoteAccessStatus: StateFlow<String> = remoteAccessManager.status
     val remoteAccessIp: StateFlow<String> = remoteAccessManager.ip
-
-    // MediaPipe on-device AI
-    private var mediaPipeLlm: MediaPipeLlm? = null
-
-    // Gemini API key
-    private val _geminiKey = MutableStateFlow("")
-    val geminiKey: StateFlow<String> = _geminiKey
 
     // PAN personality (free-form prompt; empty = default/off)
     private val _personality = MutableStateFlow("")
@@ -142,34 +98,23 @@ class SettingsViewModel @Inject constructor(
     private val _incognitoMode = MutableStateFlow(false)
     val incognitoMode: StateFlow<Boolean> = _incognitoMode
 
-    // Tier 0 Phase 4: org policy gates. When the active org disallows
-    // incognito (or blackout), the corresponding toggle is greyed out.
+    // Tier 0 Phase 4: org policy gate. When the active org disallows
+    // incognito, the toggle is greyed out.
     // Default FAIL-CLOSED: assume disallowed until the server confirms
     // otherwise. Prevents a brief window on launch (or with no network)
     // where the toggle would appear active despite an org ban.
     private val _incognitoAllowed = MutableStateFlow(false)
     val incognitoAllowed: StateFlow<Boolean> = _incognitoAllowed
-    private val _blackoutAllowed = MutableStateFlow(false)
-    val blackoutAllowed: StateFlow<Boolean> = _blackoutAllowed
 
     init {
         viewModelScope.launch {
             dataRepository.getSetting("server_url")?.let { _serverUrl.value = it }
-            dataRepository.getSetting("trigger_word")?.let { _triggerWord.value = it }
             dataRepository.getSetting("beep_enabled")?.let { _beepEnabled.value = it == "true"; feedbackSounds.setSound(it == "true") }
             dataRepository.getSetting("backchannel_enabled")?.let { _backchannelEnabled.value = it == "true" }
             dataRepository.getSetting("vibration_enabled")?.let { _vibrationEnabled.value = it == "true"; feedbackSounds.setVibration(it == "true") }
-            dataRepository.getSetting("voice_response_enabled")?.let { _voiceResponseEnabled.value = it == "true" }
             dataRepository.getSetting("device_target")?.let { _deviceTarget.value = it }
             dataRepository.getSetting("device_name")?.let { _deviceName.value = it }
-            dataRepository.getSetting("preferred_music_app")?.let { _preferredMusicApp.value = it }
-            dataRepository.getSetting("preferred_messaging_app")?.let { _preferredMessagingApp.value = it }
             dataRepository.getSetting("query_answer_source")?.let { _queryAnswerSource.value = it }
-            dataRepository.getSetting("classifier_model")?.let { _classifierModel.value = it }
-            dataRepository.getSetting("conversation_model")?.let { _conversationModel.value = it }
-            // backward compat
-            dataRepository.getSetting("selected_llm_model")?.let { _selectedLlmModel.value = it }
-            dataRepository.getSetting("gemini_key")?.let { _geminiKey.value = it }
             // Restore incognito mode from local persistence and immediately
             // reflect it in the network ScopeHolder so the very first request
             // after launch carries the correct X-PAN-Scope header.
@@ -180,24 +125,15 @@ class SettingsViewModel @Inject constructor(
             }
         }
 
-        // Personality: prefer server value (source of truth), fall back to local
+        // Personality: this device's own (util/Personality.kt). A phone from before Nov 26 kept a
+        // copy of the hub's shared text in the settings table: it moves over once, then the hub's
+        // global setting is never read or written from here again.
         viewModelScope.launch {
-            try {
-                val res = api.getSettings()
-                if (res.isSuccessful) {
-                    val v = res.body()?.get("personality") as? String
-                    if (v != null) {
-                        _personality.value = v
-                        dataRepository.setSetting("personality", v)
-                    } else {
-                        dataRepository.getSetting("personality")?.let { _personality.value = it }
-                    }
-                } else {
-                    dataRepository.getSetting("personality")?.let { _personality.value = it }
-                }
-            } catch (_: Exception) {
-                dataRepository.getSetting("personality")?.let { _personality.value = it }
+            if (!dev.pan.app.util.Personality.saved(application)) {
+                dataRepository.getSetting("personality")?.let { dev.pan.app.util.Personality.set(application, it) }
             }
+            dev.pan.app.util.Personality.load(application)
+            _personality.value = dev.pan.app.util.Personality.text
         }
 
         // Tier 0 Phase 4: poll org policy on its own coroutine. If the org
@@ -211,7 +147,6 @@ class SettingsViewModel @Inject constructor(
                         val p = res.body()
                         if (p != null) {
                             _incognitoAllowed.value = p.incognito_allowed
-                            _blackoutAllowed.value = p.blackout_allowed
                             if (!p.incognito_allowed && _incognitoMode.value) {
                                 Log.w("Settings", "Org disallowed incognito while active — forcing out")
                                 setIncognitoMode(false)
@@ -223,19 +158,7 @@ class SettingsViewModel @Inject constructor(
             }
         }
         refreshDevices()
-        refreshLlmStatus()
         // All AI via server — no local model init
-    }
-
-    fun refreshLlmStatus() {
-        _llmStatus.value = "server"
-    }
-
-    fun addCustomModel(name: String, url: String) {
-        // Custom model endpoints (Ollama, LM Studio, etc.) saved to server settings
-        viewModelScope.launch {
-            dataRepository.setSetting("custom_model_${name.lowercase().replace(" ", "-")}", url)
-        }
     }
 
     fun refreshDevices() {
@@ -261,11 +184,6 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch { dataRepository.setSetting("server_url", url) }
     }
 
-    fun setTriggerWord(word: String) {
-        _triggerWord.value = word
-        viewModelScope.launch { dataRepository.setSetting("trigger_word", word.lowercase()) }
-    }
-
     fun setBackchannel(enabled: Boolean) {
         _backchannelEnabled.value = enabled
         dev.pan.app.stt.SherpaStreamingStt.backchannelOn = enabled
@@ -284,37 +202,15 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch { dataRepository.setSetting("vibration_enabled", enabled.toString()) }
     }
 
-    fun setVoiceResponse(enabled: Boolean) {
-        _voiceResponseEnabled.value = enabled
-        viewModelScope.launch { dataRepository.setSetting("voice_response_enabled", enabled.toString()) }
-    }
-
     fun setDeviceTarget(target: String) {
         _deviceTarget.value = target
         viewModelScope.launch { dataRepository.setSetting("device_target", target) }
-    }
-
-    fun setPreferredMusicApp(app: String) {
-        _preferredMusicApp.value = app
-        viewModelScope.launch { dataRepository.setSetting("preferred_music_app", app) }
-    }
-
-    fun setPreferredMessagingApp(app: String) {
-        _preferredMessagingApp.value = app
-        viewModelScope.launch { dataRepository.setSetting("preferred_messaging_app", app) }
     }
 
     fun setQueryAnswerSource(source: String) {
         _queryAnswerSource.value = source
         viewModelScope.launch { dataRepository.setSetting("query_answer_source", source) }
     }
-
-    fun setSelectedLlmModel(modelId: String) {
-        _selectedLlmModel.value = modelId
-        viewModelScope.launch { dataRepository.setSetting("selected_llm_model", modelId) }
-    }
-
-    fun getDownloadProgress(): Float = _llmDownloadProgress.value
 
     // --- Remote Access ---
 
@@ -368,37 +264,12 @@ class SettingsViewModel @Inject constructor(
         return remoteAccessManager.getTailscaleBaseUrl()
     }
 
-    // MediaPipe REMOVED — all AI via server
-
-    // --- Gemini API Key ---
-
-    fun getGeminiKey(): String = _geminiKey.value
-
-    fun setGeminiKey(key: String) {
-        _geminiKey.value = key
-        viewModelScope.launch { dataRepository.setSetting("gemini_key", key) }
-    }
-
     // --- Personality ---
-    // Empty string = default/off (no personality block injected by router).
+    // Empty string = turned off. Saved on this device only and sent with every voice turn
+    // (PanServerClient.askPanStream), so it does not change ΠAN on anyone else's device.
     fun setPersonality(text: String) {
-        _personality.value = text
-        viewModelScope.launch {
-            dataRepository.setSetting("personality", text)
-            // Push to server so all devices share the same personality
-            try {
-                val response = api.updateSettings(mapOf("personality" to text))
-                if (response.isSuccessful) {
-                    Log.i("Settings", "Personality synced to server")
-                } else {
-                    Log.e("Settings", "Server rejected personality update: ${response.code()}")
-                    _toastMessage.value = "Personality update failed to sync (${response.code()})"
-                }
-            } catch (e: Exception) {
-                Log.e("Settings", "Failed to push personality to server: ${e.message}")
-                _toastMessage.value = "Personality not synced — server unreachable"
-            }
-        }
+        dev.pan.app.util.Personality.set(application, text)
+        _personality.value = dev.pan.app.util.Personality.text
     }
 
     fun clearPersonality() = setPersonality("")

@@ -626,6 +626,15 @@ class PanForegroundService : Service() {
         // The listening mode (audio/ListenMode.kt): kept across restarts. The hub and the
         // notification hear of every change, mute included (the mic button).
         dev.pan.app.audio.ListenMode.load(this)
+        // This device's own personality, sent with every turn (util/Personality.kt). A phone from
+        // before 0.5.57 kept the hub's shared text in its settings table: it moves over once.
+        dev.pan.app.util.Personality.load(this)
+        serviceScope.launch {
+            runCatching {
+                if (!dev.pan.app.util.Personality.saved(applicationContext))
+                    dataRepository.getSetting("personality")?.let { dev.pan.app.util.Personality.set(applicationContext, it) }
+            }
+        }
         serviceScope.launch {
             kotlinx.coroutines.flow.combine(dev.pan.app.audio.ListenMode.mode, micEnabled) { m, on -> if (on) m.wire else "mute" }
                 .collect { wire ->
@@ -1115,6 +1124,8 @@ class PanForegroundService : Service() {
     }
 
     private fun showPermissionNotification(perm: dev.pan.app.network.dto.PermissionPrompt) {
+        // Claude Code's prompts are for building ΠAN: Developer options only (owner, Nov 26).
+        if (!dev.pan.app.ui.settings.DevOptions.on(this)) return
         // Create a high-priority notification channel for permissions
         val permChannelId = "pan_permissions"
         val permChannel = NotificationChannel(
@@ -1284,6 +1295,8 @@ class PanForegroundService : Service() {
     private fun slackNotifId(id: Long): Int = SLACK_NOTIF_BASE + (id % 100000).toInt()
 
     private fun showSlackNotification(note: dev.pan.app.network.dto.SlackNotify) {
+        // The owner's own Slack bridge: Developer options only (owner, Nov 26).
+        if (!dev.pan.app.ui.settings.DevOptions.on(this)) return
         ensureSlackChannel()
         val notifId = slackNotifId(note.id)
 
@@ -2267,6 +2280,7 @@ class PanForegroundService : Service() {
                     musicPlaying = musicPlaying(),
                     listenMode = dev.pan.app.audio.ListenMode.mode.value.wire,
                     modeWords = dev.pan.app.audio.ListenMode.wordsJson(),
+                    personality = dev.pan.app.util.Personality.forTurn(),
                     onListenMode = { wire ->
                         // A mode command the hub heard. Mute comes as the done's mute flag below.
                         dev.pan.app.audio.ListenMode.Mode.of(wire)?.let { m -> mainHandler.post { setListenMode(m) } }

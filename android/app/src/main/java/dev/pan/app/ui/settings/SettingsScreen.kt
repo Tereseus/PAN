@@ -1,9 +1,6 @@
 package dev.pan.app.ui.settings
 
-import android.app.Activity
 import androidx.activity.compose.BackHandler
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -53,24 +50,10 @@ fun SettingsScreen(
     val deviceName by viewModel.deviceName.collectAsState()
     val serverUrl by viewModel.serverUrl.collectAsState()
     val beepEnabled by viewModel.beepEnabled.collectAsState()
-    val backchannelEnabled by viewModel.backchannelEnabled.collectAsState()
     val vibrationEnabled by viewModel.vibrationEnabled.collectAsState()
-    val voiceResponseEnabled by viewModel.voiceResponseEnabled.collectAsState()
-    val deviceTarget by viewModel.deviceTarget.collectAsState()
-    val devices by viewModel.devices.collectAsState()
-    val preferredMusicApp by viewModel.preferredMusicApp.collectAsState()
-    val preferredMessagingApp by viewModel.preferredMessagingApp.collectAsState()
-    val selectedLlmModel by viewModel.selectedLlmModel.collectAsState()
-    val classifierModel by viewModel.classifierModel.collectAsState()
-    val conversationModel by viewModel.conversationModel.collectAsState()
-    val llmStatus by viewModel.llmStatus.collectAsState()
-    val llmDownloadProgress by viewModel.llmDownloadProgress.collectAsState()
     val remoteAccessEnabled by viewModel.remoteAccessEnabled.collectAsState()
     val remoteAccessStatus by viewModel.remoteAccessStatus.collectAsState()
     val remoteAccessIp by viewModel.remoteAccessIp.collectAsState()
-    val isServerConnected by viewModel.isServerConnected.collectAsState()
-    val downloadingId by viewModel.downloadingId.collectAsState()
-    val geminiKey by viewModel.geminiKey.collectAsState()
     val personality by viewModel.personality.collectAsState()
     val incognitoMode by viewModel.incognitoMode.collectAsState()
     val incognitoAllowed by viewModel.incognitoAllowed.collectAsState()
@@ -80,24 +63,15 @@ fun SettingsScreen(
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
-    // Developer options (About, at the bottom): the tools for building PAN stay out of a buyer's way.
-    val uiPrefs = remember { context.getSharedPreferences("pan_ui", android.content.Context.MODE_PRIVATE) }
-    var developerMode by remember { mutableStateOf(uiPrefs.getBoolean("developer", false)) }
+    // Developer options (About, at the bottom): the tools for building ΠAN stay out of a buyer's way.
+    // Everything marked developer in docs/UI-INVENTORY.md checks it (DevOptions.kt).
+    val developerMode by rememberDeveloperMode()
 
     // Show toast messages from ViewModel
     LaunchedEffect(toastMessage) {
         toastMessage?.let {
             snackbarHostState.showSnackbar(it)
             viewModel.clearToast()
-        }
-    }
-
-    // VPN consent launcher
-    val vpnLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
-            viewModel.enableRemoteAccess(true)
         }
     }
 
@@ -218,17 +192,20 @@ fun SettingsScreen(
                 )
             }
 
-            Text("ΠAN Link", style = MaterialTheme.typography.titleSmall)
-            Text(conn.linkSummary,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            // ΠAN Link's own state, Forget and Pair this phone (it needs Tailscale): Developer options only.
+            if (developerMode) {
+                Text("ΠAN Link", style = MaterialTheme.typography.titleSmall)
+                Text(conn.linkSummary,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 TextButton(onClick = {
                     context.startActivity(android.content.Intent(context, dev.pan.app.vpn.ScanPairActivity::class.java))
                 }) { Text("Scan a pairing code") }
-                if (linkPaired) {
+                if (developerMode && linkPaired) {
                     TextButton(onClick = { confirmForget = true }) { Text("Forget this pairing") }
-                } else {
+                } else if (developerMode) {
                     // A phone that already reaches PAN (over Tailscale) gets a code from PAN itself.
                     var pairing by remember { mutableStateOf(false) }
                     TextButton(
@@ -371,7 +348,10 @@ fun SettingsScreen(
                             onClick = {
                                 currentVoice = id
                                 voiceExpanded = false
-                                context.getSharedPreferences("pan_tts_prefs", android.content.Context.MODE_PRIVATE)
+                                // Saving it is what changes the voice: TtsManager hears the setting and
+                                // loads it before ΠAN's next line, no restart. A voice still to download
+                                // is saved once it is here, so the change never lands on missing files.
+                                fun save() = context.getSharedPreferences("pan_tts_prefs", android.content.Context.MODE_PRIVATE)
                                     .edit().putString("voice_quality", id)
                                     // Chosen here by hand: the service leaves an Android voice picked on purpose alone.
                                     .putBoolean("voice_picked", true).apply()
@@ -379,15 +359,13 @@ fun SettingsScreen(
                                     voiceStatus = "Downloading..."
                                     scope.launch {
                                         val piper = dev.pan.app.tts.PiperTtsEngine(context)
-                                        if (!piper.isFullyReady(id)) {
-                                            val ok = piper.downloadVoice(id)
-                                            voiceStatus = if (ok) "Ready — restart app to activate" else "Download failed"
-                                        } else {
-                                            voiceStatus = "Ready — restart app to activate"
-                                        }
+                                        val ok = piper.isFullyReady(id) || piper.downloadVoice(id)
+                                        if (ok) save()
+                                        voiceStatus = if (ok) "Ready. ΠAN speaks with it from the next line." else "Download failed"
                                     }
                                 } else {
-                                    voiceStatus = ""
+                                    save()
+                                    voiceStatus = "ΠAN speaks with it from the next line."
                                 }
                             }
                         )
@@ -396,7 +374,7 @@ fun SettingsScreen(
             }
             if (voiceStatus.isNotEmpty()) {
                 Text(voiceStatus, style = MaterialTheme.typography.bodySmall,
-                    color = if (voiceStatus.contains("Ready")) MaterialTheme.colorScheme.primary
+                    color = if (voiceStatus.contains("next line")) MaterialTheme.colorScheme.primary
                            else MaterialTheme.colorScheme.onSurfaceVariant)
             }
             }
@@ -484,10 +462,20 @@ fun SettingsScreen(
             // App Updates — manual OTA pull. The app auto-checks ~8s after
             // launch; this button lets the user pull the update immediately.
             Text("App Updates", style = MaterialTheme.typography.titleMedium)
+            // Seven taps on the version turn Developer options on (its switch shows only once it is on).
+            var versionTaps by remember { mutableIntStateOf(0) }
             Text(
                 "Version ${dev.pan.app.BuildConfig.VERSION_NAME} (${dev.pan.app.BuildConfig.VERSION_CODE})",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.clickable(enabled = !developerMode) {
+                    versionTaps++
+                    if (versionTaps >= DevOptions.TAPS_TO_TURN_ON) {
+                        versionTaps = 0
+                        DevOptions.set(context, true)
+                        scope.launch { snackbarHostState.showSnackbar("Developer options are on") }
+                    }
+                }
             )
             Button(
                 onClick = { viewModel.checkForUpdate() },
@@ -538,13 +526,13 @@ fun SettingsScreen(
                     dismissButton = { TextButton(onClick = { report = null }) { Text("Cancel") } },
                 )
             }
-            SettingToggle(
-                title = "Developer options",
-                description = "Tools for building PAN: server address, backup route, voice picker, service controls",
-                checked = developerMode,
-                onToggle = { developerMode = it; uiPrefs.edit().putBoolean("developer", it).apply() }
-            )
             if (developerMode) {
+                SettingToggle(
+                    title = "Developer options",
+                    description = "Tools for building ΠAN. Tap the version seven times to turn them on again.",
+                    checked = true,
+                    onToggle = { on -> DevOptions.set(context, on) }
+                )
                 OutlinedButton(onClick = onOpenHub, modifier = Modifier.fillMaxWidth()) { Text("Hub") }
                 Text("What is running on your hub, and what ΠAN reads about you right now.",
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -579,51 +567,6 @@ fun SettingsScreen(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun SettingDropdown(
-    title: String,
-    description: String,
-    selected: String,
-    options: List<String>,
-    onSelect: (String) -> Unit
-) {
-    var expanded by remember { mutableStateOf(false) }
-
-    Column {
-        Text(title, style = MaterialTheme.typography.bodyLarge)
-        Text(description,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant)
-        ExposedDropdownMenuBox(
-            expanded = expanded,
-            onExpandedChange = { expanded = !expanded }
-        ) {
-            OutlinedTextField(
-                value = selected,
-                onValueChange = {},
-                readOnly = true,
-                modifier = Modifier.menuAnchor().fillMaxWidth(),
-                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) }
-            )
-            ExposedDropdownMenu(
-                expanded = expanded,
-                onDismissRequest = { expanded = false }
-            ) {
-                options.forEach { option ->
-                    DropdownMenuItem(
-                        text = { Text(option) },
-                        onClick = {
-                            onSelect(option)
-                            expanded = false
-                        }
-                    )
-                }
-            }
-        }
-    }
-}
-
 @Composable
 fun SettingToggle(
     title: String,
@@ -649,7 +592,7 @@ fun SettingToggle(
 }
 
 /**
- * Glasses, headphones, watch, Medallion, other: what is connected in each slot, and which one
+ * Glasses, headphones, watch, car, other: what is connected in each slot, and which one
  * PAN listens and speaks through (AccessoryHub has the why).
  */
 @Composable
@@ -671,7 +614,6 @@ private fun AccessoriesSection(hub: dev.pan.app.accessory.AccessoryHub) {
             Text(when (slot) {
                     dev.pan.app.accessory.AccessoryHub.Slot.GLASSES -> "None connected. Android XR glasses pair in Bluetooth settings."
                     dev.pan.app.accessory.AccessoryHub.Slot.WATCH -> "None paired."
-                    dev.pan.app.accessory.AccessoryHub.Slot.MEDALLION -> "Not connected."
                     dev.pan.app.accessory.AccessoryHub.Slot.CAR -> "None connected. When the phone joins a car's Bluetooth, ΠAN talks through the car and listens on the phone."
                     else -> "None connected."
                 },
@@ -688,8 +630,8 @@ private fun AccessoriesSection(hub: dev.pan.app.accessory.AccessoryHub) {
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                // The Medallion has its own link; only call audio devices can be picked here.
-                if (a.mic && a.connected && a.slot != dev.pan.app.accessory.AccessoryHub.Slot.MEDALLION) {
+                // Only call audio devices can be picked here.
+                if (a.mic && a.connected) {
                     Switch(checked = chosen == a.key, onCheckedChange = { on -> hub.useForVoice(if (on) a.key else null) })
                 }
             }

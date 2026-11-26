@@ -207,6 +207,8 @@ private fun PeopleList(viewModel: PeopleViewModel, snackbar: SnackbarHostState, 
     var newGroup by remember { mutableStateOf(false) }
     var filling by remember { mutableStateOf<GroupLine?>(null) }
     var renamingGroup by remember { mutableStateOf<GroupLine?>(null) }
+    // Deleting a group asks first (owner, Nov 26).
+    var deletingGroup by remember { mutableStateOf<GroupLine?>(null) }
     LaunchedEffect(Unit) { viewModel.loadMet() }
 
     // Mute wherever a call can be taken or made (the owner, 2026-11-18).
@@ -344,7 +346,7 @@ private fun PeopleList(viewModel: PeopleViewModel, snackbar: SnackbarHostState, 
                     verticalAlignment = Alignment.CenterVertically) {
                     OutlinedButton(onClick = { filling = current }) { Text("Choose people") }
                     TextButton(onClick = { renamingGroup = current }) { Text("Rename") }
-                    TextButton(onClick = { part = "all"; viewModel.removeGroup(current.id) }) { Text("Delete") }
+                    TextButton(onClick = { deletingGroup = current }) { Text("Delete") }
                 }
             }
             if (owner && showing == "all") item {
@@ -434,6 +436,18 @@ private fun PeopleList(viewModel: PeopleViewModel, snackbar: SnackbarHostState, 
                 }
             },
             confirmButton = { TextButton(onClick = { filling = null }) { Text("Done") } },
+        )
+    }
+
+    deletingGroup?.let { g ->
+        AlertDialog(
+            onDismissRequest = { deletingGroup = null },
+            title = { Text("Delete ${g.name}?") },
+            text = { Text("The group goes away. The people in it stay on your ΠAN.") },
+            confirmButton = {
+                TextButton(onClick = { deletingGroup = null; part = "all"; viewModel.removeGroup(g.id) }) { Text("Delete") }
+            },
+            dismissButton = { TextButton(onClick = { deletingGroup = null }) { Text("Cancel") } },
         )
     }
 

@@ -79,6 +79,10 @@ fun HomeScreen(viewModel: MainViewModel) {
     val live by viewModel.liveWords.collectAsState()
     val approvals by viewModel.approvals.collectAsState()
     val alerts by viewModel.alerts.collectAsState()
+    // Developer options (Settings): the Claude prompts, the seconds waited and the reply
+    // breakdown are for building ΠAN, so they show only while it is on (owner, Nov 26).
+    val developer by dev.pan.app.ui.settings.rememberDeveloperMode()
+    val shownApprovals = if (developer) approvals else emptyList()
 
     // The app's own secure route starts with the first screen (it used to start from the old main screen).
     LaunchedEffect(Unit) { viewModel.connectTailscale() }
@@ -160,14 +164,14 @@ fun HomeScreen(viewModel: MainViewModel) {
         }
 
         // ---- needs you ---------------------------------------------------
-        if (approvals.isNotEmpty() || alerts.isNotEmpty()) {
+        if (shownApprovals.isNotEmpty() || alerts.isNotEmpty()) {
             Column(
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Text("Needs you", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.padding(start = 4.dp))
-                approvals.take(3).forEach { p ->
+                shownApprovals.take(3).forEach { p ->
                     NeedsYouCard(
                         title = "Claude is asking" + (p.project?.takeIf { it.isNotBlank() }?.let { " in $it" } ?: ""),
                         body = p.prompt,
@@ -217,7 +221,7 @@ fun HomeScreen(viewModel: MainViewModel) {
                 ) {
                     if (thinking) item(key = "thinking") { ThinkingBubble() }
                     // Blank lines from before 0.5.4 stay in the store; they are not shown.
-                    items(talk.filter { it.text.isNotBlank() || it.photo != null }, key = { it.id }) { line -> TalkLine(line) }
+                    items(talk.filter { it.text.isNotBlank() || it.photo != null }, key = { it.id }) { line -> TalkLine(line, developer) }
                 }
             }
         }
@@ -290,7 +294,7 @@ private fun NeedsYouCard(title: String, body: String, yes: String?, no: String, 
 }
 
 @Composable
-private fun TalkLine(line: ConversationEntity) {
+private fun TalkLine(line: ConversationEntity, developer: Boolean) {
     val context = LocalContext.current
     // Why PAN stayed out of the line above: small, slanted, on his side, no bubble.
     if (line.role == "note") {
@@ -315,6 +319,10 @@ private fun TalkLine(line: ConversationEntity) {
         else android.text.format.DateFormat.format("EEE, MMM d", at).toString() + ", " + clock
     }
     val detail = remember(line.detail) { line.detail?.let { runCatching { org.json.JSONObject(it) }.getOrNull() } }
+    // Word by word: how each one sounds, how it is written, what it means. For everyone.
+    val words = remember(line.detail) { wordByWord(detail) }
+    // Where the time went and who answered: Developer options only.
+    val breakdown = remember(line.detail, developer) { if (developer && detail != null) replyBreakdown(detail) else emptyList() }
     var open by remember(line.id) { mutableStateOf(false) }
     Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = if (mine) Alignment.End else Alignment.Start) {
         Surface(
@@ -324,7 +332,7 @@ private fun TalkLine(line: ConversationEntity) {
             ),
             color = if (mine) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
             modifier = Modifier.widthIn(max = 320.dp).clip(RoundedCornerShape(18.dp))
-                .clickable(enabled = detail != null) { open = !open }
+                .clickable(enabled = words.isNotEmpty() || breakdown.isNotEmpty()) { open = !open }
         ) {
             Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp)) {
                 line.photo?.let { path -> TalkPhoto(path) }
@@ -338,14 +346,12 @@ private fun TalkLine(line: ConversationEntity) {
                 }
             }
         }
-        // PAN's lines also say how long he waited for the first word.
-        val waited = line.ms?.takeIf { !mine && it > 0 }?.let { " · " + secs(it) }.orEmpty()
+        // PAN's lines also say how long he waited for the first word (Developer options only).
+        val waited = line.ms?.takeIf { developer && !mine && it > 0 }?.let { " · " + secs(it) }.orEmpty()
         Text(time + waited, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
-        if (open && detail != null) {
+        if (open && (words.isNotEmpty() || breakdown.isNotEmpty())) {
             Column(modifier = Modifier.widthIn(max = 320.dp).padding(horizontal = 6.dp).padding(bottom = 4.dp)) {
-                // Word by word: how each one sounds, how it is written, what it means.
-                val words = remember(line.detail) { wordByWord(detail) }
                 words.forEach { (sound, written, meaning) ->
                     Row(modifier = Modifier.padding(vertical = 1.dp)) {
                         Text(sound, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold,
@@ -356,8 +362,8 @@ private fun TalkLine(line: ConversationEntity) {
                             color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
                     }
                 }
-                if (words.isNotEmpty()) Spacer(Modifier.height(4.dp))
-                replyBreakdown(detail).forEach {
+                if (words.isNotEmpty() && breakdown.isNotEmpty()) Spacer(Modifier.height(4.dp))
+                breakdown.forEach {
                     Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }

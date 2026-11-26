@@ -40,6 +40,8 @@ fun SensorSection(
     val sensorsLoading by viewModel.sensorsLoading.collectAsState()
     var selectedDeviceId by remember { mutableStateOf<Int?>(null) }
     var expandedSensor by remember { mutableStateOf<String?>(null) }
+    // The "also attach" wiring under a tapped sensor: Developer options only (owner, Nov 26).
+    val developer by dev.pan.app.ui.settings.rememberDeveloperMode()
 
     Text("What each device may use", style = MaterialTheme.typography.bodyLarge,
         modifier = Modifier.padding(top = 8.dp))
@@ -97,7 +99,7 @@ fun SensorSection(
             val ownMic = viewModel.isOwnMic(deviceId, sensor.id)
             val isOn = if (ownMic) isMicEnabled else sensor.enabled
             val isLocked = sensor.locked
-            val isExpanded = expandedSensor == sensor.id
+            val isExpanded = developer && expandedSensor == sensor.id
 
             Card(
                 modifier = Modifier

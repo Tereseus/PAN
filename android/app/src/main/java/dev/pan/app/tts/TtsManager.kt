@@ -63,19 +63,60 @@ class TtsManager @Inject constructor(
         // Do NOT load Piper here — wait until explicitly activated after download
     }
 
+    /**
+     * A voice picked in Settings takes effect without restarting the app (owner, Nov 26; before
+     * 0.5.57 it said "restart app to activate"). Never in the middle of what ΠAN is saying: a
+     * change waits here and loads before the next line (speak, prepareLine), or at once when
+     * nothing is being said.
+     */
+    @Volatile private var pendingVoice: String? = null
+    /** The voice activateVoice last loaded ("android" for the Android voice). */
+    @Volatile private var activeVoice: String? = null
+    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    // A field, not a lambda in the call: SharedPreferences keeps its listeners weakly.
+    private val voiceListener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        if (key != KEY_VOICE) return@OnSharedPreferenceChangeListener
+        pendingVoice = voiceQuality
+        mainHandler.post { applyPendingVoice() }
+    }
+
+    // After the fields above: Kotlin runs init blocks and fields in the order they are written.
+    init {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).registerOnSharedPreferenceChangeListener(voiceListener)
+    }
+
+    /** Loads a voice changed in Settings, unless ΠAN is talking (then the next line does). */
+    @Synchronized
+    private fun applyPendingVoice() {
+        val q = pendingVoice ?: return
+        if (isSpeaking) return
+        pendingVoice = null
+        // The service setting voiceQuality itself has loaded it already.
+        if (q == activeVoice) return
+        if (q != VoiceChoice.ANDROID && !piper.isFullyReady(q)) {
+            onLog?.invoke("Voice: $q was picked but is not on the device yet; the voice stays as it is")
+            return
+        }
+        activateVoice(q)
+        onLog?.invoke("Voice: $q picked in Settings, speaking with it from the next line")
+    }
+
     /** Call this ONLY when piper.isFullyReady(quality) is true */
     fun activateVoice(quality: String) {
         if (quality == "android") {
             piperActive = false
+            activeVoice = VoiceChoice.ANDROID
             Log.i(TAG, "Using Android TTS")
             return
         }
         if (piper.isFullyReady(quality) && piper.setVoice(quality)) {
             piperActive = true
+            activeVoice = quality
             piper.plainPath = carMode || interpreting
             Log.i(TAG, "Piper active: $quality")
         } else {
             piperActive = false
+            activeVoice = VoiceChoice.ANDROID
             Log.w(TAG, "Piper '$quality' not ready, using Android TTS")
             onLog?.invoke("Voice: $quality could not be loaded, the Android voice speaks")
         }
@@ -434,6 +475,7 @@ class TtsManager @Inject constructor(
 
     /** An interpreted line that will probably be said next. See PiperTtsEngine.prepare. */
     fun prepareLine(text: String, voice: Int? = null, said: String? = null) {
+        if (pendingVoice != null) applyPendingVoice()
         if (!piperActive) return
         val foreign = scriptLocale(text)
         val lang = if (foreign == null && said != null) said else lineLanguage(foreign)
@@ -442,6 +484,7 @@ class TtsManager @Inject constructor(
 
     fun speak(text: String) {
         if (text.isBlank()) return
+        if (pendingVoice != null) applyPendingVoice()
 
         val foreign = scriptLocale(text)
         // Who says it is decided in VoiceChoice (rules with tests). Any reply in another script goes

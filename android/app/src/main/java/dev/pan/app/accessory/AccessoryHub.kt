@@ -11,18 +11,13 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
-import dev.pan.app.ble.PendantBle
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.StateFlow
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Accessory slots: glasses, headphones, a watch, the Medallion, anything else.
+ * Accessory slots: glasses, headphones, a watch, a car, anything else.
  *
  * The owner, Nov 14: "a glasses slot, a headphone slot, a watch slot, and all the accessories you
  * could think of", with the Android standard as the one that wins. So PAN has no driver per
@@ -34,7 +29,8 @@ import javax.inject.Singleton
  *    androidx.xr.projected, which is still alpha.
  *  - Bluetooth and LE Audio earbuds and headsets, hearing aids, wired and USB headsets.
  *  - A watch (Wear OS) is listed when paired; talking through it needs a Wear OS app (later).
- *  - The Medallion comes in over PAN's own Bluetooth link (PendantBle, PendantMic), not here.
+ *  - The Medallion (PendantBle, PendantMic) has no slot here: it is design only, so the owner took
+ *    its slot off the screen on Nov 26 (app 0.5.57).
  *
  * Why the call route and nothing rawer: the mic is VOICE_COMMUNICATION with echo cancelling
  * (SherpaStreamingStt), and the call route is the one Android moves to a headset together with
@@ -47,10 +43,9 @@ import javax.inject.Singleton
 @Singleton
 class AccessoryHub @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val pendant: PendantBle,
 ) {
     enum class Slot(val label: String) {
-        GLASSES("Glasses"), HEADPHONES("Headphones"), WATCH("Watch"), MEDALLION("Medallion"), CAR("Car"), OTHER("Other")
+        GLASSES("Glasses"), HEADPHONES("Headphones"), WATCH("Watch"), CAR("Car"), OTHER("Other")
     }
 
     data class Accessory(
@@ -101,10 +96,6 @@ class AccessoryHub @Inject constructor(
         started = true
         am.registerAudioDeviceCallback(callback, Handler(Looper.getMainLooper()))
         refresh()
-        // The Medallion's link state changes without any audio device coming or going.
-        CoroutineScope(SupervisorJob() + Dispatchers.Main).launch {
-            pendant.status.collect { refresh() }
-        }
     }
 
     /** Listen and speak through [key], or through the phone when null. */
@@ -138,11 +129,6 @@ class AccessoryHub @Inject constructor(
                     how = if (slot == Slot.WATCH) "paired (talking through a watch needs the Wear OS app)" else "paired",
                     connected = false)
             }
-        }
-        val medallion = pendant.status.value
-        if (medallion != "Off") {
-            found["medallion"] = Accessory("medallion", Slot.MEDALLION, "Medallion", mic = true, speaker = false,
-                how = "PAN Bluetooth link: $medallion")
         }
         _accessories.value = found.values.toList()
         // Speakers in the car: its media (A2DP) output, which is what PAN's voice goes to.

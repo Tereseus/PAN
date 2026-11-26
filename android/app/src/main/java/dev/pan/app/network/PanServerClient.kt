@@ -444,6 +444,7 @@ class PanServerClient @Inject constructor(
         musicPlaying: Boolean = false,
         listenMode: String? = null,
         modeWords: JSONObject? = null,
+        personality: String = dev.pan.app.util.Personality.forTurn(),
         onListenMode: ((String) -> Unit)? = null,
         onCall: ((okhttp3.Call) -> Unit)? = null,
         onHeard: ((String) -> Unit)? = null,
@@ -473,6 +474,9 @@ class PanServerClient @Inject constructor(
                 // The listening mode and the person's own words for it (hub listen-mode.js).
                 if (listenMode != null) put("listen_mode", listenMode)
                 if (modeWords != null) put("mode_words", modeWords)
+                // How ΠAN talks on this device (util/Personality.kt), every turn; "" means turned off.
+                // The hub uses it for this turn instead of its own global setting.
+                put("personality", personality)
                 // How long ago PAN last stopped talking: inside 45 s this line is part of a talk.
                 if (sincePanMs != null) put("since_pan_ms", sincePanMs)
                 if (conversationHistory.isNotEmpty()) put("context", conversationHistory)

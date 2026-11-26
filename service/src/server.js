@@ -3184,14 +3184,9 @@ app.use('/docs', express.static(join(__dirname, '..', 'public', 'docs'), {
   }
 }));
 
-// Mobile dashboard — static files, no ES modules, no caching
-app.use('/mobile', express.static(join(__dirname, '..', 'public', 'mobile'), {
-  etag: false,
-  setHeaders: (res) => {
-    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-    res.setHeader('Access-Control-Allow-Origin', '*');
-  }
-}));
+// The old phone page (/mobile/) and the child page (/child/) are gone (owner, Nov 26): the app
+// stopped opening /mobile/ in 0.5.32. A saved link lands on the dashboard instead of a 404.
+app.use(['/mobile', '/child'], (req, res) => res.redirect('/v2/'));
 
 // PAN status & privacy console (SHIP-PLAN Phase 4) — the single page that
 // replaces the widget zoo for `core`: memory stats, capture toggles, services
@@ -3319,7 +3314,7 @@ app.get('/api/v1/apk/version', (req, res) => {
 });
 
 // Legacy inline mobile route (removed — now static)
-app.get('/mobile-old/', (req, res) => { res.redirect('/mobile/'); });
+app.get('/mobile-old/', (req, res) => { res.redirect('/v2/'); });
 /*
   res.send(`<!DOCTYPE html>
 <html lang="en">
@@ -3734,6 +3729,8 @@ app.get('/pan-models.html', async (req, res, next) => {
   next();
 });
 
+// The root is the dashboard: the old pre v2 "ΠΑΝ Dashboard" (public/index.html) is gone (Nov 26).
+app.get('/', (req, res) => res.redirect('/v2/'));
 // Serve root-level static assets (icons, images referenced by the dashboard)
 app.use(express.static(join(__dirname, '..', 'public'), { etag: false }));
 

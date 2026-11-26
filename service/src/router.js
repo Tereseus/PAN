@@ -1538,11 +1538,7 @@ async function handleUnified(text, context) {
   try {
     const isDash = context.source === 'dashboard';
     // Load personality from settings
-    let personality = '';
-    try {
-      const row = get("SELECT value FROM settings WHERE key = 'personality'");
-      if (row) personality = row.value.replace(/^"|"$/g, '').trim();
-    } catch {}
+    const personality = personalityFor(context);
     const personalityBlock = personality ? `\nPersonality: ${personality}\nAlways stay in character.` : '';
     // Anonymize user text ONLY — sensor data (GPS, etc.) must pass through
     // so location-aware queries work. The sensor block is structured data the
@@ -3184,6 +3180,18 @@ async function* personTurn(text, context, withProsody) {
   yield { type: 'done', result: withProsody({ intent: 'query', speech_act: 'answer', response: reply, addressed: 0.9, importance: 0.5 }) };
 }
 
+// How ΠAN talks, per device (owner, Nov 26: "it should be per device"). The app sends its own
+// Personality text with every turn (an empty string = off on that device); a turn without one
+// (the desktop, an older app) uses the hub's own setting, as before.
+export function personalityFor(context = {}) {
+  if (typeof context.personality === 'string') return context.personality.trim().slice(0, 600);
+  try {
+    const row = get("SELECT value FROM settings WHERE key = 'personality'");
+    if (row) return String(row.value).replace(/^"|"$/g, '').trim();
+  } catch {}
+  return '';
+}
+
 export async function* routeStream(text, context = {}) {
   // Batch 4 (#986): every `done` emit gets a prosody plan derived from
   // `result.importance`. Wrap once, use everywhere — keeps the diff small
@@ -3654,8 +3662,7 @@ export async function* routeStream(text, context = {}) {
   const dismissalFeedbackBlock = buildDismissalFeedbackBlock();
   const memoryFactsBlock       = buildMemoryFactsBlock();
   const episodicHitsBlock      = buildEpisodicHitsBlock();
-  let personality = '';
-  try { const row = get("SELECT value FROM settings WHERE key = 'personality'"); if (row) personality = row.value.replace(/^"|"$/g, '').trim(); } catch {}
+  const personality = personalityFor(context);
   const personalityBlock = personality ? `\nPersonality: ${personality}\nAlways stay in character.` : '';
   const prompt = `You are PAN, talking with him out loud. This is a conversation, not a lookup service.
 

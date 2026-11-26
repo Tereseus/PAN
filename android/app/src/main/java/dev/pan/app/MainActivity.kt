@@ -91,7 +91,11 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun toast(message: String) = Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+    // How the start up update check went: Developer options only (owner, Nov 26). A buyer
+    // still gets Android's own install ask, and Settings > Updates and about says it all.
+    private fun toast(message: String) {
+        if (dev.pan.app.ui.settings.DevOptions.on(this)) Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+    }
 
     /**
      * Only the power button silences TTS.

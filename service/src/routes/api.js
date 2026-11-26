@@ -2447,6 +2447,8 @@ router.post('/query/stream', async (req, res) => {
         // App 0.5.53+: the listening mode (listen-mode.js) and the person's own words for it.
         listen_mode: typeof req.body.listen_mode === 'string' ? req.body.listen_mode : undefined,
         mode_words: req.body.mode_words && typeof req.body.mode_words === 'object' ? req.body.mode_words : undefined,
+        // App 0.5.57+: this device's own Personality text (router.js personalityFor; per device, Nov 26).
+        personality: typeof req.body.personality === 'string' ? req.body.personality : undefined,
         // App 0.4.73+: how long ago PAN last stopped talking. The bench records no turns, so
         // this is the only thing that tells a talk from a stray line there.
         since_pan_ms: Number.isFinite(req.body.since_pan_ms) ? req.body.since_pan_ms : undefined,

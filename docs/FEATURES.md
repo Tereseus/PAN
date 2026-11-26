@@ -3080,6 +3080,30 @@ the Nov 26 code.
   sound now. Don't remember mode showed "ΠAN is listening" in the notification; it now says
   "ΠAN is listening, not remembering". The icon's name is ΠAN, not PAN.
 
+- **The owner's UI calls done (app 0.5.57, versionCode 186, Nov 26; `docs/UI-INVENTORY.md`).**
+  Paths under `android/app/src/main/java/dev/pan/app/`.
+  *Developer only:* every app item marked developer shows only while Developer options is on
+  (`ui/settings/DevOptions.kt`: `DevOptions.on()`, and `rememberDeveloperMode()` for screens). That
+  is the start up update toasts (`MainActivity.kt`), Home's Claude prompts, the seconds under
+  ΠAN's lines and the reply breakdown (word by word reading stays for everyone;
+  `ui/home/HomeScreen.kt`), the ΠAN Link summary, Forget this pairing and Pair this phone
+  (`ui/settings/SettingsScreen.kt`), the sensor "also attach" boxes (`ui/main/MainScreen.kt`), and
+  the Claude and Slack notifications (`service/PanForegroundService.kt`). The Developer options
+  switch itself shows only once on; seven taps on the version in Updates and about turn it on.
+  *Deleted:* the Medallion slot (`accessory/AccessoryHub.kt`), and the dead settings `trigger_word`,
+  `voice_response_enabled`, the preferred music and messaging apps, the on phone model settings,
+  `gemini_key`, `blackoutAllowed` (`ui/settings/SettingsViewModel.kt`), the unused `vpnLauncher` and
+  `SettingDropdown` (`SettingsScreen.kt`).
+  *Voice without a restart:* `tts/TtsManager.kt` listens to `voice_quality`; a new pick loads before
+  the next line, never while ΠAN is talking. The picker saves a voice still downloading only once
+  it is here.
+  *Delete a group asks first* (`ui/people/PeopleScreen.kt`), naming the group.
+  *Personality per device:* the Personality box is saved on the phone only (`util/Personality.kt`;
+  an older phone's local copy moves over once). The phone no longer writes the hub's global
+  `personality`; every voice turn carries `personality` (a string, "" when off) next to
+  `listen_mode` and `mode_words` (`network/PanServerClient.kt` `askPanStream`, and `QueryRequest`
+  in `network/dto/Dtos.kt`). Test: `PersonalityTest`.
+
 Phone app features that had no entry. Paths are under
 `android/app/src/main/java/dev/pan/app/`. Most other app work is written up as dated release
 notes under "Voice student model (Syrinx, formerly OmniΠ)" and "Phone voice (text to speech)";
@@ -3303,6 +3327,17 @@ too, and updates itself.
 
 Hub features outside the voice path that had no entry. Code is under `service/src/` unless
 the path says otherwise.
+
+### Personality per device, and the old pages gone (hub Craft 101, Nov 26)
+
+- **Personality:** `router.js personalityFor(context)`: a turn that carries its own `personality`
+  string (app 0.5.57 sends this device's text, "" when off; `routes/api.js` passes it on) uses that;
+  a turn without one (the desktop, an older app) uses the hub setting `personality` as before.
+  Capped at 600 characters in the prompt.
+- **Old pages:** `/mobile/` (the old phone page), `/child/` and the pre v2 root dashboard
+  (`public/index.html`) are deleted; `/mobile`, `/child` and `/` redirect to `/v2/` (server.js). The
+  hub keeps the files in `C:\PAN\service\public-removed-1126`. Express 5 refuses `'/mobile/*'`
+  route strings (the first swap failed on it); `app.use` prefixes are used.
 
 ### Where he is: what the hub can tell (Nov 26 review)
 

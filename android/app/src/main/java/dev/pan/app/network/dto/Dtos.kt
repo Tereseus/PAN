@@ -59,7 +59,9 @@ data class QueryRequest(
     val text: String,
     val context: String? = null,
     val intent_hint: String? = null,
-    val sensors: String? = null  // JSON string of sensor envelope
+    val sensors: String? = null,  // JSON string of sensor envelope
+    // How ΠAN talks on this device (util/Personality.kt); "" means turned off.
+    val personality: String = dev.pan.app.util.Personality.forTurn()
 )
 
 data class Action(
