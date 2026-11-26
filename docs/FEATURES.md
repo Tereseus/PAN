@@ -4066,6 +4066,11 @@ Three additional views on top of the existing Projects page:
 - **Purpose:** Drag-and-drop kanban board for project tasks.
 - **Columns:** backlog → todo → in_progress → in_test → done
 - **Data:** Same `project_tasks` table as the Projects page.
+- **The backlog (Nov 26):** every ΠAN item agreed with the owner goes here (PAN project), and is
+  moved to done when built; built but unproven is in_test. `PUT /dashboard/api/tasks/:id` now also
+  takes `project_id` (refused with 400 for a project that does not exist): the 947 older tasks
+  pointed at project ids lost when the projects were found again, so the board showed none of
+  them. They were moved to PAN and WoE, and the 490 copies of five screen checker alarms closed.
 
 ### Timeline (`/v2/timeline`)
 - **Purpose:** Chronological view of project work — when tasks were created,

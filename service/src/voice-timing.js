@@ -48,7 +48,9 @@ export function recordTiming(fields) {
     if (fields.model) t.model = fields.model;
   }
   const at = Date.now();
-  const bench = isBench() || undefined;
-  const line = JSON.stringify({ at, bench, ...fields }) + '\n';
-  appendFile(timingFile(at, !!bench), line, () => {});
+  // The caller's own bench flag counts too: api.js passes bench:true on its lines outside the bench
+  // context, and 930 bench lines went to the real turns' file (Nov 26).
+  const row = { at, bench: isBench() || undefined, ...fields };
+  if (!row.bench) delete row.bench;
+  appendFile(timingFile(at, !!row.bench), JSON.stringify(row) + '\n', () => {});
 }

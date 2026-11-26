@@ -1817,13 +1817,20 @@ router.get('/api/tasks', (req, res) => {
 
 router.put('/api/tasks/:id', (req, res) => {
   const id = parseInt(req.params.id);
-  const { title, description, status, priority, milestone_id } = req.body;
+  const { title, description, status, priority, milestone_id, project_id } = req.body;
   const existing = getScoped(req, "SELECT * FROM project_tasks WHERE id = :id AND org_id = :org_id", { ':id': id });
   if (!existing) return res.status(404).json({ error: 'not found' });
 
   const updates = [];
   const params = { ':id': id };
 
+  // Move a task to another project: the old tasks pointed at project ids that no longer exist after
+  // the projects were found again with new ids, so the board showed none of them (Nov 26).
+  if (project_id !== undefined) {
+    const pid = parseInt(project_id);
+    if (!get("SELECT id FROM projects WHERE id = :pid", { ':pid': pid })) return res.status(400).json({ error: 'no such project' });
+    updates.push("project_id = :pid"); params[':pid'] = pid;
+  }
   if (title !== undefined) { updates.push("title = :title"); params[':title'] = title; }
   if (description !== undefined) { updates.push("description = :desc"); params[':desc'] = description; }
   if (status !== undefined) {
