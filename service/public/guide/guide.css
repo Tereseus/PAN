@@ -10,8 +10,6 @@
   --accent-ink: #ffffff;
   --box: #eef2fb;
   --box-home: #f3efe4;
-  --coming-bg: #fff2cc;
-  --coming-ink: #5a4200;
   --note-bg: #eef2fb;
 }
 
@@ -26,8 +24,6 @@
     --accent-ink: #10131a;
     --box: #222a3a;
     --box-home: #2d2a22;
-    --coming-bg: #4a3b10;
-    --coming-ink: #ffe7a3;
     --note-bg: #1f2533;
   }
 }
@@ -80,20 +76,6 @@ a:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
 }
 .say::before { content: "\201C"; font-style: normal; }
 .say::after { content: "\201D"; font-style: normal; }
-
-/* Not built yet. The word itself says it, so it never depends on colour. */
-.coming {
-  display: inline-block;
-  padding: 0.05rem 0.55rem;
-  border: 2px solid currentColor;
-  border-radius: 0.5rem;
-  background: var(--coming-bg);
-  color: var(--coming-ink);
-  font-size: 0.9rem;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  vertical-align: 0.1em;
-}
 
 .note {
   background: var(--note-bg);
@@ -152,7 +134,16 @@ figcaption { color: var(--soft); font-size: 1rem; margin-top: 0.5rem; }
 
 svg .box { fill: var(--box); stroke: var(--ink); stroke-width: 1.5; }
 svg .box-home { fill: var(--box-home); stroke: var(--ink); stroke-width: 1.5; stroke-dasharray: 6 4; }
-svg .box-later { fill: none; stroke: var(--soft); stroke-width: 1.5; stroke-dasharray: 4 4; }
+svg .bubble { fill: var(--card); stroke: var(--ink); stroke-width: 1.5; }
+svg .bubble-pan { fill: var(--accent); stroke: var(--accent); stroke-width: 1.5; }
+svg .tw { fill: var(--accent-ink); font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-size: 15px; }
+svg .ti { fill: var(--soft); font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-size: 14px; font-style: italic; }
+svg .icon { fill: none; stroke: var(--ink); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+svg .icon-fill { fill: var(--ink); }
+svg .acc { fill: var(--accent); }
+svg .acc-line { stroke: var(--accent); stroke-width: 2.5; fill: none; }
+svg .dash { stroke: var(--soft); stroke-width: 2; fill: none; stroke-dasharray: 5 4; }
+svg .rule { stroke: var(--line); stroke-width: 1; }
 svg .t { fill: var(--ink); font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-size: 15px; }
 svg .tb { fill: var(--ink); font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-size: 16px; font-weight: 700; }
 svg .ts { fill: var(--soft); font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-size: 13px; }

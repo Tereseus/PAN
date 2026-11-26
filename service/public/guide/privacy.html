@@ -11,56 +11,83 @@
 <main>
 <a class="back" href="index.html">Back to all topics</a>
 <h1>Privacy</h1>
-<p class="lead">ΠAN lives in your home. Here is what it keeps, where, and how you keep things out.</p>
+<p class="lead">ΠAN lives on your own computer at home. Your talks, your memory and your photos stay there.</p>
+
+<figure>
+<svg viewBox="0 0 340 300" role="img" aria-labelledby="v1t">
+  <title id="v1t">Inside your home: the hub with your talks, memory, photos and people. Your phone reaches it over a private link. Only a plain question for a fresh fact leaves home, with no name on it.</title>
+  <defs>
+    <marker id="v1a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path class="ah" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+  </defs>
+  <path class="box-home" d="M20,80 L170,10 L320,80 L320,200 L20,200 Z"/>
+  <text class="ts" x="170" y="62" text-anchor="middle">Your home</text>
+  <rect class="box" x="60" y="74" width="220" height="110" rx="10"/>
+  <text class="tb" x="170" y="98" text-anchor="middle">Your hub keeps</text>
+  <text class="t" x="170" y="122" text-anchor="middle">your talks</text>
+  <text class="t" x="170" y="144" text-anchor="middle">your memory and photos</text>
+  <text class="t" x="170" y="166" text-anchor="middle">your people</text>
+  <line class="arrow" x1="90" y1="202" x2="90" y2="240"/>
+  <text class="ts" x="84" y="226" text-anchor="end">private link</text>
+  <rect class="box" x="20" y="242" width="140" height="48" rx="10"/>
+  <text class="t" x="90" y="271" text-anchor="middle">Your phone</text>
+  <line class="dash" x1="250" y1="202" x2="250" y2="240" marker-end="url(#v1a)"/>
+  <text class="ts" x="242" y="226" text-anchor="end">a fact, no name</text>
+  <rect class="bubble" x="180" y="242" width="140" height="48" rx="10"/>
+  <text class="t" x="250" y="271" text-anchor="middle">The internet</text>
+</svg>
+<figcaption>What you say is not sent to a company to be kept.</figcaption>
+</figure>
+
+<h2>Don't remember</h2>
+<p>For a private moment, ΠAN can keep nothing at all. It still talks and answers. It keeps no lines on <span class="ui">Home</span>, nothing in <span class="ui">Memory</span>, no photos.</p>
+<ul>
+  <li>Say <span class="say">ΠAN, don't remember this</span> or <span class="say">off the record</span>.</li>
+  <li>Or hold the microphone button and pick <span class="ui">Don't remember</span>. The button shows a hat with glasses.</li>
+</ul>
+<p>It ends only with the button. Tap or hold it and pick another mode. Nothing you say can switch memory back on by accident.</p>
 
 <h2>What stays home</h2>
 <ul>
-  <li>Your talks with ΠAN and your memory are kept on your hub, not on a company's computers.</li>
-  <li>Photos you show ΠAN go to your hub, and your hub looks at them. They never go to anyone else.</li>
-  <li>Your phone reaches your hub over its own private, encrypted link, made when you scanned the pairing code.</li>
-  <li>In a call with family, the sound passes through your hub to the other phone. The hub keeps none of the sound, and no model hears it. The written lines of the call are kept in that conversation.</li>
+  <li>Your talks, your memory and your photos are kept on your hub.</li>
+  <li>Your phone reaches your hub over its own private, encrypted link, made when you paired it.</li>
+  <li>In a call, the sound passes through your hub to the other phone. None of it is kept, and no model hears it.</li>
 </ul>
 
-<h2>Scrubbed before a model reads it</h2>
-<p>Before a model reads what you said, ΠAN swaps these for placeholders: email addresses, phone numbers, card and ID numbers, street addresses, map positions and network addresses. This happens even for the models on your own hub.</p>
+<h2>Before a model reads it</h2>
+<p>ΠAN swaps out email addresses, phone numbers, card and ID numbers, street addresses and map positions first. It does this even for the models on your own hub.</p>
 
-<h2>What the hub asks the internet for</h2>
-<p>Some answers need fresh facts. For these, your hub asks public services for the figure, without your name:</p>
+<h2>What leaves home</h2>
 <ul>
-  <li>The weather: the service gets your rough position.</li>
-  <li>Money and coin rates.</li>
-  <li>The time or sunrise in another town: the service gets the town's name.</li>
+  <li>When an answer needs a fresh fact, like the weather or a rate, your hub asks a public service for it, with no name on it.</li>
+  <li>If you linked your own Claude account, ΠAN may hand it a hard question, with your details swapped out first. See <a href="models.html">Models</a>.</li>
 </ul>
 
-<h2>Keeping things out</h2>
+<h2>More ways to keep things out</h2>
 <table>
   <tr><th>Choice</th><th>What it does</th></tr>
-  <tr><td><span class="ui">Mute</span></td><td>The microphone is off. Nothing is heard. Only the button turns it back on.</td></tr>
-  <tr><td><span class="ui">Don't remember</span></td><td>ΠAN talks as usual but keeps nothing: no lines on <span class="ui">Home</span>, nothing in <span class="ui">Memory</span>, no photos. Hold the microphone button to pick it, or say <span class="say">off the record</span>. It ends with the button, or after an hour. See <a href="listening-modes.html">Listening modes</a>.</td></tr>
-  <tr><td><span class="ui">Incognito</span></td><td>A switch in <span class="ui">Settings</span>, <span class="ui">Privacy</span>. While it is on, what this phone sends is kept apart from your memory. Turning it off erases it. <span class="ui">Home</span> shows an <span class="ui">Incognito</span> badge while it is on.</td></tr>
-  <tr><td><span class="ui">What each device may use</span></td><td>In <span class="ui">Settings</span>, <span class="ui">Privacy</span>. Pick a device and switch its microphone, location, camera and other sensors on or off. A sensor locked by your organization says why.</td></tr>
-  <tr><td><span class="ui">Lock Memory</span></td><td>Memory opens only with your fingerprint, or a PIN on a phone without one. See <a href="memory.html">Memory</a>.</td></tr>
+  <tr><td><span class="ui">Mute</span></td><td>The microphone is off. Only the button turns it back on.</td></tr>
+  <tr><td><span class="ui">Incognito</span></td><td>In <span class="ui">Settings</span>, <span class="ui">Privacy</span>. What this phone sends is kept apart, and erased when you turn it off.</td></tr>
+  <tr><td><span class="ui">What each device may use</span></td><td>In <span class="ui">Settings</span>, <span class="ui">Privacy</span>. Turn the microphone, location, camera and other sensors on or off for each device.</td></tr>
+  <tr><td><span class="ui">Lock Memory</span></td><td>Memory opens only with your fingerprint or PIN.</td></tr>
 </table>
-<div class="note">One honest limit: even in <span class="ui">Don't remember</span>, the hub's own technical log on the home computer still prints the words it heard. That log is not your memory, and ΠAN does not search it.</div>
-<p>Which to use? <span class="ui">Don't remember</span> is the simple one for a private moment. <span class="ui">Incognito</span> keeps this phone apart until you switch it off.</p>
+<div class="note">One limit: even in <span class="ui">Don't remember</span>, the hub's running record, kept for fixing problems, still prints the words it heard. It is not your memory, and ΠAN never searches it.</div>
 
-<h2>Family and privacy</h2>
+<h2>Your group</h2>
 <ul>
-  <li>When a family member talks to ΠAN on their own phone, it does not go into the hub owner's memory.</li>
-  <li>The hub owner can read a child's messages. The child's phone says so.</li>
-  <li>The hub owner cannot read an adult's messages from the <span class="ui">People</span> tab.</li>
+  <li>What a person says to ΠAN never goes into anyone else's memory.</li>
+  <li>The person who set up the hub can read a child's messages. The child's phone says so.</li>
+  <li>They cannot open an adult's messages in <span class="ui">People</span>.</li>
 </ul>
 
-<h2>Forgetting</h2>
-<p>You can delete one thing, a whole day, or everything a search found. See <a href="memory.html">Memory</a>.</p>
-
 <h2>Sending a report</h2>
-<p><span class="ui">Send a report</span> in <span class="ui">Settings</span>, <span class="ui">Updates and about</span> shows you the whole text before anything goes. It holds the app's version, the phone model, how fast it makes the voice, and the last crash. Nothing you said.</p>
+<p><span class="ui">Send a report</span>, in <span class="ui">Settings</span>, <span class="ui">Updates and about</span>, shows you the whole text first. It holds the app version, the phone model and the last crash. Nothing you said.</p>
 
 <nav class="pager">
-  <a href="computer.html">Back: Using your computer</a>
+  <a href="translating.html">Back: Translating</a>
   <a href="index.html">Back to all topics</a>
-  <a href="updates-and-help.html">Next: Updates and help</a>
+  <a href="where-you-are.html">Next: On all your devices</a>
 </nav>
 </main>
 </body>

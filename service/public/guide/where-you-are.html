@@ -4,70 +4,73 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<title>Where ΠAN thinks you are · How to use ΠAN</title>
+<title>On all your devices · How to use ΠAN</title>
 <link rel="stylesheet" href="guide.css">
 </head>
 <body>
 <main>
 <a class="back" href="index.html">Back to all topics</a>
-<h1>Where ΠAN thinks you are</h1>
-<p class="lead">ΠAN keeps a simple guess of where you are and what you are doing. It uses the guess to answer better, and to pick which device should speak.</p>
+<h1>On all your devices</h1>
+<p class="lead">ΠAN is the same on every device you use: one memory, one voice. It knows which one you are at, and speaks there.</p>
 
 <figure>
-<svg viewBox="0 0 340 300" role="img" aria-labelledby="d10t">
-  <title id="d10t">Three signs feed ΠAN's guess: your keyboard or mouse on a computer with ΠAN, your car's Bluetooth or car speed, and your phone's place. The newest sign wins.</title>
+<svg viewBox="0 0 340 300" role="img" aria-labelledby="w1t">
+  <title id="w1t">Three signs tell ΠAN where you are: you used a computer with ΠAN in the last two minutes, your phone is on a car's Bluetooth or moving at car speed, or the place your phone was when you last talked. The newest sign wins, and ΠAN speaks on that device.</title>
   <defs>
-    <marker id="d10a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+    <marker id="w1a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
       <path class="ah" d="M0,0 L10,5 L0,10 z"/>
     </marker>
   </defs>
-  <rect class="box" x="10" y="8" width="320" height="50" rx="10"/>
-  <text class="t" x="170" y="39" text-anchor="middle">You used a computer with ΠAN</text>
-  <rect class="box" x="10" y="70" width="320" height="50" rx="10"/>
-  <text class="t" x="170" y="101" text-anchor="middle">Car Bluetooth, or car speed</text>
-  <rect class="box" x="10" y="132" width="320" height="50" rx="10"/>
-  <text class="t" x="170" y="163" text-anchor="middle">Your phone's place</text>
-  <line class="arrow" x1="170" y1="184" x2="170" y2="222" marker-end="url(#d10a)"/>
-  <text class="ts" x="182" y="208">newest sign wins</text>
-  <rect class="box-home" x="40" y="226" width="260" height="66" rx="10"/>
-  <text class="tb" x="170" y="252" text-anchor="middle">ΠAN's guess</text>
-  <text class="t" x="170" y="276" text-anchor="middle">computer, car or out</text>
+  <rect class="box" x="10" y="8" width="320" height="52" rx="10"/>
+  <text class="tb" x="24" y="30">At the computer</text>
+  <text class="ts" x="24" y="50">you typed or used the mouse just now</text>
+  <rect class="box" x="10" y="70" width="320" height="52" rx="10"/>
+  <text class="tb" x="24" y="92">In the car</text>
+  <text class="ts" x="24" y="112">car Bluetooth, or car speed</text>
+  <rect class="box" x="10" y="132" width="320" height="52" rx="10"/>
+  <text class="tb" x="24" y="154">Out</text>
+  <text class="ts" x="24" y="174">where your phone was when you last talked</text>
+  <line class="arrow" x1="170" y1="186" x2="170" y2="222" marker-end="url(#w1a)"/>
+  <text class="ts" x="182" y="210">newest sign wins</text>
+  <rect class="bubble-pan" x="40" y="226" width="260" height="62" rx="12"/>
+  <text class="tw" x="170" y="252" text-anchor="middle">ΠAN speaks on the device</text>
+  <text class="tw" x="170" y="274" text-anchor="middle">you are at</text>
 </svg>
-<figcaption>No camera or screen watching is used for this guess.</figcaption>
+<figcaption>No camera or screen watching is used for this.</figcaption>
 </figure>
 
-<h2>How ΠAN guesses</h2>
+<h2>Where ΠAN is</h2>
 <ul>
-  <li><b>At the computer:</b> you typed or moved the mouse in the last two minutes on a computer that has ΠAN on it.</li>
-  <li><b>In the car:</b> your phone is on a car's Bluetooth, or it moved at car speed in the last ten minutes.</li>
-  <li><b>Out:</b> otherwise, the place your phone was in when you last talked to ΠAN.</li>
+  <li>Your phone, and any tablet you pair. See <a href="getting-started.html">Getting started</a>.</li>
+  <li>Your car, through your phone. See <a href="car.html">In the car</a>.</li>
+  <li>Your computers. See <a href="computer.html">Your computers</a>.</li>
+  <li>Headphones, earbuds, glasses and the pendant, through your phone.</li>
 </ul>
 
-<h2>What you see</h2>
-<p>Under the connection line on <span class="ui">Home</span>, a short line says what ΠAN thinks you are doing. Tap it to see more: <span class="ui">With</span> (who is around), <span class="ui">Mood</span> and <span class="ui">Lately</span> (recent topics).</p>
-
-<h2>What ΠAN uses it for</h2>
+<h2>Messages and reminders follow you</h2>
+<p>If you set up the hub, go to <span class="ui">Settings</span>, <span class="ui">Voice and sounds</span>, <span class="ui">Reminders and messages</span>.</p>
 <ul>
-  <li>Answers about your place: <span class="say">where am I?</span>, <span class="say">is it going to rain?</span>, <span class="say">when is sunset?</span></li>
-  <li>Picking the device that should speak up.</li>
+  <li><span class="ui">Follow me</span>: they go to the device you last talked to ΠAN on.</li>
+  <li><span class="ui">Send them here</span>: they always go to this device.</li>
 </ul>
-<p>Your exact position is never put in what ΠAN reads. It uses the name of the place. To stop ΠAN using your location, turn location off under <span class="ui">Settings</span>, <span class="ui">Privacy</span>, <span class="ui">What each device may use</span>.</p>
+<p>If that device is off, another of yours takes them. Nothing is lost.</p>
 
-<h2>When ΠAN speaks up by itself</h2>
-<p>Most of the time ΠAN only answers. It speaks without being asked when:</p>
+<h2>What ΠAN sees of your day</h2>
+<p>Under the connection line on <span class="ui">Home</span>, a short line says what ΠAN thinks you are doing. Tap it for <span class="ui">With</span> (who is around), <span class="ui">Mood</span> and <span class="ui">Lately</span> (recent topics).</p>
+<p>ΠAN uses the name of a place, never your exact position. To stop it using location, go to <span class="ui">Settings</span>, <span class="ui">Privacy</span>, <span class="ui">What each device may use</span>.</p>
+
+<h2>When ΠAN speaks first</h2>
 <ul>
-  <li>Someone on your ΠAN sends you a message, and <span class="ui">Read messages out loud</span> is on.</li>
-  <li>Someone calls you. Your phone rings.</li>
-  <li>You get stuck looking for a word. ΠAN may offer it.</li>
+  <li>Someone in your group sends a message and <span class="ui">Read messages out loud</span> is on.</li>
+  <li>Someone calls you.</li>
+  <li>Something needs you. It shows on <span class="ui">Home</span> under <span class="ui">Needs you</span>. Tap <span class="ui">Dismiss</span> when done.</li>
+  <li>Now and then ΠAN starts a short talk on its own, on the device you are at.</li>
 </ul>
-<p>The hub owner can choose which of their devices reads messages and reminders out. Go to <span class="ui">Settings</span>, <span class="ui">Voice and sounds</span>, <span class="ui">Reminders and messages</span>. Pick <span class="ui">Send them here</span> for this device, or <span class="ui">Follow me</span> for the device you last talked to ΠAN on.</p>
-<p>Things the hub wants you to see show on <span class="ui">Home</span> under <span class="ui">Needs you</span>. Tap <span class="ui">Dismiss</span> when you have read one.</p>
-<p>ΠAN starting a short talk with you on its own, for example to suggest a break, is <span class="coming">Coming</span>.</p>
 
 <nav class="pager">
-  <a href="car.html">Back: In the car</a>
+  <a href="privacy.html">Back: Privacy</a>
   <a href="index.html">Back to all topics</a>
-  <a href="models.html">Next: Models</a>
+  <a href="getting-started.html">Next: Getting started</a>
 </nav>
 </main>
 </body>

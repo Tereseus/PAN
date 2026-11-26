@@ -24,6 +24,7 @@ import {
 import { searchMemory, warmVectors, searchMemoryByDate, parseWhen, isReadablePreview } from './memory-search.js';
 import { writeThought } from './thoughts.js';
 import { isBench, benchContext } from './bench-context.js';
+import * as messageMode from './message-mode.js';
 import { recordTiming } from './voice-timing.js';
 import { noteMealMention } from './intuition/nourishment.js';
 import { noteSignalsInUtterance } from './intuition/signals.js';
@@ -2521,6 +2522,53 @@ async function messageToPerson(text, context, { person = null, addressed = false
   } catch (e) { console.warn('[router] message parse failed:', e.message); return null; }
 }
 
+// Message mode for threads (message-mode.js, task 1089, the owner Nov 26): "ΠAN, message for the
+// PAN thread" -> "Go."; every line after it is kept word for word and nothing is answered, until
+// "send it" or "over" sends the whole talk to the thread in one piece. The relay sent each piece
+// of a long request on its own, cut at his pauses. Bench turns run it too but touch no thread.
+async function* _messageMode(text, context) {
+  if (interpretingFor(context?.device_id)) return;
+  const dev = context.device_id || 'default';
+  const done = (response, extra = {}) => ({ type: 'done', result: { intent: 'thread', speech_act: 'command', response, addressed: 1, importance: 0.5, message_mode: true, ...extra } });
+  const say = function* (line, extra) { yield { type: 'chunk', text: line }; yield done(line, extra); };
+  let tr;
+  const r = messageMode.step(dev, text);
+  if (r) {
+    tr = await import('./thread-relay.js');
+    const name = tr.shortTitle(r.thread.title);
+    if (r.act === 'keep') {
+      console.log(`[message-mode] kept for ${name}: ${JSON.stringify(String(text).slice(0, 60))}`);
+      yield { type: 'chunk', text: '' };
+      yield { type: 'done', result: { intent: 'ambient', response: '', addressed: 0.9, importance: 0.2, reason: 'still_talking', message_mode: true } };
+      return;
+    }
+    if (r.act === 'cancel') { yield* say(`Dropped. Nothing went to ${name}.`); return; }
+    if (r.act === 'empty_send') { yield* say(`You haven't said anything for ${name} yet. Go.`); return; }
+    console.log(`[message-mode] sending ${r.size} to ${name}`);
+    if (isTestTurn(context)) { yield* say(`[benchmark: message mode, ${r.size} for ${r.thread.title}, no thread touched]`, { thread_parse: { kind: 'message', title: r.thread.title, text: r.text } }); return; }
+    const lead = `${r.size[0].toUpperCase()}${r.size.slice(1)}. `;
+    yield { type: 'chunk', text: lead };
+    for await (const ev of tr.handleThreadCommand({ kind: 'send', thread: r.thread, text: r.text, utterance: r.text }, r.text, context)) {
+      yield ev.type === 'done' ? { ...ev, result: { ...ev.result, response: lead + (ev.result.response || ''), message_mode: true } } : ev;
+    }
+    return;
+  }
+  const st = messageMode.parseStart(text);
+  if (!st) return;
+  tr = tr || await import('./thread-relay.js');
+  const m = tr.matchThread(st.name, tr.listThreads());
+  if (m.ok) {
+    messageMode.start(dev, m.thread, st.rest);
+    console.log(`[message-mode] taking a message for ${m.thread.title}${st.rest ? ' (first piece in the start line)' : ''}`);
+    yield* say('Go.');
+    return;
+  }
+  if (m.reason === 'ambiguous') {
+    const names = m.candidates.slice(0, 2).map(c => tr.shortTitle(c.title));
+    yield* say(`Which thread, ${names.join(' or ')}?`, { thread_candidates: m.candidates });
+  }
+}
+
 async function* _threadRelayFastPath(text, context) {
   // "Ask them where the station is" is a line to translate, not a job for a thread.
   if (interpretingFor(context?.device_id)) return;
@@ -3240,6 +3288,15 @@ export async function* routeStream(text, context = {}) {
   }
   // Someone other than the owner: their own short path, and none of what follows.
   if (context.person) { yield* personTurn(text, context, withProsody); return; }
+  {
+    let handled = false;
+    for await (const ev of _messageMode(text, context)) {
+      handled = true;
+      if (ev.type === 'done') { insertRouterEvent(text, ev.result.intent, ev.result.response, context); yield { type: 'done', result: withProsody(ev.result) }; }
+      else yield ev;
+    }
+    if (handled) return;
+  }
   warmVectors();
   // The shelf (intuition/shelf.js): every line of his is checked for the names of his things, so
   // their notes are ready on the turns that need them. A guest's line returned above.

@@ -11,59 +11,72 @@
 <main>
 <a class="back" href="index.html">Back to all topics</a>
 <h1>Updates and help</h1>
-<p class="lead">The ΠAN app gets new versions from your own hub. Here is how updates work, and what to try when something is wrong.</p>
+<p class="lead">The ΠAN app gets new versions from your own hub. Here is how, and what to try when something is off.</p>
+
+<figure>
+<svg viewBox="0 0 340 120" role="img" aria-labelledby="u1t">
+  <title id="u1t">Your hub has a new version. The phone downloads it on Wi-Fi. You say yes when Android asks to install it.</title>
+  <defs>
+    <marker id="u1a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path class="ah" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+  </defs>
+  <rect class="box-home" x="4" y="20" width="92" height="80" rx="10"/>
+  <text class="t" x="50" y="54" text-anchor="middle">Hub has</text>
+  <text class="t" x="50" y="76" text-anchor="middle">a new one</text>
+  <line class="arrow" x1="98" y1="60" x2="121" y2="60" marker-end="url(#u1a)"/>
+  <rect class="box" x="124" y="20" width="92" height="80" rx="10"/>
+  <text class="t" x="170" y="54" text-anchor="middle">Phone gets</text>
+  <text class="t" x="170" y="76" text-anchor="middle">it on Wi-Fi</text>
+  <line class="arrow" x1="218" y1="60" x2="241" y2="60" marker-end="url(#u1a)"/>
+  <rect class="bubble-pan" x="244" y="20" width="92" height="80" rx="10"/>
+  <text class="tw" x="290" y="54" text-anchor="middle">You say</text>
+  <text class="tw" x="290" y="76" text-anchor="middle">yes</text>
+</svg>
+<figcaption>Your settings stay.</figcaption>
+</figure>
 
 <h2>Updates</h2>
 <ul>
-  <li>Each time the app starts, it asks your hub for a newer version.</li>
-  <li>It downloads by itself only on Wi-Fi, and never during a call.</li>
-  <li>When it is ready, Android asks if you want to install the update. Say yes. Your settings stay.</li>
-  <li>The very first time, Android asks you to let ΠAN install apps. Allow it, then tap <span class="ui">Check for updates</span> again.</li>
+  <li>When the app starts, it asks your hub for a newer version. It downloads only on Wi-Fi, never during a call.</li>
+  <li>Android asks if you want to install it. Say yes.</li>
+  <li>The first time, Android asks you to let ΠAN install apps. Allow it, then tap <span class="ui">Check for updates</span> again.</li>
 </ul>
-<p>To check now, go to <span class="ui">Settings</span>, <span class="ui">Updates and about</span>, <span class="ui">Check for updates</span>. A bar shows how far the download is. The version you have is shown there too.</p>
+<p>To check now: <span class="ui">Settings</span>, <span class="ui">Updates and about</span>, <span class="ui">Check for updates</span>. A bar shows the download.</p>
 
-<h2>When something is wrong</h2>
-
-<h3>The line at the top of Home</h3>
+<h2>The line at the top of Home</h2>
 <table>
   <tr><th>It says</th><th>Try this</th></tr>
   <tr><td><span class="ui">Connected</span></td><td>All is well.</td></tr>
-  <tr><td><span class="ui">Not paired with a computer yet</span></td><td>Pair the phone. See <a href="getting-started.html">Getting started</a>.</td></tr>
+  <tr><td><span class="ui">Not paired with a computer yet</span></td><td>See <a href="getting-started.html">Getting started</a>.</td></tr>
   <tr><td><span class="ui">No internet on this device</span></td><td>Check the phone's Wi-Fi or mobile data.</td></tr>
-  <tr><td><span class="ui">Your computer is not answering</span></td><td>Check that the hub computer is on, awake and online. If it is, restart it and wait a minute.</td></tr>
+  <tr><td><span class="ui">Your computer is not answering</span></td><td>Check the hub is on and online. If it is, restart it and wait a minute.</td></tr>
 </table>
 
-<h3>ΠAN does not answer</h3>
+<h2>ΠAN does not answer</h2>
 <ul>
-  <li>Look at the microphone button. A crossed out microphone means muted. Tap it.</li>
-  <li>An ear means <span class="ui">Listen only</span>, and Π means <span class="ui">Name only</span>. Say <span class="say">back to normal</span>, or hold the button and pick <span class="ui">Normal</span>.</li>
-  <li>An <span class="ui">Interpreting</span> badge on <span class="ui">Home</span> means ΠAN is translating, not answering. Tap the badge to stop.</li>
-  <li>A slanted note under your line, like <span class="ui">Not for ΠAN: music was playing</span>, tells you why it stayed quiet. Start with its name and ask again.</li>
+  <li>Look at the microphone button. A crossed out microphone means muted: tap it.</li>
+  <li>An ear or a Π means <span class="ui">Listen only</span> or <span class="ui">Name only</span>. Say <span class="say">back to normal</span>.</li>
+  <li>An <span class="ui">Interpreting</span> badge means ΠAN is translating. Tap it to stop.</li>
+  <li>A slanted note under your line says why it stayed quiet. Start with its name and ask again.</li>
 </ul>
 
-<h3>ΠAN answers when you did not want it to</h3>
+<h2>ΠAN answers when you did not want it to</h2>
+<p>Say <span class="say">stop</span>, or press the power button. Or switch to <span class="ui">Name only</span>.</p>
+
+<h2>Other things</h2>
 <ul>
-  <li>Say <span class="say">stop</span>, or press the power button.</li>
-  <li>Switch to <span class="ui">Name only</span>, so it answers only when you start with its name.</li>
+  <li><b>It mishears a name:</b> the person who set up the hub can add <span class="ui">Other names</span> for that person.</li>
+  <li><b>Memory will not open:</b> use your fingerprint, or the PIN on a phone without one. Shared screens keep it closed on purpose.</li>
+  <li><b>The camera is off:</b> <span class="ui">Settings</span>, <span class="ui">Privacy</span>, <span class="ui">What each device may use</span>.</li>
+  <li><b>Something under <span class="ui">Needs you</span>:</b> read it, then tap <span class="ui">Dismiss</span>.</li>
 </ul>
 
-<h3>ΠAN mishears a name</h3>
-<p>The hub owner can add <span class="ui">Other names</span> for that person. See <a href="people.html">People</a>.</p>
-
-<h3>Memory will not open</h3>
-<p>Use the fingerprint you set up in Android. On a phone without one, use the PIN. A tablet, car screen or TV without a fingerprint keeps Memory closed on purpose.</p>
-
-<h3>ΠAN says the camera is turned off</h3>
-<p>Turn the camera on in <span class="ui">Settings</span>, <span class="ui">Privacy</span>, <span class="ui">What each device may use</span>.</p>
-
-<h3>Messages from the hub</h3>
-<p>If the hub has something you should know, it shows on <span class="ui">Home</span> under <span class="ui">Needs you</span>. Read it, then tap <span class="ui">Dismiss</span>.</p>
-
-<h3>Still stuck</h3>
-<p>Go to <span class="ui">Settings</span>, <span class="ui">Updates and about</span>, <span class="ui">Send a report</span>. You see the whole report first. It holds the app version, the phone model, how fast it makes the voice and the last crash, and nothing you said. Tap <span class="ui">Send</span> and pick how to share it.</p>
+<h2>Still stuck</h2>
+<p>Go to <span class="ui">Settings</span>, <span class="ui">Updates and about</span>, <span class="ui">Send a report</span>. You see the whole report first, and it holds nothing you said. Tap <span class="ui">Send</span> and pick how to share it.</p>
 
 <nav class="pager">
-  <a href="privacy.html">Back: Privacy</a>
+  <a href="models.html">Back: Models</a>
   <a href="index.html">Back to all topics</a>
 </nav>
 </main>

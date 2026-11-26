@@ -3076,6 +3076,28 @@ the Nov 26 code.
 
 ## Phone app (entries added Nov 26 review)
 
+- **Message mode for threads (hub Craft 103, Nov 26; task 1089; `service/src/message-mode.js`,
+  `router.js _messageMode`, test `__tests__/message-mode.test.js`).** "ΠAN, message for the PAN
+  thread" (the word thread is needed; the name must match a thread, else the line goes on as before)
+  -> "Go." From then on every line from that device is kept word for word and answered with
+  silence (`intent: ambient`, `reason: still_talking`, so the phone shows no note), whatever it
+  says, until a line that is "send it" / "send that" / "over" / "over and out" on its own (or after
+  a full stop or comma; "the app doesn't send it" inside a sentence does not end it). Then the
+  whole talk goes to the thread in one job (`handleThreadCommand` send) and ΠAN says "20 words,
+  about 3 minutes. Sent to PAN." and reads the answer as for any send. The phone's joined line
+  (carry_on) replaces the piece it already holds, so nothing is doubled. "Cancel the message" or
+  "don't send it" drops it. 15 minutes with no line stops the taking; the draft waits an hour for
+  "send the message". Runs before every gate (room talk, dictation, mute words), after the listening
+  modes; the owner only; not while interpreting. Bench turns run it but touch no thread. State is in
+  memory: a hub restart drops an unsent message. Checked on dev 7781 with a test thread, and none of
+  about 2,400 of his past lines starts it.
+
+- **How to use ΠAN guide, second version (Nov 26; task 1081; `service/public/guide/`,
+  `docs/GUIDE-SOURCES.md`).** Rewritten to lead with memory, people and groups, translating and
+  privacy; no small tricks, no "assistant", no Coming labels; a picture on every page; about a third
+  shorter. The computer page explains message mode. Some pages describe parts still being built as
+  part of ΠAN (each person's own memory, calls between ΠANs, the pendant); GUIDE-SOURCES lists them.
+
 - **Don't remember lasts until it is turned off (app 0.5.59, versionCode 188, Nov 26; task 1067).**
   The hour limit is now a switch, Settings > Privacy > "End Don't remember after an hour", off by
   default (`audio/ListenMode.kt forgetHourLimit`, `forgetRanOut` checks it). The mode shows on Home

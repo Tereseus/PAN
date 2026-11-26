@@ -4,86 +4,58 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<title>Talking to ΠAN · How to use ΠAN</title>
+<title>Talking with ΠAN · How to use ΠAN</title>
 <link rel="stylesheet" href="guide.css">
 </head>
 <body>
 <main>
 <a class="back" href="index.html">Back to all topics</a>
-<h1>Talking to ΠAN</h1>
-<p class="lead">Talk the way you talk to a person. ΠAN listens, and answers when you are talking to it.</p>
+<h1>Talking with ΠAN</h1>
+<p class="lead">Talk the way you talk to a person. ΠAN follows the talk and joins in when you speak to it.</p>
 
 <figure>
-<svg viewBox="0 0 340 330" role="img" aria-labelledby="d3t">
-  <title id="d3t">One spoken turn: your phone hears you and turns speech into words, the hub decides if it was for ΠAN and finds the answer, your phone speaks the answer.</title>
-  <defs>
-    <marker id="d3a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
-      <path class="ah" d="M0,0 L10,5 L0,10 z"/>
-    </marker>
-  </defs>
-  <rect class="box" x="30" y="8" width="280" height="76" rx="10"/>
-  <text class="tb" x="170" y="36" text-anchor="middle">1. Your phone hears you</text>
-  <text class="t" x="170" y="62" text-anchor="middle">and turns it into words</text>
-  <line class="arrow" x1="170" y1="86" x2="170" y2="118" marker-end="url(#d3a)"/>
-
-  <rect class="box-home" x="30" y="122" width="280" height="88" rx="10"/>
-  <text class="tb" x="170" y="150" text-anchor="middle">2. Your hub thinks</text>
-  <text class="t" x="170" y="174" text-anchor="middle">Was it for ΠAN?</text>
-  <text class="t" x="170" y="196" text-anchor="middle">What is the answer?</text>
-  <line class="arrow" x1="170" y1="212" x2="170" y2="244" marker-end="url(#d3a)"/>
-
-  <rect class="box" x="30" y="248" width="280" height="76" rx="10"/>
-  <text class="tb" x="170" y="276" text-anchor="middle">3. Your phone speaks</text>
-  <text class="t" x="170" y="302" text-anchor="middle">in ΠAN's own voice</text>
+<svg viewBox="0 0 340 300" role="img" aria-labelledby="k1t">
+  <title id="k1t">You say: ΠAN, what did we pick for Saturday? ΠAN answers: you'd drive, and leave at nine. You go on without its name: and who else is coming? Then you say to someone in the room: can you pass the bread? ΠAN stays quiet, and Home notes: not for ΠAN.</title>
+  <rect class="bubble" x="10" y="10" width="300" height="44" rx="14"/>
+  <text class="t" x="24" y="38">ΠAN, what did we pick for Saturday?</text>
+  <rect class="bubble-pan" x="40" y="66" width="290" height="44" rx="14"/>
+  <text class="tw" x="54" y="94">You'd drive, and leave at nine.</text>
+  <rect class="bubble" x="10" y="122" width="220" height="44" rx="14"/>
+  <text class="t" x="24" y="150">And who else is coming?</text>
+  <text class="ts" x="236" y="150">no name needed</text>
+  <line class="rule" x1="10" y1="186" x2="330" y2="186"/>
+  <text class="ts" x="12" y="210">To someone in the room:</text>
+  <rect class="bubble" x="10" y="218" width="220" height="44" rx="14"/>
+  <text class="t" x="24" y="246">Can you pass the bread?</text>
+  <text class="ti" x="24" y="286">Not for ΠAN: talking to someone else</text>
 </svg>
-<figcaption>Every spoken turn makes this trip. A few small things never leave the phone.</figcaption>
+<figcaption>ΠAN answers when you speak to it, and keeps out of the rest.</figcaption>
 </figure>
 
-<h2>Saying its name</h2>
-<p>ΠAN sounds like "pan". In the usual mode it listens to everything and answers when it thinks you are talking to it. Starting with its name makes sure: <span class="say">ΠAN, how far is the moon?</span></p>
-<p>Right after ΠAN answers, you can go on without its name: <span class="say">and Mars?</span> or <span class="say">how long would it take to get there?</span></p>
-<p>If you only want answers when you say its name, use <span class="ui">Name only</span>. See <a href="listening-modes.html">Listening modes</a>.</p>
+<h2>Its name</h2>
+<p>ΠAN sounds like "pan". In the usual mode it answers when it thinks you are talking to it. Its name at the start makes sure. Right after an answer, go on without the name.</p>
+<p>Want answers only when you say its name? Use <span class="ui">Name only</span>. See <a href="listening-modes.html">Listening modes</a>.</p>
 
-<h2>When ΠAN stays quiet</h2>
-<p>ΠAN keeps out of talk that is not for it, like you talking to someone in the room or music playing. <span class="ui">Home</span> then shows a small slanted note under your line, for example <span class="ui">Not for ΠAN: sounded like you were talking to someone else</span>. If it was for ΠAN, say its name and ask again.</p>
+<h2>When it stays quiet</h2>
+<p>When talk is not for it, <span class="ui">Home</span> shows a slanted note under your line, like <span class="ui">Not for ΠAN: sounded like you were talking to someone else</span>. If it was for ΠAN, say its name and ask again.</p>
+<p>Lose a word mid sentence, and ΠAN may offer it.</p>
 
-<h2>Stopping it mid sentence</h2>
+<h2>Stopping it</h2>
 <ul>
-  <li>Say <span class="say">stop</span>, <span class="say">wait</span> or <span class="say">enough</span> while it talks.</li>
-  <li>Or just start talking. A couple of real words stop it. <span class="say">Yeah</span> or <span class="say">mm hmm</span> do not.</li>
-  <li>Press the phone's power button.</li>
-  <li>Or pull down the ΠAN notification and tap <span class="ui">Stop talking</span>.</li>
+  <li>Say <span class="say">stop</span>, <span class="say">wait</span> or <span class="say">enough</span>.</li>
+  <li>Or just start talking. <span class="say">Yeah</span> and <span class="say">mm hmm</span> do not stop it.</li>
+  <li>Press the phone's power button, or tap <span class="ui">Stop talking</span> in the notification.</li>
 </ul>
 
-<h2>Typing instead</h2>
-<p>Where you cannot talk, tap the box at the bottom of <span class="ui">Home</span>. It becomes <span class="ui">Type to ΠAN</span>. Type, then tap the send arrow. While you talk, the same box shows your words as you say them.</p>
+<h2>Typing</h2>
+<p>Where you cannot talk, tap the box at the bottom of <span class="ui">Home</span>. It says <span class="ui">Type to ΠAN</span>. While you talk, the same box shows your words.</p>
 
-<h2>What your phone answers by itself</h2>
-<p>These work even when the hub does not answer. Say the command on its own, with nothing else in the sentence.</p>
-<ul>
-  <li>The flashlight: <span class="say">flashlight on</span>, <span class="say">turn the torch off</span>.</li>
-  <li>Music that is already playing: <span class="say">play</span>, <span class="say">pause</span>, <span class="say">stop music</span>, <span class="say">next</span>, <span class="say">skip</span>, <span class="say">previous</span>.</li>
-  <li>The battery: <span class="say">what's my battery</span>.</li>
-</ul>
-
-<h2>What the hub answers</h2>
-<p>Everything else goes to your hub. Some examples:</p>
-<ul>
-  <li>Questions: <span class="say">why is the sky blue?</span></li>
-  <li>The time and date, here or anywhere: <span class="say">what time is it in Tokyo?</span></li>
-  <li>Money, units and dates, worked out exactly: <span class="say">how much is 50 euros in dollars?</span>, <span class="say">what day is Christmas this year?</span></li>
-  <li>The weather where you are.</li>
-  <li>A ringing timer or alarm on your phone: <span class="say">turn that off</span>.</li>
-  <li>Messages and calls to family. See <a href="people.html">People</a>.</li>
-</ul>
-<p>If you get stuck looking for a word, like <span class="say">the film with the dreams inside dreams, the</span>, ΠAN may offer the word.</p>
-
-<h2>The assistant button</h2>
-<p>A car's voice button on the steering wheel, a headset button, or your phone's assistant gesture can open ΠAN. The first time, Android may ask which app to use. Pick ΠAN. After a press, the next thing you say goes to ΠAN for sure.</p>
+<h2>The voice button</h2>
+<p>The voice button on a steering wheel or headset, or your phone's voice gesture, can open ΠAN. Android may ask which app to use the first time. Pick ΠAN. After a press, the next thing you say is for ΠAN.</p>
 
 <h2>How ΠAN talks</h2>
-<p>You can give ΠAN a personality on this device. Go to <span class="ui">Settings</span>, <span class="ui">Voice and sounds</span>, <span class="ui">Personality</span>. Write how ΠAN should talk in <span class="ui">How ΠAN talks</span>, for example "calm and short", and tap <span class="ui">Save</span>. <span class="ui">Turn Off</span> brings back the usual voice.</p>
-<p>In the same place, <span class="ui">Sound Effects</span> plays two soft notes when ΠAN mutes, and <span class="ui">Vibration</span> gives a short buzz when ΠAN starts listening or something fails. Turn either one off if you do not want it.</p>
+<p>Go to <span class="ui">Settings</span>, <span class="ui">Voice and sounds</span>, <span class="ui">Personality</span>. In <span class="ui">How ΠAN talks</span>, write something like "calm and short", then tap <span class="ui">Save</span>. <span class="ui">Turn Off</span> brings back the usual voice.</p>
+<p>In the same place, <span class="ui">Sound Effects</span> and <span class="ui">Vibration</span> turn ΠAN's small sounds and buzzes on or off.</p>
 
 <nav class="pager">
   <a href="getting-started.html">Back: Getting started</a>
