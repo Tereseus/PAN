@@ -347,7 +347,8 @@ private fun TalkLine(line: ConversationEntity, developer: Boolean) {
             }
         }
         // PAN's lines also say how long he waited for the first word (Developer options only).
-        val waited = line.ms?.takeIf { developer && !mine && it > 0 }?.let { " · " + secs(it) }.orEmpty()
+        // A picture answer shows it to everyone (task 1064): a look takes longer, and the time says why the wait.
+        val waited = line.ms?.takeIf { (developer || line.photo != null) && !mine && it > 0 }?.let { " · " + secs(it) }.orEmpty()
         Text(time + waited, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
         if (open && (words.isNotEmpty() || breakdown.isNotEmpty())) {
@@ -427,12 +428,37 @@ private fun TalkPhoto(path: String) {
             runCatching { BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = 4 }) }.getOrNull()
         }
     }
+    // Tapped: the whole picture, as big as the screen allows (task 1063). Tap again or Back closes it.
+    var full by remember(path) { mutableStateOf(false) }
     bitmap?.let {
         Image(
-            bitmap = it.asImageBitmap(), contentDescription = "Picture ΠAN took",
+            bitmap = it.asImageBitmap(), contentDescription = "Picture ΠAN took. Tap to see it full size",
             contentScale = ContentScale.Crop,
             modifier = Modifier.padding(bottom = 8.dp).fillMaxWidth().heightIn(max = 190.dp).clip(RoundedCornerShape(12.dp))
+                .clickable { full = true }
         )
+    }
+    if (full) {
+        var big by remember(path) { mutableStateOf<android.graphics.Bitmap?>(null) }
+        LaunchedEffect(path) {
+            big = withContext(Dispatchers.IO) {
+                runCatching { BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = 2 }) }.getOrNull()
+            }
+        }
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { full = false },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            Box(
+                modifier = Modifier.fillMaxSize().background(Color.Black).clickable { full = false },
+                contentAlignment = Alignment.Center,
+            ) {
+                (big ?: bitmap)?.let { b ->
+                    Image(bitmap = b.asImageBitmap(), contentDescription = "Picture ΠAN took, full size",
+                        contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
+                }
+            }
+        }
     }
 }
 

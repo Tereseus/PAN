@@ -11,6 +11,7 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Phone
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -32,11 +33,12 @@ import kotlinx.coroutines.launch
 private data class SettingsPage(val key: String, val title: String, val about: String, val icon: ImageVector)
 
 private val SETTINGS_PAGES = listOf(
+    SettingsPage("guide", "How to use ΠAN", "What ΠAN does and how to use it, with pictures", Icons.Default.Info),
     SettingsPage("connection", "This device", "Its name, and how it reaches ΠAN", Icons.Default.Phone),
     SettingsPage("voice", "Voice and sounds", "How ΠAN talks, where it reads reminders out, tones and vibration", Icons.Default.Notifications),
     SettingsPage("accessories", "Accessories", "Glasses, headphones, a watch", Icons.Default.Star),
     SettingsPage("privacy", "Privacy", "Incognito, the lock on Memory, what each device may use", Icons.Default.Lock),
-    SettingsPage("about", "Updates and about", "This version, new versions, credits, a report", Icons.Default.Info),
+    SettingsPage("about", "Updates and about", "This version, new versions, credits, a report", Icons.Default.Refresh),
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -100,6 +102,8 @@ fun SettingsScreen(
             )
         }
     ) { padding ->
+        // The guide is a page of its own that scrolls by itself (GuideView), not inside the column.
+        if (page == "guide") GuideView(Modifier.padding(padding).fillMaxSize()) { page = "" } else
         Column(
             modifier = Modifier
                 .fillMaxSize()

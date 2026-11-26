@@ -3076,6 +3076,15 @@ the Nov 26 code.
 
 ## Phone app (entries added Nov 26 review)
 
+- **App 0.5.60 (versionCode 189, Nov 26): the guide in Settings, photos full size, speed on picture
+  answers.** Settings opens on a new first row, How to use ΠAN (task 1068): the guide pages, copied
+  into the app at build time from `service/public/guide` (gradle `copyGuide`, assets/guide, not in
+  git) and shown in `ui/settings/GuideView.kt` (a WebView, no JavaScript, no network; Back goes to
+  the page before, then out; a link out of the guide opens in the browser). Updates and about now has
+  the Refresh icon. On Home a picture ΠAN took opens full screen when tapped, tap or Back closes it
+  (task 1063, `TalkPhoto`). ΠAN's reply to a picture shows how long it took to everyone, not only in
+  Developer options (task 1064). Not yet seen on a screen.
+
 - **Asking ΠAN while it translates (hub Craft 105, Nov 26; task 1083; `router.js` after
   `standingInstruction`).** While interpreting, his own English line that names ΠAN ("Pan, how many
   people live in Tokyo") is answered as a request, not translated; the interpreting goes on after

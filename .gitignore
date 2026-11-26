@@ -219,6 +219,7 @@ service/dashboard/.immutable-backup/
 
 # The speech models, fetched by the build (android/app/build.gradle.kts fetchSpeech)
 android/app/src/main/assets/asr/
+android/app/src/main/assets/guide/
 
 # PAN Setup bundles (installer/windows/build-bundle.py). Built, never committed.
 installer/dist/
