@@ -26,6 +26,8 @@ import { writeThought } from './thoughts.js';
 import { isBench, benchContext } from './bench-context.js';
 import * as messageMode from './message-mode.js';
 import * as layingOut from './intuition/laying-out.js';
+// The model for a problem he laid out over pauses: Claude, through the hub's own Claude login.
+const PROBLEM_MODEL = 'anthropic:claude-sonnet-5-5';
 import { recordTiming } from './voice-timing.js';
 import { noteMealMention } from './intuition/nourishment.js';
 import { noteSignalsInUtterance } from './intuition/signals.js';
@@ -3312,6 +3314,7 @@ export async function* routeStream(text, context = {}) {
   // done", "here's the situation...", a line ending in a colon: nothing is said and the piece is
   // kept; the next line is answered as one request with every piece in front of it. His popcorn
   // problem over three pauses got answers to the pieces, and the question went alone.
+  let laidOut = 0;   // kept pieces in front of this line: a problem he laid out (task 1090)
   if (!interpretingFor(context.device_id)) {
     const lay = layingOut.step(context.device_id || 'default', text, talking && typeof context.conversation_history === 'string' ? context.conversation_history : '');
     if (lay.hold) {
@@ -3323,6 +3326,7 @@ export async function* routeStream(text, context = {}) {
     if (lay.joined) {
       console.log(`[laying-out] ${lay.joined} kept piece${lay.joined === 1 ? '' : 's'} in front of: ${JSON.stringify(String(text).slice(0, 60))}`);
       text = lay.text;
+      laidOut = lay.joined;
     }
   }
 
@@ -4290,6 +4294,22 @@ answer an earlier question, and do not narrate what the context blocks mention.`
       }
     }
     if (translatePrompt && !claudeQuiet) { notePath('translate'); yield* interpretStream(translatePrompt, localOneOff, oneOffLang?.code || null); return; }
+    // A problem he laid out over pauses (laying-out.js): Claude works it out, on his own Claude
+    // login through the hub's Claude terminal (the sdk provider, claude -p), the owner Nov 26. Only
+    // the problem goes, names anonymized (anonymizeForAI), no memory and no talk. The local voice
+    // model got 4 of 5 laid-out problems wrong on the layout bench. Falls back to the usual chain.
+    if (laidOut && !claudeQuiet) {
+      console.log(`[routeStream] a problem laid out over ${laidOut + 1} lines - ${PROBLEM_MODEL} works it out, not ${studentModel || 'the voice model'}`);
+      notePath('problem');
+      const problemPrompt = [
+        `Today is ${new Date().toDateString()}.`,
+        `He laid out a problem out loud, over several pauses, then asked. His words, in order: "${safeText}"`,
+        'Work it out carefully. Then answer the way you would say it out loud to him: the answer first, in one to three short sentences, with the numbers he needs. No markdown, no lists, no working shown.',
+      ].join('\n\n');
+      yield* plainAsReply(askAIStreamWithFallback(problemPrompt, { ...streamOpts, _skipAnonymize: false, maxTokens: 400, timeout: 60_000,
+        chain: [PROBLEM_MODEL, ...cloudFirst()].slice(0, 3), firstTokenMs: 60_000 }), 4);
+      return;
+    }
     if (wordSearch && !claudeQuiet) { notePath('search'); yield* bigAsk(wordSearchPrompt, 'WORD', `He stopped mid-sentence: "${safeText}"`); return; }
     if (toolPrompt && !claudeQuiet) {
       console.log(`[routeStream] live data (${weatherBlock.length} chars) - short prompt instead of ${studentModel}`);

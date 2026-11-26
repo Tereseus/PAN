@@ -3076,6 +3076,14 @@ the Nov 26 code.
 
 ## Phone app (entries added Nov 26 review)
 
+- **A laid-out problem is worked out by Claude (hub Craft 106, Nov 26; task 1090; `router.js`
+  `PROBLEM_MODEL`, path `problem`).** When the laying-out rule joined kept pieces in front of a line,
+  the joined problem goes to Claude Sonnet 5.5 (`anthropic:claude-sonnet-5-5`) through the hub's own
+  Claude login (the sdk provider, claude -p; the owner's call: "that should be Claude"), falling back
+  to the usual chain. Only the problem and the date go, with names anonymized (`anonymizeForAI`): no
+  memory, no talk, no place. The answer is said in one to three spoken sentences (`plainAsReply`).
+  Layout bench on the live hub: 5 of 5 right in 2.7 to 7.5 s (pan-gemma-r4 before: 0 of 5).
+
 - **App 0.5.60 (versionCode 189, Nov 26): the guide in Settings, photos full size, speed on picture
   answers.** Settings opens on a new first row, How to use ΠAN (task 1068): the guide pages, copied
   into the app at build time from `service/public/guide` (gradle `copyGuide`, assets/guide, not in
