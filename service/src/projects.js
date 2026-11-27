@@ -122,7 +122,7 @@ export async function gatherProjectLines({ days = 21 } = {}) {
 
 // ── Writing ────────────────────────────────────────────────────────────────────────────────────
 
-const WRITE = (lines, today) => `Today is ${today}. You keep the project notes for one person's voice assistant, ΠAN. A SMALL model may read these notes to answer out loud in about a second, so write them for it: it cannot add things up, compare dates or make lists itself, so do that work here.
+const WRITE = (lines, today, old = '') => `Today is ${today}. You keep the project notes for one person's voice assistant, ΠAN. A SMALL model may read these notes to answer out loud in about a second, so write them for it: it cannot add things up, compare dates or make lists itself, so do that work here.
 
 Below is what their memory holds: their own typed words and what their assistants reported, newest first.
 
@@ -136,9 +136,18 @@ Each project (group the suppliers, parts and paperwork of one product under that
 "waiting_on_owner": one line per person or company waiting on the owner: "<who> (<company>, <part>) waits on you for <what>, since <date>; blocked by <what>".
 "owner_waiting_on": one line per person or company the owner waits on: "<who> (<company>, <part>) owes you <what>, since <date>".
 Rules: only what the notes show; the newest note wins when they disagree; keep every rule or decision the owner stated (e.g. "do not ask X again until Y") as a fact and follow it in the answers; every person or company in the notes appears somewhere; keep numbers exact (prices, part numbers, dates, amounts to pay and when); 6 to 12 qa per project; leave out games, code chores and things that are not one of the person's own projects. Never include the owner's address, phone number, email, passwords or account numbers. Reply with the JSON only.
-
-Notes:
+${old ? `
+The notes as they stand now (keep every detail that is still true, even when the memory lines below no longer mention it; change what the newer lines change; drop what is done or no longer true):
+${old}
+` : ''}
+Memory lines:
 ${lines.map((e) => `[${e.at}] ${e.who}: ${e.t}`).join('\n')}`;
+
+// The current notes for the writer, without the questions (the writer makes those again).
+function oldForWriter(n) {
+  if (!n?.projects?.length) return '';
+  return renderNotes({ ...n, projects: n.projects.map((p) => ({ ...p, qa: [] })) }).slice(0, 40_000);
+}
 
 // Whatever the model writes, no email address and no long digit run (a phone or account number).
 const scrub = (s) => String(s ?? '').replace(/[\w.+-]+@[\w-]+\.[\w.]+/g, '…')
@@ -223,7 +232,7 @@ export function writeProjectNotes({ reason = 'due' } = {}) {
     const lastId = Math.max(...lines.map((l) => l.id));
     const today = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
     const model = smartModel();
-    const raw = await askAI(WRITE(lines, today), { model, timeout: 400_000, maxTokens: 16000, caller: 'projects', _skipAnonymize: true });
+    const raw = await askAI(WRITE(lines, today, oldForWriter(projectNotes())), { model, timeout: 400_000, maxTokens: 16000, caller: 'projects', _skipAnonymize: true });
     const notes = cleanNotes(raw);
     if (!notes || !notes.projects.length) { console.warn(`[projects] ${model} gave no usable notes (${String(raw).slice(0, 120)})`); return null; }
     dropEveryday(notes);

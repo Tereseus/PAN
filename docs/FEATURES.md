@@ -3098,6 +3098,10 @@ the Nov 26 code.
   otherwise). Both owner only (`routes/smart-model.js`). `router.js` reads the pick per turn through
   `smartModel()`. On the hub today the list is Claude only. Checked on dev 7781: list, a refused
   id, a pick and back.
+  Each choice can carry `bench`, our own number for it (app 0.5.65 / 194, hub Craft 115; task 1098):
+  `service/src/bench-reference.json` holds the made-up twin of the project bench per picker id, and
+  `benchLine(id)` makes "Our test: 19 of 20 project questions right, about 6.5 s an answer." The app
+  shows it under the note. No number for a choice we have not run (local Ollama models).
 
 - **Memory's drop down: Memory, Data dividend, Reports (app 0.5.63 / versionCode 192, hub Craft 110,
   Nov 27; tasks 1092, 1093, 1095).** The Memory title is a drop down once Memory is open (same lock;
@@ -3129,7 +3133,7 @@ the Nov 26 code.
   topics as "the screens" or "our battery" (never "my" or "phone"), or close in meaning to the notes' own
   questions (0.78 and up), goes to Claude Haiku 5.5 on his Claude login (`projectAnswerModel`; the smart
   model itself on other logins) with the notes, whole, not streamed: it may answer NOT_PROJECT, and the
-  turn then goes on as usual (a name like Northwest in a weather question). Questions about ΠAN's own
+  turn then goes on as usual (a company name in a weather question). Questions about ΠAN's own
   state ("what version are you on") never go there. `looks.js`: "which camera are WE using" is no longer
   answered as a question about ΠAN's last look. Owner routes: `GET /api/v1/projects`,
   `POST /api/v1/projects/write` (write now), `PUT /api/v1/projects {notes}` (tests). Bench
@@ -3139,10 +3143,13 @@ the Nov 26 code.
   Live (Craft 113, notes written on the hub by Claude Sonnet 5.5 from 260 lines in 218 s): 16 of 20,
   median 3.3 s, max 4.9 s; the four misses are details the notes lack. The writer reads under each name
   up to 3 of his own lines and 3 thread reports, plus his typed lines of the last 4 days, and keeps every
-  rule he stated as a fact (the first live notes missed "don't ask Angell again" and answered "yes").
+  rule he stated as a fact (the first live notes missed a "don't ask her again" rule and answered "yes").
   Words he says to ΠAN in 1 of 250 voice lines or more (last 30 days) and ΠAN's own parts (hub, Claude,
   Mint, agent...) never count as names or topics. NOT_PROJECT only when the question is about something
   else entirely; a project question the notes cannot answer gets "I don't know" plus what they do say.
+  Craft 114 (Nov 27): the writer also gets the notes as they stand (`oldForWriter`, no questions, 40k
+  chars at most) and keeps every detail still true, so a detail once written is not lost when its
+  lines fall out of the window. Live bench after: 19 of 20, median 3.0 s, max 4.5 s.
 
 - **Each device's own name for ΠAN (app 0.5.61 / versionCode 190, hub Craft 107, Nov 26; task
   1082).** Settings > Voice and sounds > ΠAN's name (`ui/settings/PanNameField.kt`,

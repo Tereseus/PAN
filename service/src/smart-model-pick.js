@@ -5,6 +5,7 @@
 // The list is built on the hub, so it only offers what the hub itself can start. Whether Claude is
 // signed in is smart-model.js (Setup's check); this file is only the pick.
 
+import { readFileSync } from 'fs';
 import { get, run, getOllamaUrl } from './db.js';
 import { terminalsHere } from './cli-models.js';
 
@@ -34,7 +35,7 @@ const TERMINAL_CHOICES = {
 // vision models) are already busy with their own work and are not smart models. Embedding, speech
 // and vision models are not talkers. 12 GB is about a 20B model at 4 bits; on the hub (Nov 27) that
 // leaves only Claude, which is right: it has no big local model.
-const NOT_A_TALKER = /embed|whisper|minilm|bge|nomic|rerank|vl|-v|-v:|vision|llava|^pan-|^syrinx/i;
+const NOT_A_TALKER = /embed|whisper|minilm|bge|nomic|rerank|vl\b|-v\b|-v:|vision|llava|^pan-|^syrinx/i;
 const MIN_LOCAL_BYTES = 12e9;
 
 async function localModels() {
@@ -65,7 +66,26 @@ export async function smartModelChoices() {
     }
   }
   out.push(...await localModels());
+  for (const c of out) { const b = benchLine(c.id); if (b) c.bench = b; }
   return out;
+}
+
+// Our own numbers, shipped with ΠAN (bench-reference.json, the made-up twin of the project bench,
+// so the same questions for everyone): what a choice will probably give, until the person's own
+// bench says otherwise (task 1098).
+let _ref;
+function reference() {
+  if (_ref !== undefined) return _ref;
+  try { _ref = JSON.parse(readFileSync(new URL('./bench-reference.json', import.meta.url), 'utf8')); } catch { _ref = null; }
+  return _ref;
+}
+/** "Our test: 19 of 20 project questions right, about 6.5 s", or '' when we have no number. */
+export function benchLine(id) {
+  const r = reference();
+  const m = r?.models?.[id];
+  if (!m) return '';
+  const time = m.first_s != null ? `first word in about ${m.first_s} s` : `about ${m.whole_s} s an answer`;
+  return `Our test: ${m.right} of ${m.of} ${r.bench_short} right, ${time}.`;
 }
 
 /** Saves the pick if this hub offers it. Returns the saved id, or null for a choice it does not have. */

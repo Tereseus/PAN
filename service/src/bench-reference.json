@@ -1,0 +1,11 @@
+{
+  "as_of": "2026-11-27",
+  "bench": "project questions on the made-up twin (service/src/evals/projects/twin.mjs), 20 questions, whole answer timed",
+  "bench_short": "project questions",
+  "models": {
+    "anthropic:claude-sonnet-5-5": { "right": 19, "of": 20, "first_s": null, "whole_s": 6.5 },
+    "cli:codex": { "right": 16, "of": 20, "first_s": null, "whole_s": 4.4 },
+    "cli:agy": { "right": 19, "of": 20, "first_s": null, "whole_s": 13.7 },
+    "cli:agy:gemini-3.8-flash-medium": { "right": 18, "of": 20, "first_s": null, "whole_s": 10.1 }
+  }
+}

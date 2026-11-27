@@ -23,7 +23,7 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 
-private data class SmartChoice(val id: String, val name: String, val note: String)
+private data class SmartChoice(val id: String, val name: String, val note: String, val bench: String)
 
 /**
  * The smart model picker (task 1091): the big model ΠAN hands hard problems to. The hub lists
@@ -45,7 +45,7 @@ internal fun SmartModelSection(viewModel: SettingsViewModel, snackbar: SnackbarH
         val arr = r.second.optJSONArray("choices") ?: return
         choices = (0 until arr.length()).map { i ->
             val o = arr.getJSONObject(i)
-            SmartChoice(o.optString("id"), o.optString("name"), o.optString("note"))
+            SmartChoice(o.optString("id"), o.optString("name"), o.optString("note"), o.optString("bench"))
         }
         current = r.second.optString("current")
     }
@@ -74,6 +74,8 @@ internal fun SmartModelSection(viewModel: SettingsViewModel, snackbar: SnackbarH
             Column {
                 Text(c.name, style = MaterialTheme.typography.bodyLarge)
                 Text(c.note, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                // Our own numbers for this choice (the hub's bench-reference.json, task 1098).
+                if (c.bench.isNotBlank()) Text(c.bench, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }
