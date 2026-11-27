@@ -3112,7 +3112,7 @@ the Nov 26 code.
   `GET /api/v1/dividend` -> `{on, questions}`, `PUT /api/v1/dividend {on: bool}`. The switch is
   Settings > Privacy > Data dividend (`ui/settings/DividendSwitch.kt`, owner only). The two yeses
   (may it run, may the answer leave; each a plain summary, then the exact JSON) can be walked through
-  with a built in example under Developer options; nothing runs or leaves. All four routes owner
+  with a built in example under Developer options (a carmaker asking what the person wants in a car, made up data; app 0.5.64 / 193 also writes Data Dividend with a capital D); nothing runs or leaves. All four routes owner
   only. Checked on dev 7781: both lists, a refused `on`, on and off.
 
 - **Each device's own name for ΠAN (app 0.5.61 / versionCode 190, hub Craft 107, Nov 26; task

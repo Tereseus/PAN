@@ -12,8 +12,8 @@ import kotlinx.coroutines.launch
 import org.json.JSONObject
 
 /**
- * Settings > Privacy > Data dividend (task 1095, the owner Nov 27). Off until the person turns it
- * on; with it on a buyer may ASK, and every question waits in Memory > Data dividend for two
+ * Settings > Privacy > Data Dividend (task 1095, the owner Nov 27). Off until the person turns it
+ * on; with it on a buyer may ASK, and every question waits in Memory > Data Dividend for two
  * yeses. The hub keeps the switch (dividend.js). Owner only: a person's device shows nothing.
  */
 @Composable
@@ -29,8 +29,8 @@ internal fun DividendSwitch(viewModel: SettingsViewModel, snackbar: SnackbarHost
     val now = on ?: return
 
     SettingToggle(
-        title = "Data dividend",
-        description = if (now) "On. A buyer may ask a question. It waits in Memory, Data dividend, and nothing runs or leaves without your yes, twice"
+        title = "Data Dividend",
+        description = if (now) "On. A buyer may ask a question. It waits in Memory, Data Dividend, and nothing runs or leaves without your yes, twice"
                       else "Off. Nothing is shared and no buyer can ask. Turn it on to be paid when you agree to answer",
         checked = now,
         onToggle = { want ->

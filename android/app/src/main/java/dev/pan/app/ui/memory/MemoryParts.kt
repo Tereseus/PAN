@@ -25,7 +25,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
 /** The three parts of the Memory tab (task 1093, the owner Nov 27): one drop down, like People's. */
-enum class MemoryPart(val label: String) { MEMORY("Memory"), DIVIDEND("Data dividend"), REPORTS("Reports") }
+enum class MemoryPart(val label: String) { MEMORY("Memory"), DIVIDEND("Data Dividend"), REPORTS("Reports") }
 
 @Composable
 internal fun MemoryPartPicker(part: MemoryPart, onPick: (MemoryPart) -> Unit) {
@@ -139,21 +139,37 @@ internal fun ReportsPart(viewModel: MemoryViewModel) {
     }
 }
 
-// ---- Data dividend ------------------------------------------------------------------------------
+// ---- Data Dividend ------------------------------------------------------------------------------
 
 /** One buyer question and what each yes would let happen (the hub's dividend.js). */
 private data class Ask(val buyer: String, val question: String, val step: String,
                        val runSummary: String, val runJson: String, val answerSummary: String, val answerJson: String)
 
+// The example (the owner Nov 27: "what kind of features does this person look for in a car"). Made
+// up data, shaped like what a person tells ΠAN about cars: what goes into the buyer's algorithm is
+// shown first, then the much smaller answer that would leave.
+private fun list(vararg s: String) = org.json.JSONArray().apply { s.forEach { put(it) } }
+
 private val EXAMPLE = Ask(
-    buyer = "A sleep study (example)",
-    question = "On average, how many hours a night does this person sleep, over the last 30 days?",
+    buyer = "A carmaker (example, made up data)",
+    question = "What does this person want in their next car, and which cars are they looking at?",
     step = "waiting_run",
-    runSummary = "It reads when your phone was put down and picked up at night, for the last 30 days, and counts the hours. It reads nothing you said, no names, no places.",
-    runJson = JSONObject().put("reads", org.json.JSONArray().put("phone_idle_at_night")).put("days", 30)
-        .put("returns", "average_hours").toString(2),
-    answerSummary = "One number: 7.1 hours a night. Nothing else leaves.",
-    answerJson = JSONObject().put("average_sleep_hours", 7.1).toString(2),
+    runSummary = "It reads what you told ΠAN about cars, and only that: the car you have, what you said you like and don't like, " +
+        "the cars you were looking at, and why. Nothing else in your memory, no names, no places.",
+    runJson = JSONObject()
+        .put("reads", "what you said about cars, the last 90 days")
+        .put("your_car", "a 2016 hatchback, petrol")
+        .put("you_like", list("open top", "four wheel drive", "changes between an SUV and a pickup", "electric"))
+        .put("you_dont_like", list("petrol", "a roof that does not come off"))
+        .put("you_looked_at", list("Slate Truck", "Ford Bronco"))
+        .put("why", "an electric, open top, four wheel drive car that can be an SUV or a truck")
+        .toString(2),
+    answerSummary = "What you want in a car and the two cars you looked at. Not your words, not your name, not where you live.",
+    answerJson = JSONObject()
+        .put("wants", list("electric", "open top", "four wheel drive", "SUV to pickup conversion"))
+        .put("considering", list("Slate Truck", "Ford Bronco"))
+        .put("current_car", "petrol hatchback")
+        .toString(2),
 )
 
 private fun stepText(step: String) = when (step) {
@@ -165,7 +181,7 @@ private fun stepText(step: String) = when (step) {
 }
 
 /**
- * Data dividend (tasks 1093 and 1095). Off until turned on in Settings > Privacy. With it on, a
+ * Data Dividend (tasks 1093 and 1095). Off until turned on in Settings > Privacy. With it on, a
  * buyer's question lands here and nothing runs: two yeses, each shown as a plain summary first and
  * then the exact JSON. There is no market yet, so no buyer can ask; developers can walk through an
  * example (nothing runs, nothing is sent).
@@ -193,7 +209,7 @@ internal fun DividendPart(viewModel: MemoryViewModel) {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         when (on) {
             null -> if (failed) Note("ΠAN could not be reached.") else LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 20.dp))
-            false -> Note("Data dividend is off, so nothing is shared and no buyer can ask. You can turn it on in Settings, Privacy.")
+            false -> Note("Data Dividend is off, so nothing is shared and no buyer can ask. You can turn it on in Settings, Privacy.")
             true -> if (asks.isEmpty()) Note("No buyer has asked anything yet. A question shows here first, and nothing runs until you say yes twice.")
         }
         asks.forEach { a ->
@@ -227,7 +243,7 @@ private fun TwoYeses(a: Ask, onDone: () -> Unit) {
                 }
                 when (page) {
                     0 -> Text(a.runSummary)
-                    1 -> { Text("Exactly what it would run:", style = MaterialTheme.typography.bodySmall)
+                    1 -> { Text("Exactly what goes into its algorithm:", style = MaterialTheme.typography.bodySmall)
                            Text(a.runJson, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall) }
                     2 -> Text(a.answerSummary)
                     3 -> { Text("Exactly what would leave:", style = MaterialTheme.typography.bodySmall)

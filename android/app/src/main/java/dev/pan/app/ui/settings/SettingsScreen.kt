@@ -37,7 +37,7 @@ private val SETTINGS_PAGES = listOf(
     SettingsPage("connection", "This device", "Its name, and how it reaches ΠAN", Icons.Default.Phone),
     SettingsPage("voice", "Voice and sounds", "How ΠAN talks, its smart model, where it reads reminders out, tones and vibration", Icons.Default.Notifications),
     SettingsPage("accessories", "Accessories", "Glasses, headphones, a watch", Icons.Default.Star),
-    SettingsPage("privacy", "Privacy", "Incognito, the lock on Memory, what each device may use, the data dividend", Icons.Default.Lock),
+    SettingsPage("privacy", "Privacy", "Incognito, the lock on Memory, what each device may use, the Data Dividend", Icons.Default.Lock),
     SettingsPage("about", "Updates and about", "This version, new versions, credits, a report", Icons.Default.Refresh),
 )
 

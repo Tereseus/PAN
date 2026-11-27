@@ -34,7 +34,7 @@ class MemoryViewModel @Inject constructor(
     private val serverClient: dev.pan.app.network.PanServerClient,
 ) : ViewModel() {
 
-    /** Memory > Reports and Memory > Data dividend read the hub with this (MemoryParts.kt). */
+    /** Memory > Reports and Memory > Data Dividend read the hub with this (MemoryParts.kt). */
     suspend fun hub(method: String, path: String, body: org.json.JSONObject? = null) = serverClient.hubJson(method, path, body)
 
     private val _day = MutableStateFlow(LocalDate.now())
