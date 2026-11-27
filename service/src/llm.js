@@ -474,9 +474,24 @@ async function* callReaderStream(prompt, ollamaModel, maxTokens, signal, usageOu
     return;
   } catch (e) {
     if (yielded || signal?.aborted) throw e;
+    // Missed its limit (cold, Nov 27): the first try has already brought most of the model back, so
+    // one more short try usually answers before the backup could.
+    if (e.name === 'TimeoutError' && !readerOpts?.retried) {
+      console.warn('[voice-reader] missed its limit, one more short try');
+      try {
+        for await (const piece of readerStream(prompt, maxTokens, signal, usageOut, { ...readerOpts, retried: true, whoMs: 2500 })) {
+          yielded = true;
+          yield piece;
+        }
+        return;
+      } catch (e2) {
+        if (yielded || signal?.aborted) throw e2;
+        e = e2;
+      }
+    }
     // Not Ollama: the same model there has read nothing and took 13 to 19 s a turn in the car
-    // (Nov 14). The router sends the turn to the cloud model instead (routeStream, full prompt).
-    console.warn(`[voice-reader] not answering (${e.cause?.code || e.message}), the cloud model takes this turn`);
+    // (Nov 14). The router sends the turn to the backup instead (routeStream, full prompt).
+    console.warn(`[voice-reader] not answering (${e.cause?.code || e.message}), the backup takes this turn`);
     throw e;
   }
 }

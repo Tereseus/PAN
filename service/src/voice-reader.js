@@ -21,12 +21,42 @@ const HEAD = `${TO}pan", "response": "`;
 // see the plain odds.
 const WRITING = { repeat_penalty: 1.15, repeat_last_n: 192 };
 
-const post = (path, body, signal) => fetch(`${BASE}${path}`, {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify(body),
-  signal,
-});
+// The last prompt the server read, and when: the keep warm below reads it again.
+let _lastPrompt = '';
+let _lastUse = 0;
+const post = (path, body, signal) => {
+  if (body?.prompt) { _lastPrompt = body.prompt; _lastUse = Date.now(); }
+  return fetch(`${BASE}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal,
+  });
+};
+
+// Keep warm (the owner, Nov 27). In the car at 11:35 and 16:01 the first line after a quiet spell
+// waited 10.6 s on the first word (the machine had put the model's memory away), past the 4 s
+// limit, and the turn fell to the slow backup: 20 s and 36 s. Every 2 minutes with no turn, the
+// server reads its last prompt again and writes one token: the prompt is a cache hit, so this is one
+// step of the model (about 50 ms of CPU), and it touches all of the model so none of it is put away.
+// The same prompt keeps the read ahead conversation in the cache.
+const WARM_EVERY_MS = 2 * 60_000;
+let _warmTimer = null;
+export function keepReaderWarm() {
+  if (_warmTimer) return;
+  _warmTimer = setInterval(async () => {
+    if (Date.now() - _lastUse < WARM_EVERY_MS - 5_000) return;
+    const prompt = _lastPrompt || OPEN;
+    const t0 = Date.now();
+    try {
+      const r = await post('/completion', { prompt, n_predict: 1, cache_prompt: true, temperature: 0 }, AbortSignal.timeout(30_000));
+      await r.text();
+      const ms = Date.now() - t0;
+      if (ms > 1500) console.log(`[voice-reader] keep warm: ${ms} ms (it had gone cold)`);
+    } catch {}
+  }, WARM_EVERY_MS);
+  _warmTimer.unref?.();
+}
 
 async function read(prompt) {
   const r = await post('/completion', { prompt, n_predict: 0, cache_prompt: true }, AbortSignal.timeout(10_000));

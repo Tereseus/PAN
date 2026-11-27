@@ -3151,6 +3151,18 @@ the Nov 26 code.
   chars at most) and keeps every detail still true, so a detail once written is not lost when its
   lines fall out of the window. Live bench after: 19 of 20, median 3.0 s, max 4.5 s.
 
+- **No cold first line, and a fast backup (hub Craft 117, Nov 27; `voice-reader.js` keepReaderWarm,
+  `llm.js` callReaderStream, `router.js`).** In the car the first line after a quiet spell waited 10.6 s
+  on the voice model, past its 4 s limit, and the backup took 20 and 36 s. (1) Keep warm: every 2 min
+  with no turn, the voice reader reads its last prompt again and writes one token (a cache hit, about
+  one model step), so the machine never puts the model away and the read ahead stays cached. A keep
+  warm over 1.5 s is logged. (2) A missed limit gets one more try of 2.5 s before the backup. (3) The
+  backup chain is the voice chain's cloud models (none today), then the person's own login
+  (`projectAnswerModel`: Claude Haiku 5.5 on a Claude login, else the smart model), then gemma4:e2b
+  on the hub. (4) Two indexes the full prompt's reads lacked: `idx_memory_items_confidence`,
+  `idx_pan_interjections_created`, built once 3 min after start when nobody talked for 3 min; the
+  memory facts block is read at most once a minute.
+
 - **Every step of a turn, in order (hub Craft 116, Nov 27; `voice-timing.js` startSteps / step /
   endSteps, marks in `routes/api.js` and `router.js`).** api.js starts a clock when the turn arrives;
   each step marks when it ends: turn_opened, voice_id, hub_hears_again, same_line_check,

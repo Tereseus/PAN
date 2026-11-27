@@ -1,6 +1,6 @@
 import { spawn } from 'child_process';
 import { createHash } from 'crypto';
-import { insert, all, get, logEvent, allScoped, getScoped } from './db.js';
+import { db, insert, all, get, logEvent, allScoped, getScoped } from './db.js';
 import { claude, askAIStream, getConfiguredModel, getModelForCaller } from './claude.js';
 import { askAIWithFallback, askAIStreamWithFallback, readChain } from './llm-fallback.js';
 import { buildToolBlocks } from './tools.js';
@@ -60,7 +60,31 @@ import { planFromResult as planProsody } from './tts-prosody.js';
 import { warmForLanguage, languageNamed, languageName } from './hub-asr.js';
 import { translateLocal, translatorUp, pairInstalled } from './translate-local.js';
 import { studentChain } from './llm.js';
-import { warmReader } from './voice-reader.js';
+import { warmReader, keepReaderWarm } from './voice-reader.js';
+
+// The voice model stays warm while ΠAN runs (voice-reader.js keepReaderWarm, Nov 27).
+try { keepReaderWarm(); } catch {}
+
+// Two reads the full prompt makes (buildMemoryFactsBlock, buildDismissalFeedbackBlock) had no index:
+// cold, after the hub sat quiet, they took 12.6 s and 4.3 s in one car turn (Nov 27, 16:01). Built
+// once, a few minutes after start and only when nobody has talked to ΠAN for 3 minutes, because
+// building an index holds the database for its length.
+const VOICE_INDEXES = [
+  ['idx_memory_items_confidence', 'CREATE INDEX IF NOT EXISTS idx_memory_items_confidence ON memory_items(confidence DESC, id DESC)'],
+  ['idx_pan_interjections_created', 'CREATE INDEX IF NOT EXISTS idx_pan_interjections_created ON pan_interjections(created_at)'],
+];
+function ensureVoiceIndexes() {
+  if (Date.now() - (globalThis.__panLastVoiceAt || 0) < 3 * 60_000) { setTimeout(ensureVoiceIndexes, 60_000).unref?.(); return; }
+  for (const [name, sql] of VOICE_INDEXES) {
+    try {
+      if (get("SELECT 1 AS x FROM sqlite_master WHERE type = 'index' AND name = :n", { ':n': name })) continue;
+      const t0 = Date.now();
+      db.exec(sql);
+      console.log(`[router] built ${name} in ${Date.now() - t0} ms`);
+    } catch (e) { console.warn(`[router] ${name}: ${e.message}`); }
+  }
+}
+setTimeout(ensureVoiceIndexes, 3 * 60_000).unref?.();
 import { asksForCamera } from './camera-ask.js';
 import { asksToMute } from './mute-ask.js';
 import { modeTurn, modeAck, noteMode } from './listen-mode.js';
@@ -818,7 +842,14 @@ function buildDismissalFeedbackBlock() {
 
 // Top 10 memory_items by confidence — durable facts about the commander.
 // Single SELECT, ~2ms. Helps with "remember when I said…" / personalization.
+let _memoryFacts = null;   // { at, text }: read at most once a minute
 function buildMemoryFactsBlock() {
+  if (_memoryFacts && Date.now() - _memoryFacts.at < 60_000) return _memoryFacts.text;
+  const text = readMemoryFactsBlock();
+  _memoryFacts = { at: Date.now(), text };
+  return text;
+}
+function readMemoryFactsBlock() {
   try {
     const rows = all(
       `SELECT item_type, content, confidence FROM memory_items
@@ -4528,10 +4559,13 @@ answer an earlier question, and do not narrate what the context blocks mention.`
     }
     // The voice model did not answer: the cloud model first (about 1 s), not gemma4:e2b reading the
     // full prompt on the hub CPU (ai_fallback_chain_voice starts with it; 13 to 20 s, Nov 14).
+    // The voice chain has no cloud model in it (only gemma4:e2b, Nov 27: 10 to 21 s to the first
+    // word in the car), so the person's own login comes next: Claude Haiku 5.5 on a Claude login
+    // (projectAnswerModel, the same as project questions), else their smart model.
     notePath(studentModel ? 'cloud_fallback' : 'full');
     const _full = fullPrompt();
     mark('full_prompt_built');
-    yield* askAIStreamWithFallback(_full, studentModel ? { ...streamOpts, chain: [...cloud(), ...readChain('voice').filter(isLocal)] } : streamOpts);
+    yield* askAIStreamWithFallback(_full, studentModel ? { ...streamOpts, chain: [...new Set([...cloud(), projectAnswerModel(), ...readChain('voice').filter(isLocal)])] } : streamOpts);
   }
 
   if (wordSearch && interject === 'off') {
