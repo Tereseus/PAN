@@ -23,9 +23,9 @@ import { embedQuery, cosineSimilarity } from './memory/embeddings.js';
 
 const EVERY_MS = 30 * 60 * 1000;     // look for new memory this often
 const NEW_EVENTS = 15;               // and write again after this many new lines from him or his threads
-const LINES = 150;                   // memory lines handed to the writer
+const LINES = 260;                   // memory lines handed to the writer
 const LINE_CHARS = 900;
-const NAMES = 40;                    // recent names looked up in memory
+const NAMES = 50;                    // recent names looked up in memory
 const MEANING = 0.78;                // a question this close to one of the notes' questions is a project one
 // Everyday questions scored up to 0.736 against the notes' questions ("what's on my calendar today",
 // "what's my battery at"); project ones without a name 0.54 to 1.0 (sep_test.mjs, Nov 27).
@@ -100,14 +100,20 @@ export async function gatherProjectLines({ days = 21 } = {}) {
     let ids = [];
     try { ids = all(`SELECT rowid AS id FROM events_fts WHERE events_fts MATCH :m ORDER BY rowid DESC LIMIT 30`, { ':m': `"${term}"` }).map((r) => Number(r.id)).filter(Number.isFinite); } catch { continue; }
     if (ids.length) {
-      let kept = 0;
+      // His own words carry his decisions ("don't ask Angell again until the battery is final"),
+      // so under each name up to 3 of his lines AND up to 3 of his threads' reports.
+      let typed = 0, told = 0;
       for (const e of all(`SELECT id, event_type, data, created_at FROM events WHERE id IN (${ids.join(',')}) AND event_type IN ${TYPES} AND created_at >= :s ORDER BY id DESC`, { ':s': since })) {
-        if (kept >= 4) break;
-        if (keep(e, true)) kept++;
+        const his = e.event_type === 'UserPromptSubmit';
+        if (his ? typed >= 3 : told >= 3) continue;
+        if (keep(e, true)) his ? typed++ : told++;
       }
     }
     await pause();
   }
+  // His newest typed lines of the last few days, whatever name they carry: where his decisions are.
+  const recent = new Date(Date.now() - 4 * 86400_000).toISOString().replace('T', ' ').slice(0, 19);
+  for (const e of all(`SELECT id, event_type, data, created_at FROM events WHERE event_type = 'UserPromptSubmit' AND created_at >= :s ORDER BY id DESC LIMIT 80`, { ':s': recent })) keep(e, true);
   for (const e of all(`SELECT id, event_type, data, created_at FROM events WHERE event_type = 'Stop' AND created_at >= :s ORDER BY id DESC LIMIT 120`, { ':s': since })) keep(e, false);
   const must = new Set(first.map((r) => r.id));
   const rest = [...seen.values()].filter((r) => !must.has(r.id)).sort((a, b) => (a.at < b.at ? 1 : -1));
@@ -129,7 +135,7 @@ Each project (group the suppliers, parts and paperwork of one product under that
  "qa": [{"q": "a question the owner is likely to ask about it, in their words", "a": "the answer, one or two spoken sentences"}]}
 "waiting_on_owner": one line per person or company waiting on the owner: "<who> (<company>, <part>) waits on you for <what>, since <date>; blocked by <what>".
 "owner_waiting_on": one line per person or company the owner waits on: "<who> (<company>, <part>) owes you <what>, since <date>".
-Rules: only what the notes show; the newest note wins when they disagree; every person or company in the notes appears somewhere; keep numbers exact (prices, part numbers, dates, amounts to pay and when); 6 to 12 qa per project; leave out games, code chores and things that are not one of the person's own projects. Never include the owner's address, phone number, email, passwords or account numbers. Reply with the JSON only.
+Rules: only what the notes show; the newest note wins when they disagree; keep every rule or decision the owner stated (e.g. "do not ask X again until Y") as a fact and follow it in the answers; every person or company in the notes appears somewhere; keep numbers exact (prices, part numbers, dates, amounts to pay and when); 6 to 12 qa per project; leave out games, code chores and things that are not one of the person's own projects. Never include the owner's address, phone number, email, passwords or account numbers. Reply with the JSON only.
 
 Notes:
 ${lines.map((e) => `[${e.at}] ${e.who}: ${e.t}`).join('\n')}`;
@@ -175,6 +181,36 @@ export async function setProjectNotes(obj) {
   return notes;
 }
 
+// A word he says to ΠAN often is not a sign of a project question: the first notes on the hub
+// had "hub", "Work", "G16", "voice", "question" as names and topics, and 14 of his 505 real lines
+// of Nov 17 to 27 would have gone to the project path. A word in at least 1 of 250 of his voice
+// lines (last 30 days) is dropped from words and topics.
+function dropEveryday(notes) {
+  let lines = [];
+  try {
+    lines = all(`SELECT data FROM events WHERE event_type = 'RouterCommand' AND created_at >= datetime('now','localtime','-30 days') ORDER BY id DESC LIMIT 4000`)
+      .map((r) => { try { return String(JSON.parse(r.data).text || '').toLowerCase(); } catch { return ''; } }).filter(Boolean);
+  } catch {}
+  if (lines.length < 200) return;
+  const cache = new Map();
+  const everyday = (w) => {
+    const k = String(w).toLowerCase().trim();
+    if (!cache.has(k)) {
+      const re = new RegExp(`(?<![\\p{L}\\p{N}])${k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}])`, 'u');
+      cache.set(k, lines.filter((l) => re.test(l)).length / lines.length >= 0.004);
+    }
+    return cache.get(k);
+  };
+  let dropped = [];
+  for (const p of notes.projects) {
+    const keepW = (w) => { const e = everyday(w) || NOT_NAMES.has(String(w).toLowerCase()); if (e) dropped.push(w); return !e; };
+    p.words = p.words.filter(keepW);
+    p.topics = (p.topics || []).filter(keepW);
+    p.everyday = String(p.name).split(/[^\p{L}\p{N}]+/u).filter((w) => w && everyday(w));
+  }
+  if (dropped.length) console.log(`[projects] everyday words left out of the matching: ${[...new Set(dropped)].join(', ')}`);
+}
+
 let _writing = null;
 /** Write the notes now (the smart model, one call). Resolves with the notes, or null. */
 export function writeProjectNotes({ reason = 'due' } = {}) {
@@ -190,6 +226,7 @@ export function writeProjectNotes({ reason = 'due' } = {}) {
     const raw = await askAI(WRITE(lines, today), { model, timeout: 400_000, maxTokens: 16000, caller: 'projects', _skipAnonymize: true });
     const notes = cleanNotes(raw);
     if (!notes || !notes.projects.length) { console.warn(`[projects] ${model} gave no usable notes (${String(raw).slice(0, 120)})`); return null; }
+    dropEveryday(notes);
     await embedQuestions(notes);
     run(`INSERT OR REPLACE INTO project_notes (id, obj, written_at, model, last_event_id, took_ms) VALUES (1, :o, datetime('now','localtime'), :m, :l, :t)`,
       { ':o': JSON.stringify(notes), ':m': model, ':l': lastId, ':t': Date.now() - t0 });
@@ -258,13 +295,15 @@ function sayList(names, end) {
 
 // Words of a name that must match whole, case blind; names under 3 letters are skipped.
 // The assistant's own name is in every line said to it ("ΠAN hardware"), so it never counts.
-const NOT_NAMES = new Set(['pan', 'πan', 'the', 'and', 'for', 'with']);
+// ΠAN's own parts and the assistants he talks to come up in his talk about ΠAN itself, not projects.
+const NOT_NAMES = new Set(['pan', 'πan', 'the', 'and', 'for', 'with', 'hub', 'claude', 'haiku', 'sonnet', 'opus', 'mint', 'g16',
+  'agent', 'question', 'questions', 'model', 'models', 'app', 'update', 'memory', 'bench', 'thread', 'threads', 'phone']);
 function namesIn(notes) {
   const out = new Set();
   for (const p of notes.projects) {
     for (const w of p.words) out.add(w);
     // the capitalised words of the project's own name: "Medallion", "LLC"
-    for (const w of String(p.name).split(/[^\p{L}\p{N}]+/u)) if (/^\p{Lu}/u.test(w) && !NOT_NAMES.has(w.toLowerCase())) out.add(w);
+    for (const w of String(p.name).split(/[^\p{L}\p{N}]+/u)) if (/^\p{Lu}/u.test(w) && !NOT_NAMES.has(w.toLowerCase()) && !(p.everyday || []).includes(w)) out.add(w);
   }
   for (const l of [...notes.waiting_on_owner, ...notes.owner_waiting_on]) {
     const m = String(l).match(/^([^(]+)\(([^,)]+)/);
@@ -301,7 +340,7 @@ export async function projectTurn(text) {
   // screens"), but never his own phone's ("my battery", "the phone battery").
   if (!why && !/\b(?:my|phone|phone's|laptop|computer|car's)\b/i.test(t)) {
     for (const p of notes.projects) {
-      const hit = (p.topics || []).find((w) => w.length >= 3 && new RegExp(`\\b(?:the|our|those|these)\\s+${w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(t));
+      const hit = (p.topics || []).find((w) => w.length >= 3 && !NOT_NAMES.has(w) && new RegExp(`\\b(?:the|our|those|these)\\s+${w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(t));
       if (hit) { why = `topic:${hit}`; break; }
     }
   }
@@ -353,8 +392,8 @@ export function renderNotes(n) {
 
 function answerPrompt(notes, q) {
   const today = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-  return `Today is ${today}. You are ΠAN, the person's voice assistant. Answer from these project notes only (written ${notes.written_at}). If the question is not about anything in these notes (the weather, the time, the news, his phone, a general question), reply with only: NOT_PROJECT
-Otherwise never add anything the notes do not say; if they do not say, say you don't know. Answer the way you would say it out loud: one to three short sentences, the answer first, no lists, no markdown.
+  return `Today is ${today}. You are ΠAN, the person's voice assistant. Answer from these project notes only (written ${notes.written_at}). Only if the question is about something else entirely (the weather, the time, the news, his phone, a general question), reply with only: NOT_PROJECT
+If it is about something in these notes, answer it, even when the notes lack the exact answer: then say you don't know that and give what the notes do say ("the notes don't give a deadline; filing is planned after December 22"). Never add anything the notes do not say. Answer the way you would say it out loud: one to three short sentences, the answer first, no lists, no markdown.
 
 Project notes:
 ${renderNotes(notes)}

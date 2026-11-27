@@ -3115,7 +3115,7 @@ the Nov 26 code.
   with a built in example under Developer options (a carmaker asking what the person wants in a car, made up data; app 0.5.64 / 193 also writes Data Dividend with a capital D); nothing runs or leaves. All four routes owner
   only. Checked on dev 7781: both lists, a refused `on`, on and off.
 
-- **Projects: where his projects stand, for the voice (hub Craft 111, Nov 27; task 1097;
+- **Projects: where his projects stand, for the voice (hub Craft 113, Nov 27; task 1097;
   `service/src/projects.js`).** The smart model (his own login; `smart-model-pick.js`) writes the
   notes in the background (`startProjectsWatch` from steward.js: every 30 min, after 15 new lines from
   him or his threads, only when nobody spoke to ΠAN for 3 min): it reads the best few memory lines under
@@ -3136,6 +3136,13 @@ the Nov 26 code.
   `service/src/evals/projects` (gitignored, his real suppliers): live hub before 0 of 20 with two made
   up; dev with given notes 17 of 20, median 3.0 s; of his 504 real lines of Nov 17 to 27 three went to
   the path (one right, two version questions, now excluded). Model comparison in docs/SPEEDS.md.
+  Live (Craft 113, notes written on the hub by Claude Sonnet 5.5 from 260 lines in 218 s): 16 of 20,
+  median 3.3 s, max 4.9 s; the four misses are details the notes lack. The writer reads under each name
+  up to 3 of his own lines and 3 thread reports, plus his typed lines of the last 4 days, and keeps every
+  rule he stated as a fact (the first live notes missed "don't ask Angell again" and answered "yes").
+  Words he says to ΠAN in 1 of 250 voice lines or more (last 30 days) and ΠAN's own parts (hub, Claude,
+  Mint, agent...) never count as names or topics. NOT_PROJECT only when the question is about something
+  else entirely; a project question the notes cannot answer gets "I don't know" plus what they do say.
 
 - **Each device's own name for ΠAN (app 0.5.61 / versionCode 190, hub Craft 107, Nov 26; task
   1082).** Settings > Voice and sounds > ΠAN's name (`ui/settings/PanNameField.kt`,
