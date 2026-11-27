@@ -3083,7 +3083,7 @@ the Nov 26 code.
   --ignore-user-config`, read only, in an empty folder, medium thinking), `cli:agy` (Antigravity on a
   Google login: `agy --print`), or `cli:<terminal>:<model>`. `terminalsHere()` lists the terminals
   a computer has (for Setup and Settings, not built yet). Checked on the G16 Nov 27: Codex 3 of 3
-  right on the trains in 4 to 14.5 s (with no thinking it said 6 pm); Antigravity needs its sign in.
+  right on the trains in 4 to 14.5 s (with no thinking it said 6 pm); Antigravity on his Google login 3 of 3 right, 12 to 16 s with its default model, about 9 s with gemini-3.8-flash.
   Not yet added: Grok Build, Qwen Code, Kimi Code (not installed anywhere). The hub itself still
   uses Claude (no Codex there). Layout bench on dev with the default: 5 of 5.
 

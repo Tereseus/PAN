@@ -6,7 +6,8 @@
 //
 // Checked Nov 27 on the G16:
 //   codex  Codex (ChatGPT login), `codex exec`: 4.4 to 4.9 s, both layout problems right.
-//   agy    Antigravity (Google), `agy --print`: flags read from --help; needs the person's sign in.
+//   agy    Antigravity (Google), `agy --print`: 3 of 3 right on the trains; default model 12 to 16 s,
+//          cli:agy:gemini-3.8-flash-medium (or -low) about 9 s, which seems to be its start up floor.
 // Not yet installed anywhere, so not tried: grok (Grok Build), qwen (Qwen Code), kimi (Kimi Code).
 
 import { spawn } from 'child_process';
