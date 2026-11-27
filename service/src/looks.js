@@ -150,7 +150,8 @@ function screenAnswer(look) {
  */
 export function sourceAnswer(text, { look = null, history = '', screens = [], now = Date.now() } = {}) {
   const t = normalizeHeard(text);
-  const camQ = CAMERA_Q.test(t);
+  // "Which camera are we using on the Medallion?" is about a product (projects.js), not PAN's look.
+  const camQ = CAMERA_Q.test(t) && !(/\b(?:we|our|us)\b/.test(t) && !/\byou\b/.test(t));
   const knowQ = KNOW_Q.test(t);
   if (!camQ && !knowQ) return '';
   const seen = look || lookFromHistory(history);

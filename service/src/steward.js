@@ -28,6 +28,7 @@ import { startStackScanner, stopStackScanner } from './stack-scanner.js';
 import { startOrchestrator, stopOrchestrator } from './orchestrator.js';
 import { consolidate as consolidateMemory } from './memory/consolidation.js';
 import { startThingsWatch, stopThingsWatch } from './memory/things.js';
+import { startProjectsWatch } from './projects.js';
 import { evolve as runEvolution } from './evolution/engine.js';
 import { listSessions, sendToSession, broadcastToSession, broadcastNotification, getProcessRegistry, pipeResetAdapter } from './terminal-bridge.js';
 import { createAlert } from './routes/dashboard.js';
@@ -645,6 +646,7 @@ const services = [
       // Things (memory/things.js): a new name in his words is understood within minutes, not at
       // the next 12 hour run, and its note is updated as more comes in.
       startThingsWatch();
+      startProjectsWatch();   // project notes for the voice (projects.js, task 1097)
     },
     stopFn: () => {
       stopThingsWatch();

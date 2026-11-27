@@ -104,6 +104,10 @@ test('common words do not count', () => {
   const hit = screenLookFrom('That frame of time was fun.', screens);
   ok(!hit, JSON.stringify(hit));
 });
+test('which camera WE use on a product is not about PAN\'s look: left to the rest', () => {
+  ok(sourceAnswer('Which camera are we using on the Medallion?', { look: null, now: NOW }) === '', 'answered');
+  ok(/didn't use a camera/i.test(sourceAnswer('which camera are you using', { look: null, now: NOW })), 'lost the you case');
+});
 test('asksWhatHeSees', () => ok(asksWhatHeSees('Uh what am I looking at?') && !asksWhatHeSees('how is it going'), 'wrong'));
 
 console.log(`\n${passed} passed, ${failed} failed`);

@@ -34,6 +34,7 @@ import { turnSlots } from '../turn-slots.js';
 import { callsOwnName } from '../pan-name.js';
 import { faultReports, dropFault } from '../fault-reports.js';
 import { dividendOn, setDividendOn, dividendQuestions } from '../dividend.js';
+import { projectNotes, writeProjectNotes, setProjectNotes } from '../projects.js';
 
 const execFilePromise = promisify(execFile);
 warmHubAsr();
@@ -1254,6 +1255,24 @@ router.get('/reports', (req, res) => {
 router.delete('/reports/:id', (req, res) => {
   try { dropFault(req.params.id); res.json({ ok: true }); }
   catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+// Project notes (projects.js, task 1097). Owner only: not on people.js PERSON_ALLOW.
+router.get('/projects', (req, res) => {
+  try { const n = projectNotes(); res.json({ ok: true, notes: n && { ...n, qv: undefined } }); }
+  catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+router.post('/projects/write', async (req, res) => {
+  try {
+    const n = await writeProjectNotes({ reason: 'asked' });
+    res.json({ ok: !!n, projects: n?.projects?.map((p) => p.name) || [], waiting_on_owner: n?.waiting_on_owner?.length || 0, owner_waiting_on: n?.owner_waiting_on?.length || 0 });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+router.put('/projects', async (req, res) => {
+  try {
+    const n = await setProjectNotes(req.body?.notes);
+    if (!n) return res.status(400).json({ ok: false, error: 'not project notes' });
+    res.json({ ok: true, projects: n.projects.map((p) => p.name), questions: n.qv?.length || 0 });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 router.get('/dividend', (req, res) => {
   try { res.json({ ok: true, on: dividendOn(), questions: dividendQuestions(req.query.limit) }); }

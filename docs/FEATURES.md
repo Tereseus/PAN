@@ -3115,6 +3115,28 @@ the Nov 26 code.
   with a built in example under Developer options (a carmaker asking what the person wants in a car, made up data; app 0.5.64 / 193 also writes Data Dividend with a capital D); nothing runs or leaves. All four routes owner
   only. Checked on dev 7781: both lists, a refused `on`, on and off.
 
+- **Projects: where his projects stand, for the voice (hub Craft 111, Nov 27; task 1097;
+  `service/src/projects.js`).** The smart model (his own login; `smart-model-pick.js`) writes the
+  notes in the background (`startProjectsWatch` from steward.js: every 30 min, after 15 new lines from
+  him or his threads, only when nobody spoke to ΠAN for 3 min): it reads the best few memory lines under
+  each recent name (memory_things, last 21 days) plus the newest thread reports, 150 lines at most, and
+  writes per project a summary, `words` (names), `topics` (its everyday nouns), facts with dates and
+  likely questions with answers, plus the two lists `waiting_on_owner` and `owner_waiting_on`. Kept in
+  table `project_notes` (one row; the questions embedded for matching); emails and phone or account
+  numbers are scrubbed whatever the model writes. A voice turn (router.js voiceStream, owner only, before
+  the word search path): "who's waiting on me" and "who am I waiting on" are said by code from the lists
+  (no model, ~0.02 s); a question naming a name or project word in the notes, saying one of a project's
+  topics as "the screens" or "our battery" (never "my" or "phone"), or close in meaning to the notes' own
+  questions (0.78 and up), goes to Claude Haiku 5.5 on his Claude login (`projectAnswerModel`; the smart
+  model itself on other logins) with the notes, whole, not streamed: it may answer NOT_PROJECT, and the
+  turn then goes on as usual (a name like Northwest in a weather question). Questions about ΠAN's own
+  state ("what version are you on") never go there. `looks.js`: "which camera are WE using" is no longer
+  answered as a question about ΠAN's last look. Owner routes: `GET /api/v1/projects`,
+  `POST /api/v1/projects/write` (write now), `PUT /api/v1/projects {notes}` (tests). Bench
+  `service/src/evals/projects` (gitignored, his real suppliers): live hub before 0 of 20 with two made
+  up; dev with given notes 17 of 20, median 3.0 s; of his 504 real lines of Nov 17 to 27 three went to
+  the path (one right, two version questions, now excluded). Model comparison in docs/SPEEDS.md.
+
 - **Each device's own name for ΠAN (app 0.5.61 / versionCode 190, hub Craft 107, Nov 26; task
   1082).** Settings > Voice and sounds > ΠAN's name (`ui/settings/PanNameField.kt`,
   `util/PanName.kt`, prefs `pan_name`), per phone or pendant; empty = ΠAN. Sent with every turn

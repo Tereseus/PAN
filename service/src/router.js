@@ -29,6 +29,7 @@ import * as layingOut from './intuition/laying-out.js';
 import { cleanName as cleanPanName, mapName as mapPanName, callsOwnName, nameLine as panNameLine } from './pan-name.js';
 // The smart model: the person's own terminal (task 1091), picked in Settings (smart-model-pick.js).
 import { smartModel } from './smart-model-pick.js';
+import { projectTurn, projectAnswerModel, projectReply } from './projects.js';
 import { recordTiming } from './voice-timing.js';
 import { noteMealMention } from './intuition/nourishment.js';
 import { noteSignalsInUtterance } from './intuition/signals.js';
@@ -4328,6 +4329,31 @@ answer an earlier question, and do not narrate what the context blocks mention.`
       yield* plainAsReply(askAIStreamWithFallback(problemPrompt, { ...streamOpts, _skipAnonymize: false, maxTokens: 400, timeout: 60_000,
         chain: [smartModel(), ...cloudFirst()].slice(0, 3), firstTokenMs: 60_000 }), 4);
       return;
+    }
+    // Where his projects stand (projects.js, task 1097): "who's waiting on me" is said from the notes
+    // by code; a question naming someone or something in the notes, or close in meaning to one of
+    // their questions, goes to the smart model with the notes. The live hub got 0 of 20 of these
+    // right and made two up (Nov 27); Claude from the notes 19 of 20.
+    if (!standing) {
+      let proj = null;
+      try { proj = await projectTurn(text); } catch (e) { console.warn('[routeStream] projects:', e.message); }
+      if (proj?.say) {
+        console.log(`[routeStream] project list (${proj.why}) from the notes, no model`);
+        notePath('project_list');
+        yield JSON.stringify({ intent: 'query', addressed: 0.9, response: proj.say });
+        return;
+      }
+      if (proj?.ask && !claudeQuiet) {
+        // Whole, not streamed: a name in the notes can come up in an everyday question ("the weather in
+        // the Northwest"), and the model then says NOT_PROJECT and the turn goes on as usual.
+        const t0 = Date.now();
+        let raw = '';
+        try { raw = await askAIWithFallback(proj.ask, { ...streamOpts, _skipAnonymize: true, maxTokens: 300, timeout: 30_000, caller: 'projects-answer',
+          chain: [...new Set([projectAnswerModel(), smartModel()])] }); } catch (e) { console.warn(`[routeStream] project answer failed: ${e.message}`); }
+        const said = projectReply(raw);
+        console.log(`[routeStream] project question (${proj.why}) - ${projectAnswerModel()} ${said ? 'answered' : 'says not a project one'} in ${Date.now() - t0} ms`);
+        if (said) { notePath('project'); yield JSON.stringify({ intent: 'query', addressed: 0.9, response: said }); return; }
+      }
     }
     if (wordSearch && !claudeQuiet) { notePath('search'); yield* bigAsk(wordSearchPrompt, 'WORD', `He stopped mid-sentence: "${safeText}"`); return; }
     if (toolPrompt && !claudeQuiet) {
