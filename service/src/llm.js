@@ -12,6 +12,7 @@ import { readdirSync, statSync } from 'fs';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { anonymizeForAI } from './anonymize.js';
 import { getSecret } from './secrets.js';
+import { runCli } from './cli-models.js';
 
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 
@@ -768,6 +769,7 @@ export async function askAI(rawPrompt, { model, timeout = 15000, maxTokens = 300
       if (row) provider = row.value.replace(/^"|"$/g, '');
     } catch {}
   }
+  else if (model.startsWith('cli:'))    provider = 'cli';   // the person's own terminal (cli-models.js)
   else if (model.startsWith('claude-')) {
     try {
       const row = get("SELECT value FROM settings WHERE key = 'ai_backend'");
@@ -862,6 +864,10 @@ export async function askAI(rawPrompt, { model, timeout = 15000, maxTokens = 300
         text: stripFence(data.message?.content || ''),
         usage: { input_tokens: data.prompt_eval_count || 0, output_tokens: data.eval_count || 0 },
       };
+    } else if (provider === 'cli') {
+      // Codex, Antigravity...: the person's own terminal on their own sign in (cli-models.js, task 1091).
+      const text = await runCli(model, prompt, { timeoutMs: timeout, signal: controller.signal });
+      result = { text, usage: { input_tokens: 0, output_tokens: 0 } };
     } else if (provider === 'api') {
       const apiKey = getApiKey('anthropic');
       const resp = await fetch(ANTHROPIC_URL, {

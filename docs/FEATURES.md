@@ -3076,6 +3076,17 @@ the Nov 26 code.
 
 ## Phone app (entries added Nov 26 review)
 
+- **The person's own terminal as the smart model (hub Craft 108, Nov 27; task 1091;
+  `service/src/cli-models.js`, `llm.js` provider `cli`, `router.js smartModel()`).** The setting
+  `smart_model` picks the model a laid-out problem goes to: `anthropic:claude-sonnet-5-5` (the
+  default, Claude Code's login), `cli:codex` (Codex on a ChatGPT login: `codex exec
+  --ignore-user-config`, read only, in an empty folder, medium thinking), `cli:agy` (Antigravity on a
+  Google login: `agy --print`), or `cli:<terminal>:<model>`. `terminalsHere()` lists the terminals
+  a computer has (for Setup and Settings, not built yet). Checked on the G16 Nov 27: Codex 3 of 3
+  right on the trains in 4 to 14.5 s (with no thinking it said 6 pm); Antigravity needs its sign in.
+  Not yet added: Grok Build, Qwen Code, Kimi Code (not installed anywhere). The hub itself still
+  uses Claude (no Codex there). Layout bench on dev with the default: 5 of 5.
+
 - **Each device's own name for ΠAN (app 0.5.61 / versionCode 190, hub Craft 107, Nov 26; task
   1082).** Settings > Voice and sounds > ΠAN's name (`ui/settings/PanNameField.kt`,
   `util/PanName.kt`, prefs `pan_name`), per phone or pendant; empty = ΠAN. Sent with every turn
@@ -3090,7 +3101,7 @@ the Nov 26 code.
   Tests: `__tests__/pan-name.test.js`, `PanNameTest`. Not yet seen on a screen.
 
 - **A laid-out problem is worked out by Claude (hub Craft 106, Nov 26; task 1090; `router.js`
-  `PROBLEM_MODEL`, path `problem`).** When the laying-out rule joined kept pieces in front of a line,
+  `smartModel()`, path `problem`).** When the laying-out rule joined kept pieces in front of a line,
   the joined problem goes to Claude Sonnet 5.5 (`anthropic:claude-sonnet-5-5`) through the hub's own
   Claude login (the sdk provider, claude -p; the owner's call: "that should be Claude"), falling back
   to the usual chain. Only the problem and the date go, with names anonymized (`anonymizeForAI`): no

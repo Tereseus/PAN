@@ -27,8 +27,17 @@ import { isBench, benchContext } from './bench-context.js';
 import * as messageMode from './message-mode.js';
 import * as layingOut from './intuition/laying-out.js';
 import { cleanName as cleanPanName, mapName as mapPanName, callsOwnName, nameLine as panNameLine } from './pan-name.js';
-// The model for a problem he laid out over pauses: Claude, through the hub's own Claude login.
-const PROBLEM_MODEL = 'anthropic:claude-sonnet-5-5';
+// The smart model: the person's own terminal (task 1091, the owner Nov 27: "whatever terminal they
+// signed in with"), the setting `smart_model`: anthropic:claude-sonnet-5-5 (Claude Code's login, the
+// default), cli:codex (ChatGPT), cli:agy (Google), or any other model id askAI knows. Read per turn.
+function smartModel() {
+  try {
+    const row = get("SELECT value FROM settings WHERE key = 'smart_model'");
+    const v = row ? String(row.value).replace(/^"|"$/g, '').trim() : '';
+    if (v) return v;
+  } catch {}
+  return 'anthropic:claude-sonnet-5-5';
+}
 import { recordTiming } from './voice-timing.js';
 import { noteMealMention } from './intuition/nourishment.js';
 import { noteSignalsInUtterance } from './intuition/signals.js';
@@ -4318,7 +4327,7 @@ answer an earlier question, and do not narrate what the context blocks mention.`
     // the problem goes, names anonymized (anonymizeForAI), no memory and no talk. The local voice
     // model got 4 of 5 laid-out problems wrong on the layout bench. Falls back to the usual chain.
     if (laidOut && !claudeQuiet) {
-      console.log(`[routeStream] a problem laid out over ${laidOut + 1} lines - ${PROBLEM_MODEL} works it out, not ${studentModel || 'the voice model'}`);
+      console.log(`[routeStream] a problem laid out over ${laidOut + 1} lines - ${smartModel()} works it out, not ${studentModel || 'the voice model'}`);
       notePath('problem');
       const problemPrompt = [
         `Today is ${new Date().toDateString()}.`,
@@ -4326,7 +4335,7 @@ answer an earlier question, and do not narrate what the context blocks mention.`
         'Work it out carefully. Then answer the way you would say it out loud to him: the answer first, in one to three short sentences, with the numbers he needs. No markdown, no lists, no working shown.',
       ].join('\n\n');
       yield* plainAsReply(askAIStreamWithFallback(problemPrompt, { ...streamOpts, _skipAnonymize: false, maxTokens: 400, timeout: 60_000,
-        chain: [PROBLEM_MODEL, ...cloudFirst()].slice(0, 3), firstTokenMs: 60_000 }), 4);
+        chain: [smartModel(), ...cloudFirst()].slice(0, 3), firstTokenMs: 60_000 }), 4);
       return;
     }
     if (wordSearch && !claudeQuiet) { notePath('search'); yield* bigAsk(wordSearchPrompt, 'WORD', `He stopped mid-sentence: "${safeText}"`); return; }
