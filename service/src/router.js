@@ -27,17 +27,8 @@ import { isBench, benchContext } from './bench-context.js';
 import * as messageMode from './message-mode.js';
 import * as layingOut from './intuition/laying-out.js';
 import { cleanName as cleanPanName, mapName as mapPanName, callsOwnName, nameLine as panNameLine } from './pan-name.js';
-// The smart model: the person's own terminal (task 1091, the owner Nov 27: "whatever terminal they
-// signed in with"), the setting `smart_model`: anthropic:claude-sonnet-5-5 (Claude Code's login, the
-// default), cli:codex (ChatGPT), cli:agy (Google), or any other model id askAI knows. Read per turn.
-function smartModel() {
-  try {
-    const row = get("SELECT value FROM settings WHERE key = 'smart_model'");
-    const v = row ? String(row.value).replace(/^"|"$/g, '').trim() : '';
-    if (v) return v;
-  } catch {}
-  return 'anthropic:claude-sonnet-5-5';
-}
+// The smart model: the person's own terminal (task 1091), picked in Settings (smart-model-pick.js).
+import { smartModel } from './smart-model-pick.js';
 import { recordTiming } from './voice-timing.js';
 import { noteMealMention } from './intuition/nourishment.js';
 import { noteSignalsInUtterance } from './intuition/signals.js';

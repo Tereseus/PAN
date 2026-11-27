@@ -3082,10 +3082,22 @@ the Nov 26 code.
   default, Claude Code's login), `cli:codex` (Codex on a ChatGPT login: `codex exec
   --ignore-user-config`, read only, in an empty folder, medium thinking), `cli:agy` (Antigravity on a
   Google login: `agy --print`), or `cli:<terminal>:<model>`. `terminalsHere()` lists the terminals
-  a computer has (for Setup and Settings, not built yet). Checked on the G16 Nov 27: Codex 3 of 3
+  a computer has (Settings picks from them, see the picker below). Checked on the G16 Nov 27: Codex 3 of 3
   right on the trains in 4 to 14.5 s (with no thinking it said 6 pm); Antigravity on his Google login 3 of 3 right, 12 to 16 s with its default model, about 9 s with gemini-3.8-flash.
   Not yet added: Grok Build, Qwen Code, Kimi Code (not installed anywhere). The hub itself still
   uses Claude (no Codex there). Layout bench on dev with the default: 5 of 5.
+
+- **The smart model picker (app 0.5.62 / versionCode 191, hub Craft 109, Nov 27; task 1091).**
+  Settings > Voice and sounds > Smart model (`ui/settings/SmartModel.kt`), owner only. The hub
+  lists what IT can use (`service/src/smart-model-pick.js` `smartModelChoices()`): Claude (Claude
+  Code's login, the default), each terminal `terminalsHere()` finds (Codex; Antigravity twice, its
+  default model and its faster flash model), and big models on the person's own Ollama (12 GB and up;
+  ΠAN's own models, vision, speech and embedding models are left out, they are not smart models).
+  `GET /api/v1/setup/smart-model/choices` -> `{current, choices:[{id,name,kind,note}]}`;
+  `PUT /api/v1/setup/smart-model {id}` saves `smart_model` only if the hub offers that id (400
+  otherwise). Both owner only (`routes/smart-model.js`). `router.js` reads the pick per turn through
+  `smartModel()`. On the hub today the list is Claude only. Checked on dev 7781: list, a refused
+  id, a pick and back.
 
 - **Each device's own name for ΠAN (app 0.5.61 / versionCode 190, hub Craft 107, Nov 26; task
   1082).** Settings > Voice and sounds > ΠAN's name (`ui/settings/PanNameField.kt`,

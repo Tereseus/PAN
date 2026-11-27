@@ -35,7 +35,7 @@ private data class SettingsPage(val key: String, val title: String, val about: S
 private val SETTINGS_PAGES = listOf(
     SettingsPage("guide", "How to use ΠAN", "What ΠAN does and how to use it, with pictures", Icons.Default.Info),
     SettingsPage("connection", "This device", "Its name, and how it reaches ΠAN", Icons.Default.Phone),
-    SettingsPage("voice", "Voice and sounds", "How ΠAN talks, where it reads reminders out, tones and vibration", Icons.Default.Notifications),
+    SettingsPage("voice", "Voice and sounds", "How ΠAN talks, its smart model, where it reads reminders out, tones and vibration", Icons.Default.Notifications),
     SettingsPage("accessories", "Accessories", "Glasses, headphones, a watch", Icons.Default.Star),
     SettingsPage("privacy", "Privacy", "Incognito, the lock on Memory, what each device may use", Icons.Default.Lock),
     SettingsPage("about", "Updates and about", "This version, new versions, credits, a report", Icons.Default.Refresh),
@@ -271,6 +271,8 @@ fun SettingsScreen(
             // This device's own name for ΠAN (util/PanName.kt, task 1082).
             PanNameField()
             HorizontalDivider()
+            // The big model hard problems go to (SmartModel.kt, task 1091). Draws its own line.
+            SmartModelSection(viewModel, snackbarHostState)
             // Personality (PAN voice/character — empty = default/off)
             Text("Personality", style = MaterialTheme.typography.titleMedium)
             Text(
