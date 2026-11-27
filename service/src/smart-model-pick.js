@@ -22,12 +22,13 @@ export function smartModel() {
 }
 
 // Antigravity's own default model took 12 to 16 s on the trains problem; its flash model about 9 s
-// (cli-models.js, Nov 27). Both are offered so the person can trade a little care for speed.
+// (cli-models.js, Nov 27). Gemini 4 Hydrogen on low got 19 of 20 project questions in about 6 s, as
+// many as the default and twice as fast (the twin bench, Nov 27), so it is the faster choice.
 const TERMINAL_CHOICES = {
   codex: [{ suffix: '', note: 'Your ChatGPT sign in. About 4 to 14 seconds.' }],
   agy: [
     { suffix: '', note: 'Your Google sign in. About 12 to 16 seconds.' },
-    { suffix: ':gemini-3.8-flash-medium', label: 'Antigravity, faster', note: 'Your Google sign in, its flash model. About 9 seconds.' },
+    { suffix: ':gemini-4-hydrogen-low', label: 'Antigravity, faster', note: 'Your Google sign in, Gemini 4 Hydrogen on low. About 6 seconds.' },
   ],
 };
 

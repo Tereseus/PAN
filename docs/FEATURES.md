@@ -3091,7 +3091,7 @@ the Nov 26 code.
   Settings > Voice and sounds > Smart model (`ui/settings/SmartModel.kt`), owner only. The hub
   lists what IT can use (`service/src/smart-model-pick.js` `smartModelChoices()`): Claude (Claude
   Code's login, the default), each terminal `terminalsHere()` finds (Codex; Antigravity twice, its
-  default model and its faster flash model), and big models on the person's own Ollama (12 GB and up;
+  default model and Gemini 4 Hydrogen on low as the faster one, since Nov 27), and big models on the person's own Ollama (12 GB and up;
   ΠAN's own models, vision, speech and embedding models are left out, they are not smart models).
   `GET /api/v1/setup/smart-model/choices` -> `{current, choices:[{id,name,kind,note}]}`;
   `PUT /api/v1/setup/smart-model {id}` saves `smart_model` only if the hub offers that id (400
