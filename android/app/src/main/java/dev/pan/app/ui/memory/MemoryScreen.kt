@@ -58,6 +58,7 @@ fun MemoryScreen(viewModel: MemoryViewModel = hiltViewModel()) {
     val lockOn = remember { Fingerprint.lockOn(context) }
     val canCheck = remember { Fingerprint.ready(context) }
     var unlocked by remember { mutableStateOf(!lockOn) }
+    var part by remember { mutableStateOf(MemoryPart.MEMORY) }
 
     val ask = { Fingerprint.ask(context, "Open Memory", "Your fingerprint opens what ΠAN has kept") { ok -> if (ok) unlocked = true } }
 
@@ -78,7 +79,10 @@ fun MemoryScreen(viewModel: MemoryViewModel = hiltViewModel()) {
             modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("Memory", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold,
+            // The drop down (task 1093, like the one on People): Memory, Data dividend, Reports.
+            // Only once Memory is open: the other two are behind the same lock.
+            if (unlocked) Box(modifier = Modifier.weight(1f)) { MemoryPartPicker(part) { part = it } }
+            else Text("Memory", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.weight(1f))
             if (unlocked && lockOn) {
                 IconButton(onClick = { unlocked = false; viewModel.hide() }) {
@@ -87,7 +91,11 @@ fun MemoryScreen(viewModel: MemoryViewModel = hiltViewModel()) {
             }
         }
         if (!unlocked) LockedPane(canCheck = canCheck, onUnlock = ask)
-        else OpenMemory(viewModel, lockOn = lockOn)
+        else when (part) {
+            MemoryPart.MEMORY -> OpenMemory(viewModel, lockOn = lockOn)
+            MemoryPart.DIVIDEND -> DividendPart(viewModel)
+            MemoryPart.REPORTS -> ReportsPart(viewModel)
+        }
     }
 }
 

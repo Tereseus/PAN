@@ -32,6 +32,8 @@ import { getDataDir as notesDataDir } from '../platform.js';
 import { createScreenControl } from '../screen-control.js';
 import { turnSlots } from '../turn-slots.js';
 import { callsOwnName } from '../pan-name.js';
+import { faultReports, dropFault } from '../fault-reports.js';
+import { dividendOn, setDividendOn, dividendQuestions } from '../dividend.js';
 
 const execFilePromise = promisify(execFile);
 warmHubAsr();
@@ -1242,6 +1244,26 @@ router.post('/people/messages', (req, res) => {
 // Which of the owner's devices his notes go to (phone-notes.js). Not open to a person's device.
 router.get('/notify/devices', (req, res) => {
   res.json({ ok: true, ...notesDevices() });
+});
+// Memory > Reports and Memory > Data dividend (tasks 1092, 1093, 1095). Owner only: not on
+// people.js PERSON_ALLOW. Reports are kept here and sent nowhere yet (fault-reports.js).
+router.get('/reports', (req, res) => {
+  try { res.json({ ok: true, sending: 'not_decided', reports: faultReports(req.query.limit) }); }
+  catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+router.delete('/reports/:id', (req, res) => {
+  try { dropFault(req.params.id); res.json({ ok: true }); }
+  catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+router.get('/dividend', (req, res) => {
+  try { res.json({ ok: true, on: dividendOn(), questions: dividendQuestions(req.query.limit) }); }
+  catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+router.put('/dividend', (req, res) => {
+  try {
+    if (typeof req.body?.on !== 'boolean') return res.status(400).json({ ok: false, error: 'on must be true or false' });
+    res.json({ ok: true, on: setDividendOn(req.body.on) });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
 router.post('/slack/reply', async (req, res) => {
   try {

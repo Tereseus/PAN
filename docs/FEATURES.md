@@ -3099,6 +3099,22 @@ the Nov 26 code.
   `smartModel()`. On the hub today the list is Claude only. Checked on dev 7781: list, a refused
   id, a pick and back.
 
+- **Memory's drop down: Memory, Data dividend, Reports (app 0.5.63 / versionCode 192, hub Craft 110,
+  Nov 27; tasks 1092, 1093, 1095).** The Memory title is a drop down once Memory is open (same lock;
+  `ui/memory/MemoryParts.kt`). **Reports**: faults ΠAN noticed in itself, newest first, from the
+  hub's `service/src/fault-reports.js` (table `fault_reports`, one row per part + fault + version,
+  counted up, 200 kept; detail scrubbed by `fault-detail.js`: quotes, brackets, paths, web addresses,
+  IP addresses go; test `__tests__/fault-detail.test.js`), plus this phone's last crash line. Today
+  the only source is `llm-fallback.js`: every model in a chain failed (not a turn the caller cut).
+  Tap shows exactly what a report would carry; nothing is sent (where to is the owner's call).
+  `GET /api/v1/reports`, `DELETE /api/v1/reports/:id`. **Data dividend**: `service/src/dividend.js`,
+  setting `data_dividend_on` (off by default) and table `dividend_questions` (empty: no market yet).
+  `GET /api/v1/dividend` -> `{on, questions}`, `PUT /api/v1/dividend {on: bool}`. The switch is
+  Settings > Privacy > Data dividend (`ui/settings/DividendSwitch.kt`, owner only). The two yeses
+  (may it run, may the answer leave; each a plain summary, then the exact JSON) can be walked through
+  with a built in example under Developer options; nothing runs or leaves. All four routes owner
+  only. Checked on dev 7781: both lists, a refused `on`, on and off.
+
 - **Each device's own name for ΠAN (app 0.5.61 / versionCode 190, hub Craft 107, Nov 26; task
   1082).** Settings > Voice and sounds > ΠAN's name (`ui/settings/PanNameField.kt`,
   `util/PanName.kt`, prefs `pan_name`), per phone or pendant; empty = ΠAN. Sent with every turn

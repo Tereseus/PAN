@@ -37,7 +37,7 @@ private val SETTINGS_PAGES = listOf(
     SettingsPage("connection", "This device", "Its name, and how it reaches ΠAN", Icons.Default.Phone),
     SettingsPage("voice", "Voice and sounds", "How ΠAN talks, its smart model, where it reads reminders out, tones and vibration", Icons.Default.Notifications),
     SettingsPage("accessories", "Accessories", "Glasses, headphones, a watch", Icons.Default.Star),
-    SettingsPage("privacy", "Privacy", "Incognito, the lock on Memory, what each device may use", Icons.Default.Lock),
+    SettingsPage("privacy", "Privacy", "Incognito, the lock on Memory, what each device may use, the data dividend", Icons.Default.Lock),
     SettingsPage("about", "Updates and about", "This version, new versions, credits, a report", Icons.Default.Refresh),
 )
 
@@ -474,7 +474,8 @@ fun SettingsScreen(
                     viewModel = mainViewModel
                 )
             }
-            // The data dividend row comes back here when there is something to turn on (the owner, 2026-11-18).
+            // The data dividend switch (DividendSwitch.kt, task 1095, the owner Nov 27). Owner only.
+            DividendSwitch(viewModel, snackbarHostState)
             }
             if (page == "about") {
             // App Updates — manual OTA pull. The app auto-checks ~8s after

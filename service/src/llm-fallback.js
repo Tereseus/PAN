@@ -40,6 +40,7 @@
 
 import { insert, get, getModelForPurpose } from './db.js';
 import { askAI, askAIStream, getModelForCaller } from './llm.js';
+import { noteFault } from './fault-reports.js';
 
 // Build a default chain by reading model_selections. Strict order:
 //   voice       → reasoning_cloud → chat_cloud_fallback → chat_local
@@ -361,6 +362,8 @@ export async function askAIWithFallback(prompt, opts = {}) {
   // error path runs (router's "I didn't catch that — could you try again?" branch).
   const finalErr = lastErr || new Error('All backends failed');
   finalErr.attempts = attempts;
+  // Memory > Reports (fault-reports.js): every model failed. A turn the caller cut is not a fault.
+  if (finalErr.name !== 'AbortError') noteFault('models', `every model failed (${caller})`, finalErr.message);
   if (outMeta && typeof outMeta === 'object') outMeta.attempts = attempts;
   throw finalErr;
 }
@@ -559,6 +562,7 @@ export async function* askAIStreamWithFallback(prompt, opts = {}) {
   }
 
   const finalErr = lastErr || new Error('All streaming backends failed');
+  if (finalErr.name !== 'AbortError') noteFault('models', `every model failed (${caller})`, finalErr.message);
   throw finalErr;
 }
 
