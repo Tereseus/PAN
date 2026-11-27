@@ -12,7 +12,7 @@ import { promisify } from 'util';
 import { transcribePcm16, transcribeAnyLanguage, warmHubAsr } from '../hub-asr.js';
 import { pauseForTalk, listThings, getThing, writeThingNow } from '../memory/things.js';
 import { benchContext } from '../bench-context.js';
-import { recordTiming, turnTimings } from '../voice-timing.js';
+import { recordTiming, turnTimings, startSteps, step, stepsSoFar, endSteps } from '../voice-timing.js';
 import { setPhoneTimeZone } from '../intuition/time.js';
 import { followUpOf, historyLines } from '../intuition/conversation.js';
 import { plainLook, spokenLook } from '../camera-ask.js';
@@ -2192,6 +2192,7 @@ router.post('/query/stream', async (req, res) => {
   // One id per turn so this handler's timings and the router's line up in voice-timing.jsonl.
   const turnId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
   const turnStart = Date.now();
+  startSteps(turnId, turnStart);
 
   // SSE headers
   res.setHeader('Content-Type', 'text/event-stream');
@@ -2271,6 +2272,7 @@ router.post('/query/stream', async (req, res) => {
   // prompt every 10 to 30 s during his talk, the voice reader timed out and turns took 8 to 11 s.
   if (!bench) globalThis.__panLastVoiceAt = Date.now();
   const interp = interpretingFor(key);
+  step(turnId, 'turn_opened');
   // Interpreting: the phone speaks this reply's English in its Android voice, which starts in
   // ~0.2 s, not Supertonic, which synthesizes the whole line first (app 0.4.69+; older apps
   // ignore the event).
@@ -2297,6 +2299,7 @@ router.post('/query/stream', async (req, res) => {
   // not pick up what he says). Clearly the owner's voice, or another known person's, or clearly
   // not this device's person once it knows them: dropped before transcription. Unsure goes on
   // to the room check below (same-line.js).
+  if (voice) step(turnId, 'voice_id');
   let personVoice = null;      // { print, who, owner, pan } on a person's device
   if (audio && !bench && person) {
     try {
@@ -2356,6 +2359,7 @@ router.post('/query/stream', async (req, res) => {
       send({ type: 'heard', text });
     }
     recordTiming({ turn: turnId, stage: 'asr', ms: Date.now() - t0, bench: !!bench || undefined });
+    step(turnId, 'hub_hears_again');
     // The device's ear wrote no words for this sound and sent it anyway (app 0.5.52+, words_unheard,
     // text is a placeholder). If the hub hears no words either, nothing was said: end quietly.
     if (req.body.words_unheard && !String(better || '').trim()) {
@@ -2393,6 +2397,7 @@ router.post('/query/stream', async (req, res) => {
     } catch (e) { console.warn('[same-line] skipped:', e.message); }
   }
 
+  step(turnId, 'same_line_check');
   // The end of PAN's own last reply at the head of his line (own-tail.js). When his line began is
   // worked out from how long ago PAN stopped and how long the turn's audio is (16 kHz, 16 bit).
   const tailKey = bench ? `${streamKey}-bench` : streamKey;
@@ -2447,6 +2452,7 @@ router.post('/query/stream', async (req, res) => {
     }
   }
 
+  step(turnId, 'echo_and_call_checks');
   try {
     const { routeStream } = await import('../router.js');
     // A benchmark turn gets its own device key, so a test's standing instruction or
@@ -2510,6 +2516,7 @@ router.post('/query/stream', async (req, res) => {
         if (event.type === 'chunk' && !firstChunkSent) {
           firstChunkSent = true;
           recordTiming({ turn: turnId, stage: 'first_chunk_sent', ms: Date.now() - turnStart });
+          step(turnId, 'first_words_sent');
         }
         // After the reply, so the line that sets interpreting up counts: the phone takes it over
         // when it has the models (InterpreterLoop.kt). '?' is on, with no language named yet.
@@ -2522,7 +2529,7 @@ router.post('/query/stream', async (req, res) => {
         // path and model answered. Times are ms; first_chunk_sent and total count from the
         // moment his line arrived.
         if (event.type === 'done' && event.result) {
-          try { event.result.timing = { ...turnTimings(turnId), total_ms: Date.now() - turnStart }; } catch {}
+          try { step(turnId, 'reply_done'); event.result.timing = { ...turnTimings(turnId), total_ms: Date.now() - turnStart, steps: stepsSoFar(turnId) }; } catch {}
         }
         send(event);
         if (event.type === 'done') {
@@ -2604,6 +2611,7 @@ router.post('/query/stream', async (req, res) => {
     // making the next utterance unable to cancel it.
     slot.release();
     recordTiming({ turn: turnId, stage: 'total', ms: Date.now() - turnStart, bench: !!bench || undefined });
+    endSteps(turnId, { device: deviceName, bench: !!bench || undefined });
   }
 
   if (!res.writableEnded) res.end();

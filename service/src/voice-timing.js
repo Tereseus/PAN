@@ -54,3 +54,29 @@ export function recordTiming(fields) {
   if (!row.bench) delete row.bench;
   appendFile(timingFile(at, !!row.bench), JSON.stringify(row) + '\n', () => {});
 }
+
+// Every step of one turn, in order (the owner, Nov 27: "I need to know what every step costs and
+// where that is happening, in order, so we can see what else we can cut"). api.js starts the clock
+// when the turn arrives; api.js and router.js mark each step as it ends; api.js writes one row
+// {stage:'steps', steps:[[name, ms since the turn arrived, ms the step took], ...]} at the end.
+// A step only marks; it never waits, so the clock costs nothing a turn can feel.
+const clocks = new Map();
+export function startSteps(turn, start = Date.now()) {
+  if (!turn) return;
+  clocks.set(turn, { start, last: start, steps: [] });
+  if (clocks.size > 100) clocks.delete(clocks.keys().next().value);
+}
+export function step(turn, name) {
+  const c = turn && clocks.get(turn);
+  if (!c) return;
+  const now = Date.now();
+  c.steps.push([name, now - c.start, now - c.last]);
+  c.last = now;
+}
+export function stepsSoFar(turn) { return clocks.get(turn)?.steps || []; }
+export function endSteps(turn, fields = {}) {
+  const c = turn && clocks.get(turn);
+  if (!c) return;
+  clocks.delete(turn);
+  recordTiming({ turn, stage: 'steps', steps: c.steps, ...fields });
+}

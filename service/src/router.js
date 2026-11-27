@@ -30,7 +30,7 @@ import { cleanName as cleanPanName, mapName as mapPanName, callsOwnName, nameLin
 // The smart model: the person's own terminal (task 1091), picked in Settings (smart-model-pick.js).
 import { smartModel } from './smart-model-pick.js';
 import { projectTurn, projectAnswerModel, projectReply } from './projects.js';
-import { recordTiming } from './voice-timing.js';
+import { recordTiming, step } from './voice-timing.js';
 import { noteMealMention } from './intuition/nourishment.js';
 import { noteSignalsInUtterance } from './intuition/signals.js';
 import { getCurrentSnapshot } from './intuition/index.js';
@@ -3251,6 +3251,8 @@ export function personalityFor(context = {}) {
 }
 
 export async function* routeStream(text, context = {}) {
+  // Each step of the turn, in order (voice-timing.js step; api.js writes the row at the end).
+  const mark = (name) => step(context.turn_id, name);
   // Batch 4 (#986): every `done` emit gets a prosody plan derived from
   // `result.importance`. Wrap once, use everywhere — keeps the diff small
   // and guarantees consumers always see a `prosody` field.
@@ -3515,6 +3517,7 @@ export async function* routeStream(text, context = {}) {
     return;
   }
 
+  mark('rules_before_model');
   // Ambient pre-filter — emit dedicated 'ambient' chunk (not [AMBIENT] literal)
   // so phone client can silently drop without TTS, no embed/LLM round-trip needed.
   const isVoice = context.source === 'voice' || context.source === 'mic' || context.source === 'phone';
@@ -3689,6 +3692,7 @@ export async function* routeStream(text, context = {}) {
   // recentMind is PAN's own interior monologue ('Holding - no reason to
   // interrupt'). It is useful for deciding whether to speak UNPROMPTED; it is
   // noise when answering a direct question, and it was 404 chars of it.
+  mark('memory_recall');
   const historyBlock = voiceHistoryBlock(context.conversation_history);
 
   // He stopped mid-sentence reaching for a word (see WORD_SEARCH).
@@ -3728,6 +3732,7 @@ export async function* routeStream(text, context = {}) {
   let weatherBlock = '';
   let liveData = false;   // a block holds data that changes (weather, prices, news, a clock)
   if (!interpreting) try { ({ text: weatherBlock, live: liveData } = await buildToolBlocks(text, sensors, { detail: true, liveOnly: !!studentModel, recent: talkBefore(context, text), skip: toolSkips(context.device_id, text) })); } catch {}
+  mark('tool_blocks');
   // selfBlock is 1030 chars describing which model is running, what is
   // local, what leaves the house. It is the right answer to "how do you
   // work" / "is this private" and dead weight on every other turn, which
@@ -4155,6 +4160,7 @@ answer an earlier question, and do not narrate what the context blocks mention.`
   async function* worldAsk(gate) {
     if (!worldHub) { yield* askAIStreamWithFallback(worldPrompt(gate), cloudOpts()); return; }
     const found = await startLookup();
+    mark('world_lookup');
     if (found) console.log(`[routeStream] looked it up on ${found.engine}: ${found.notes.length} lines in ${found.ms} ms${found.cached ? ' (kept from before)' : ''}`);
     const hubOpts = { ...streamOpts, chain: [worldHub, ...cloudFirst()].slice(0, 3), firstTokenMs: WORLD_LOCAL_MS, temperature: HUB_TEMPERATURE };
     const notes = found ? found.notes : null;
@@ -4337,6 +4343,7 @@ answer an earlier question, and do not narrate what the context blocks mention.`
     if (!standing) {
       let proj = null;
       try { proj = await projectTurn(text); } catch (e) { console.warn('[routeStream] projects:', e.message); }
+      mark('projects_check');
       if (proj?.say) {
         console.log(`[routeStream] project list (${proj.why}) from the notes, no model`);
         notePath('project_list');
@@ -4351,6 +4358,7 @@ answer an earlier question, and do not narrate what the context blocks mention.`
         try { raw = await askAIWithFallback(proj.ask, { ...streamOpts, _skipAnonymize: true, maxTokens: 300, timeout: 30_000, caller: 'projects-answer',
           chain: [...new Set([projectAnswerModel(), smartModel()])] }); } catch (e) { console.warn(`[routeStream] project answer failed: ${e.message}`); }
         const said = projectReply(raw);
+        mark('projects_answer');
         console.log(`[routeStream] project question (${proj.why}) - ${projectAnswerModel()} ${said ? 'answered' : 'says not a project one'} in ${Date.now() - t0} ms`);
         if (said) { notePath('project'); yield JSON.stringify({ intent: 'query', addressed: 0.9, response: said }); return; }
       }
@@ -4396,6 +4404,7 @@ answer an earlier question, and do not narrate what the context blocks mention.`
       console.log(`[routeStream] timing setup=${Date.now() - _turnStart}ms student_prompt=${studentPrompt.length} chars situation=${situationForStudent ? situationLine.length : 'off'}`);
       if (String(context.device_id || '').endsWith('-bench') && situationLine) console.log(`[routeStream] situation: ${situationLine}`);
       recordTiming({ turn: context.turn_id, device: context.device_id, stage: 'setup', ms: Date.now() - _turnStart, prompt_chars: studentPrompt.length, model: studentModel });
+      mark('voice_prompt_built');
       const _modelStart = Date.now();
       let _firstLogged = false;
       let got = false;
@@ -4418,6 +4427,7 @@ answer an earlier question, and do not narrate what the context blocks mention.`
             _firstLogged = true;
             console.log(`[routeStream] timing first_chunk=${Date.now() - _modelStart}ms`);
             recordTiming({ turn: context.turn_id, device: context.device_id, stage: 'first_chunk', ms: Date.now() - _modelStart });
+            mark('voice_model_first_words');
           }
           if (head === null) { yield c; continue; }
           head += c;
@@ -4513,12 +4523,15 @@ answer an earlier question, and do not narrate what the context blocks mention.`
         if (context.signal?.aborted) throw e;
         console.warn(`[routeStream] ${studentModel} unavailable (${e.message}) - full prompt instead`);
         notePath('reader_failed');
+        mark('voice_model_gave_up');
       }
     }
     // The voice model did not answer: the cloud model first (about 1 s), not gemma4:e2b reading the
     // full prompt on the hub CPU (ai_fallback_chain_voice starts with it; 13 to 20 s, Nov 14).
     notePath(studentModel ? 'cloud_fallback' : 'full');
-    yield* askAIStreamWithFallback(fullPrompt(), studentModel ? { ...streamOpts, chain: [...cloud(), ...readChain('voice').filter(isLocal)] } : streamOpts);
+    const _full = fullPrompt();
+    mark('full_prompt_built');
+    yield* askAIStreamWithFallback(_full, studentModel ? { ...streamOpts, chain: [...cloud(), ...readChain('voice').filter(isLocal)] } : streamOpts);
   }
 
   if (wordSearch && interject === 'off') {

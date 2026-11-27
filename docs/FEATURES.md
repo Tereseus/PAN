@@ -3151,6 +3151,15 @@ the Nov 26 code.
   chars at most) and keeps every detail still true, so a detail once written is not lost when its
   lines fall out of the window. Live bench after: 19 of 20, median 3.0 s, max 4.5 s.
 
+- **Every step of a turn, in order (hub Craft 116, Nov 27; `voice-timing.js` startSteps / step /
+  endSteps, marks in `routes/api.js` and `router.js`).** api.js starts a clock when the turn arrives;
+  each step marks when it ends: turn_opened, voice_id, hub_hears_again, same_line_check,
+  echo_and_call_checks, rules_before_model, memory_recall, tool_blocks, projects_check,
+  projects_answer, voice_prompt_built, voice_model_first_words, voice_model_gave_up,
+  full_prompt_built, world_lookup, first_words_sent, reply_done. One row per turn in voice-timing
+  (`stage: 'steps'`, `steps: [[name, ms since the turn arrived, ms the step took], ...]`), and the
+  done event's `result.timing.steps` carries the same list. Marking never waits.
+
 - **Each device's own name for ΠAN (app 0.5.61 / versionCode 190, hub Craft 107, Nov 26; task
   1082).** Settings > Voice and sounds > ΠAN's name (`ui/settings/PanNameField.kt`,
   `util/PanName.kt`, prefs `pan_name`), per phone or pendant; empty = ΠAN. Sent with every turn
