@@ -464,6 +464,14 @@ class PiperTtsEngine(private val context: Context) {
         // because AudioTrack.write() blocks uninterruptibly the old one kept
         // playing anyway - two voices at once. Queue behind the mutex instead.
         if (pending.getAndIncrement() == 0) onSpeakingStateChanged?.invoke(true)
+        val piece = Piece(queued = SystemClock.elapsedRealtime(), chars = text.length)
+        // The speaker takes pieces in the order they were handed in: each one waits for the one
+        // before it. Building no longer waits for the speaker (task 1107): it held the next
+        // piece's build until the piece before had started playing, so a slow device (the car
+        // unit) built one piece at a time behind the speaker and sentences ended in silence.
+        val before = lastPiece
+        val mine = CompletableDeferred<Unit>()
+        lastPiece = mine
         // UNDISPATCHED: the place in genLock's queue is taken right here, on the caller's
         // thread, in the order the sentences arrived. A plain launch does not promise that two
         // jobs reach the lock in the order they were launched.
@@ -472,30 +480,76 @@ class PiperTtsEngine(private val context: Context) {
             var play = false
             try {
                 genLock.lock(); gen = true
+                piece.builtFrom = SystemClock.elapsedRealtime()
                 val ready = built?.takeIf { it.text == text && it.lang == lang && it.sid == sid }
                 built = null
                 val audio = ready?.audio ?: withContext(Dispatchers.IO) { synthesize(tts, text, lang, sid) }
                 val samples = if (currentVoice?.kind == "supertonic") trimQuiet(audio.samples, audio.sampleRate) else audio.samples
-                // Queue for the speaker BEFORE the next sentence may synthesise, so sentences
-                // play in the order they were made. Waiting here is the one-sentence lookahead.
-                playLock.lock(); play = true
+                piece.built = SystemClock.elapsedRealtime()
+                piece.audioMs = VoiceTiming.audioMs(samples.size, audio.sampleRate)
+                // The next piece may build now, while this one waits for the speaker.
                 genLock.unlock(); gen = false
+                before?.await()
+                playLock.lock(); play = true
                 if (samples.isNotEmpty() && isActive) {
-                    playAudio(samples, audio.sampleRate)
+                    playAudio(samples, audio.sampleRate, piece)
                 }
             } catch (e: CancellationException) {
+                piece.cut = true
                 throw e
             } catch (e: Exception) {
                 Log.e(TAG, "Speak failed: ${e.message}", e)
             } finally {
                 if (gen) genLock.unlock()
                 if (play) playLock.unlock()
+                mine.complete(Unit)
+                if (piece.play > 0) runCatching { onPiece?.invoke(piece) }
                 if (pending.decrementAndGet() <= 0) {
                     pending.set(0)
+                    closeKeptTrack()
                     onSpeakingStateChanged?.invoke(false)
                 }
             }
         }
+    }
+
+    /**
+     * One piece the voice said, in elapsedRealtime ms: [queued] when its text reached the voice,
+     * [builtFrom] and [built] its sound being made, [play] and [end] the speaker (task 1107). The
+     * service sends them to the hub beside the turn.
+     */
+    class Piece(val queued: Long, val chars: Int) {
+        @Volatile var builtFrom = 0L
+        @Volatile var built = 0L
+        @Volatile var play = 0L
+        @Volatile var end = 0L
+        @Volatile var audioMs = 0L
+        @Volatile var cut = false
+    }
+
+    /** Each piece once it has been played (or cut while playing). */
+    var onPiece: ((Piece) -> Unit)? = null
+
+    // The last piece handed in, for the next one to wait on. Set on the caller's thread.
+    @Volatile private var lastPiece: CompletableDeferred<Unit>? = null
+
+    // The speaker is kept open between pieces when another is already queued (task 1107): a new
+    // AudioTrack for each sentence, on the call path, plus the 120 ms wait before closing it, put
+    // silence between every two sentences even when the next one was ready.
+    @Volatile private var keptTrack = false
+    @Volatile private var keptRate = 0
+    @Volatile private var keptPlain = false
+    @Volatile private var trackFrames = 0L
+
+    /** Close a speaker left open for a piece that never came (cancelled or failed). */
+    private fun closeKeptTrack() {
+        if (!keptTrack) return
+        keptTrack = false
+        val t = audioTrack ?: return
+        audioTrack = null
+        // What was written still plays out: stop() drains a stream track. Released a moment later.
+        try { t.stop() } catch (_: Exception) {}
+        scope.launch { delay(400); try { t.release() } catch (_: Exception) {} }
     }
 
     /** Sound is starting, for the card's stop to voice time. */
@@ -647,7 +701,7 @@ class PiperTtsEngine(private val context: Context) {
         }
     }
 
-    private suspend fun playAudio(samples: FloatArray, sampleRate: Int) = withContext(Dispatchers.IO) {
+    private suspend fun playAudio(samples: FloatArray, sampleRate: Int, piece: Piece? = null) = withContext(Dispatchers.IO) {
         Log.i(TAG, "Playing ${samples.size} samples at ${sampleRate}Hz")
 
         // Convert float samples to 16-bit PCM (more compatible across devices)
@@ -689,11 +743,23 @@ class PiperTtsEngine(private val context: Context) {
         // Bluetooth headset or wired headphones keep the audio they should get.
         if (!plainPath) toLoudspeaker()
 
+        // The speaker the piece before left open, when it is the same kind (task 1107).
+        val open = audioTrack
+        val reuse = keptTrack && open != null && keptRate == sampleRate && keptPlain == plainPath &&
+            open.state == AudioTrack.STATE_INITIALIZED
+        keptTrack = false
+        if (!reuse && open != null && audioTrack === open) {
+            // A kept speaker of another kind: close it, then a new one.
+            try { open.stop() } catch (_: Exception) {}
+            try { open.release() } catch (_: Exception) {}
+            audioTrack = null
+        }
+
         val minBuf = AudioTrack.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
         val bufSize = maxOf(minBuf, shortSamples.size * 2)
-        Log.i(TAG, "AudioTrack: minBuf=$minBuf, bufSize=$bufSize")
+        if (!reuse) Log.i(TAG, "AudioTrack: minBuf=$minBuf, bufSize=$bufSize")
 
-        val track = AudioTrack.Builder()
+        val track = if (reuse) open!! else AudioTrack.Builder()
             .setAudioAttributes(AudioAttributes.Builder()
                 // VOICE_COMMUNICATION routes through the telephony audio path.
                 // When AudioManager is in MODE_IN_COMMUNICATION, AEC can cancel this output
@@ -706,15 +772,30 @@ class PiperTtsEngine(private val context: Context) {
                 .setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
             .setBufferSizeInBytes(bufSize)
             .build()
-        audioTrack = track
+        if (!reuse) { audioTrack = track; trackFrames = 0L }
         dev.pan.app.debug.AecDump.ref(shortSamples, sampleRate)
-        track.play()
+        val base = trackFrames
+        val target = base + shortSamples.size
+        if (!reuse) track.play()
         // The benchmark's "PAN started talking". Output latency after this is the
         // device's, and the acoustic run measures it.
-        VoiceEvents.emit("tts_play_start", "frames" to shortSamples.size, "rate" to sampleRate)
+        VoiceEvents.emit("tts_play_start", "frames" to shortSamples.size, "rate" to sampleRate, "kept" to reuse)
         onPlayStart?.invoke()
-        val written = track.write(shortSamples, 0, shortSamples.size)
-        Log.i(TAG, "Wrote $written/${shortSamples.size} samples, state=${track.playState}")
+        if (piece != null && (!reuse || track.playbackHeadPosition >= base)) piece.play = SystemClock.elapsedRealtime()
+        // Written in steps that never block, so a barge-in (stop() from another thread) is never
+        // stuck behind a full buffer: a kept speaker can still be playing the piece before.
+        var written = 0
+        while (written < shortSamples.size && isActive && audioTrack === track) {
+            val n = try { track.write(shortSamples, written, shortSamples.size - written, AudioTrack.WRITE_NON_BLOCKING) } catch (_: Exception) { -1 }
+            if (n < 0) break
+            written += n
+            if (n == 0) {
+                if (piece != null && piece.play == 0L && track.playbackHeadPosition >= base) piece.play = SystemClock.elapsedRealtime()
+                delay(10)
+            }
+        }
+        trackFrames = base + written
+        Log.i(TAG, "Wrote $written/${shortSamples.size} samples${if (reuse) " to the open speaker" else ""}, state=${track.playState}")
         // Wait for playback to ACTUALLY finish, not for a computed duration.
         //
         // WHAT WAS BROKEN: this slept for (sample count / rate) + 100ms and then
@@ -727,17 +808,26 @@ class PiperTtsEngine(private val context: Context) {
         // playbackHeadPosition counts frames the hardware has actually played,
         // so waiting on it is exact regardless of startup latency or buffer size.
         val durationMs = (samples.size.toLong() * 1000) / sampleRate
-        var deadline = System.currentTimeMillis() + durationMs + 2000  // never hang
+        val left = (target - track.playbackHeadPosition).coerceAtLeast(0L)
+        var deadline = System.currentTimeMillis() + left * 1000 / sampleRate + 2000  // never hang
+        var keep = false
         try {
             while (isActive &&
-                   track.playbackHeadPosition < shortSamples.size &&
+                   track.playbackHeadPosition < target &&
                    System.currentTimeMillis() < deadline) {
                 delay(20)
+                if (piece != null && piece.play == 0L && track.playbackHeadPosition >= base) piece.play = SystemClock.elapsedRealtime()
                 if (held) deadline += 20   // time spent held is not time spent playing
             }
+            if (piece != null) {
+                if (piece.play == 0L) piece.play = SystemClock.elapsedRealtime()
+                piece.end = SystemClock.elapsedRealtime()
+            }
+            // Another piece is already queued: leave the speaker open for it, with no wait.
+            keep = isActive && pending.get() > 1 && audioTrack === track
             // A final grace period: the head position reaching the last frame means it
             // was handed to the mixer, not that it left the speaker.
-            delay(120)
+            if (!keep) delay(120)
         } finally {
             // CUT, do not drain. AudioTrack.stop() on a STREAM-mode track plays out
             // everything already written, and bufSize above is deliberately large
@@ -746,7 +836,11 @@ class PiperTtsEngine(private val context: Context) {
             // barge-in. flush() is the only call that discards queued audio, and it
             // is legal only while paused or stopped.
             val interrupted = !isActive
+            if (interrupted && piece != null) { piece.cut = true; if (piece.end == 0L) piece.end = SystemClock.elapsedRealtime() }
             val played = try { track.playbackHeadPosition } catch (_: Exception) { -1 }
+            if (keep && !interrupted && audioTrack === track) {
+                keptTrack = true; keptRate = sampleRate; keptPlain = plainPath
+            } else
             // stop() may have already taken and released this track; only clean up
             // the one we still own, or we double-release.
             if (audioTrack === track) {
@@ -758,7 +852,7 @@ class PiperTtsEngine(private val context: Context) {
                 try { track.release() } catch (_: Exception) {}
                 audioTrack = null
             }
-            Log.i(TAG, "Playback ${if (interrupted) "CUT" else "done"} (${durationMs}ms, played $played/${shortSamples.size} frames)")
+            Log.i(TAG, "Playback ${if (interrupted) "CUT" else if (keep) "done, speaker kept for the next piece" else "done"} (${durationMs}ms, played $played/$target frames)")
             VoiceEvents.emit("tts_play_end", "cut" to interrupted, "played" to played,
                 "frames" to shortSamples.size, "rate" to sampleRate)
         }

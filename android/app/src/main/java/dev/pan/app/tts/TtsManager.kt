@@ -457,6 +457,24 @@ class TtsManager @Inject constructor(
         if (piperActive) piper.warm()
     }
 
+    /**
+     * A line in the pieces this device builds. Where building takes more than half as long as
+     * the speech itself (the car unit), a sentence goes in clauses, so the next piece is ready
+     * before this one ends (task 1107). A quick phone keeps whole sentences: a clause on its own
+     * loses some of its tune.
+     */
+    private fun pieces(text: String): List<String> {
+        val t = VoiceTiming.stats(context)
+        return if (VoiceTiming.slowBuilder(t)) LineClauses.split(text) else listOf(text)
+    }
+
+    /** Each piece ΠAN's own voice said, with its times (PiperTtsEngine.Piece). */
+    var onPiece: ((PiperTtsEngine.Piece) -> Unit)? = null
+        set(value) {
+            field = value
+            piper.onPiece = value
+        }
+
     /** The voice is starting, whichever engine has the line. */
     var onPlayStart: (() -> Unit)? = null
         set(value) {
@@ -498,7 +516,7 @@ class TtsManager @Inject constructor(
         when (choice.engine) {
             VoiceChoice.Engine.PAN -> {
                 if (interpreting || foreign != null) LineClauses.split(lineText(text, foreign, choice.lang)).forEach { piper.speak(it, choice.lang, choice.sid) }
-                else piper.speak(latinGreek(text))
+                else pieces(latinGreek(text)).forEach { piper.speak(it) }
                 return
             }
             VoiceChoice.Engine.ANDROID_OTHER_LANGUAGE -> {

@@ -72,4 +72,10 @@ object VoiceTiming {
     }
 
     fun stats(context: Context): Stats = stats(lines(context))
+
+    /** Build ms per second of speech above which a sentence goes in clauses (task 1107). */
+    const val SLOW_RATIO = 500L
+
+    /** Whether this device builds its voice slowly enough to need pieces smaller than a sentence. */
+    fun slowBuilder(s: Stats): Boolean = s.count >= 5 && s.ratio > SLOW_RATIO
 }

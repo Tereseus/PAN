@@ -3258,6 +3258,28 @@ the Nov 26 code.
   beside warmHubAsr), with one silent second through the model: the first line after a swap paid
   the load, 3.2 s inside a 6.7 s Pixel turn. At start it takes about 0.5 s (Craft 118, Nov 28).
 
+- **No pause between sentences (app 0.5.69 / 198, task 1107; `tts/PiperTtsEngine.kt` speak and
+  playAudio, `tts/TtsManager.kt` pieces, `tts/SpeechTimes.kt`, hub `routes/api.js`
+  /voice/speech-timing and `voice-timing.js` speechGaps; built Nov 28, not on a device yet).** In
+  the car ΠAN stopped for 1.5 to 2 s at every full stop. The hub was not it: the car's log shows the
+  rest of each reply arrived 0.3 to 3.4 s after its first words, while the first sentence alone
+  takes longer than that to say. It was the voice on the unit: (1) the next sentence could only
+  start building once the one before it had started playing, so on a slow chip each sentence was
+  built behind the speaker; now every piece builds as soon as the one before is built, and the
+  speaker takes them in the order they came. (2) Each sentence opened a new speaker (AudioTrack, on
+  the call path) and waited 120 ms before closing the last one; now the speaker stays open while
+  another piece is queued and the next piece is written straight into it (non-blocking writes, so a
+  barge-in still cuts at once). (3) On a device whose voice builds slower than half its speed of
+  speech (VoiceTiming ratio over 500 ms per second, over 5 lines), a sentence goes in clauses
+  (LineClauses), so the next piece is ready before this one ends; a quick phone keeps whole
+  sentences. (4) The phone sends how each reply sounded to the hub once it goes quiet: per piece,
+  when its text reached the voice, when its sound was built, when it started and stopped playing,
+  ms from the first piece, plus the device's build ratio. Nothing said is sent. The hub puts the
+  turn id in the done event's timing (`timing.turn`) and keeps the row beside the turn's steps in
+  voice-timing (stage `speech`), each gap split into `text_late` (the hub), `build_late` (the
+  device) and the rest (the speaker). Tests: `__tests__/speech-gaps.test.js` (4), app
+  SpeechTimesTest (4) and VoiceTimingTest slowBuilder; all 147 app unit tests pass.
+
 - **Every step of a turn, in order (hub Craft 116, Nov 27; `voice-timing.js` startSteps / step /
   endSteps, marks in `routes/api.js` and `router.js`).** api.js starts a clock when the turn arrives;
   each step marks when it ends: turn_opened, voice_id, hub_hears_again, same_line_check,

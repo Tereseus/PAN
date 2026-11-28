@@ -12,7 +12,7 @@ import { promisify } from 'util';
 import { transcribePcm16, transcribeAnyLanguage, warmHubAsr } from '../hub-asr.js';
 import { pauseForTalk, listThings, getThing, writeThingNow } from '../memory/things.js';
 import { benchContext } from '../bench-context.js';
-import { recordTiming, turnTimings, startSteps, step, stepsSoFar, endSteps } from '../voice-timing.js';
+import { recordTiming, turnTimings, startSteps, step, stepsSoFar, endSteps, speechGaps } from '../voice-timing.js';
 import { setPhoneTimeZone } from '../intuition/time.js';
 import { followUpOf, historyLines } from '../intuition/conversation.js';
 import { plainLook, spokenLook } from '../camera-ask.js';
@@ -2570,7 +2570,7 @@ router.post('/query/stream', async (req, res) => {
         // path and model answered. Times are ms; first_chunk_sent and total count from the
         // moment his line arrived.
         if (event.type === 'done' && event.result) {
-          try { step(turnId, 'reply_done'); event.result.timing = { ...turnTimings(turnId), total_ms: Date.now() - turnStart, steps: stepsSoFar(turnId) }; } catch {}
+          try { step(turnId, 'reply_done'); event.result.timing = { ...turnTimings(turnId), total_ms: Date.now() - turnStart, steps: stepsSoFar(turnId), turn: turnId }; } catch {}
         }
         send(event);
         if (event.type === 'done') {
@@ -2996,5 +2996,27 @@ function getLocalModels() {
   } catch {}
   return [];
 }
+
+// How the reply sounded on the device (app 0.5.69+, task 1107): for each piece it spoke, when the
+// text reached the voice, when its sound was built, when it started and stopped playing, in ms from
+// the first piece. Kept beside the turn's steps (same turn id) in voice-timing, so a gap between
+// sentences shows where it came from: the hub sending late (text arrived after the last piece
+// ended), the device building late (built after it), or the speaker itself (the rest).
+router.post('/voice/speech-timing', express.json({ limit: '64kb' }), (req, res) => {
+  try {
+    const b = req.body || {};
+    const turn = typeof b.turn === 'string' ? b.turn.slice(0, 40) : '';
+    const n = (x) => (Number.isFinite(x) && x >= 0 ? Math.round(x) : null);   // the app sends -1 for a time it has not got
+    const lines = (Array.isArray(b.lines) ? b.lines : []).slice(0, 40).map((l) => ({
+      queued: n(l?.queued), built_from: n(l?.built_from), built: n(l?.built), play: n(l?.play), end: n(l?.end),
+      audio: n(l?.audio), chars: n(l?.chars), cut: l?.cut === true || undefined,
+    }));
+    if (!turn || !lines.length) return res.status(400).json({ ok: false });
+    const gaps = speechGaps(lines);
+    recordTiming({ turn, stage: 'speech', device: String(req.headers['x-device-name'] || b.device || '').slice(0, 60),
+      lines, gaps, max_gap_ms: gaps.length ? Math.max(...gaps.map((g) => g.ms)) : null, build_ratio: n(b.build_ratio) });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
 
 export default router;

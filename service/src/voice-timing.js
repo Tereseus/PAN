@@ -80,3 +80,21 @@ export function endSteps(turn, fields = {}) {
   clocks.delete(turn);
   recordTiming({ turn, stage: 'steps', steps: c.steps, ...fields });
 }
+
+/**
+ * The silences between the pieces a device spoke (task 1107), each split by cause: text_late, the
+ * hub's next words reached the voice after the last piece had ended; build_late, the device was
+ * still building the sound after that; the rest of the gap is the speaker starting up. Lines carry
+ * ms from the first piece: queued (text reached the voice), built (sound ready), play, end.
+ */
+export function speechGaps(lines = []) {
+  const gaps = [];
+  for (let i = 1; i < lines.length; i++) {
+    const a = lines[i - 1], c = lines[i];
+    if (!Number.isFinite(a?.end) || !Number.isFinite(c?.play)) continue;
+    const text = Number.isFinite(c.queued) ? Math.max(0, c.queued - a.end) : null;
+    const build = Number.isFinite(c.built) ? Math.max(0, c.built - Math.max(a.end, Number.isFinite(c.queued) ? c.queued : a.end)) : null;
+    gaps.push({ ms: c.play - a.end, text_late: text, build_late: build });
+  }
+  return gaps;
+}

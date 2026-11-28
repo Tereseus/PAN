@@ -46,4 +46,10 @@ class VoiceTimingTest {
         assertEquals(listOf(Line(1, 2)), VoiceTiming.decode("x:3,1:2,5,4:0,:,"))
         assertEquals(emptyList<Line>(), VoiceTiming.decode(null))
     }
+
+    @Test fun slowBuilderNeedsEnoughLinesAndAHighRatio() {
+        assertTrue(!VoiceTiming.slowBuilder(VoiceTiming.Stats(4, 900, 900)))
+        assertTrue(!VoiceTiming.slowBuilder(VoiceTiming.Stats(20, 300, 250)))
+        assertTrue(VoiceTiming.slowBuilder(VoiceTiming.Stats(20, 1800, 700)))
+    }
 }

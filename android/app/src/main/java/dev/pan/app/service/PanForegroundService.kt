@@ -803,7 +803,9 @@ class PanForegroundService : Service() {
             interpreter.onDraft = { say, voice, out -> if (!isMuted) tts.prepareLine(say, voice, out) }
             interpreter.onHandOver = { text -> mainHandler.post { onSpeech(text) } }
             interpreter.onNote = { note -> panLog(note) }
+            tts.onPiece = { piece -> speechPieces.add(piece) }
             tts.onSpeakingStateChanged = { speaking ->
+                if (!speaking) shipSpeechTimes()
                 if (speaking) {
                     // Switch to telephony communication mode so AEC gets the speaker
                     // reference signal and can cancel TTS bleed from the mic.
@@ -1629,6 +1631,46 @@ class PanForegroundService : Service() {
         return if (at > 0L && fallback - at < 30_000L) at else fallback
     }
 
+    // The pieces ΠAN's own voice said since it last went quiet, and the turn they answer (task 1107).
+    private val speechPieces = java.util.Collections.synchronizedList(mutableListOf<dev.pan.app.tts.PiperTtsEngine.Piece>())
+    @Volatile private var speechTurn: String? = null
+
+    /**
+     * When the voice has gone quiet: send how the reply sounded to the hub, beside the turn
+     * (POST /api/v1/voice/speech-timing). Until the turn's id has come (the hub's done event can
+     * land after a first sentence was already said) the pieces wait; a new turn starting
+     * ([newTurn]) drops pieces that never got one (an alert, a note read out). Nothing said is
+     * sent: times, lengths and letter counts only.
+     */
+    private fun shipSpeechTimes(newTurn: Boolean = false) {
+        val turn = speechTurn
+        if (turn == null && !newTurn) {
+            synchronized(speechPieces) { while (speechPieces.size > 40) speechPieces.removeAt(0) }
+            return
+        }
+        val pieces = synchronized(speechPieces) { speechPieces.toList().also { speechPieces.clear() } }
+        speechTurn = null
+        if (turn == null) return
+        val rows = dev.pan.app.tts.SpeechTimes.rows(pieces)
+        if (rows.isEmpty() || TestAudio.active) return
+        val gaps = dev.pan.app.tts.SpeechTimes.gaps(rows)
+        if (gaps.isNotEmpty()) panLog("Spoke ${rows.size} pieces, gaps ${gaps.joinToString(",")} ms")
+        val body = org.json.JSONObject().apply {
+            put("turn", turn)
+            put("build_ratio", dev.pan.app.tts.VoiceTiming.stats(applicationContext).ratio)
+            put("lines", org.json.JSONArray().apply {
+                rows.forEach { r ->
+                    put(org.json.JSONObject().apply {
+                        put("queued", r.queued); put("built_from", r.builtFrom); put("built", r.built)
+                        put("play", r.play); put("end", r.end); put("audio", r.audio); put("chars", r.chars)
+                        if (r.cut) put("cut", true)
+                    })
+                }
+            })
+        }
+        serviceScope.launch { runCatching { serverClient.hubJson("POST", "/api/v1/voice/speech-timing", body) } }
+    }
+
     private fun panSpeak(text: String) {
         // The last gate before anything is spoken, and the only one that can
         // work. Cancelling the query does not un-post the mainHandler.post{} calls
@@ -2312,6 +2354,8 @@ class PanForegroundService : Service() {
                 tts.interpreting = false
                 val addressedNow = System.currentTimeMillis() < addressedUntil
                 if (addressedNow) addressedUntil = 0L
+                // How the last reply sounded goes now, before this turn's pieces start (task 1107).
+                shipSpeechTimes(newTurn = true)
                 val response = serverClient.askPanStream(
                     text = text,
                     addressed = addressedNow,
@@ -2383,6 +2427,12 @@ class PanForegroundService : Service() {
                     }
                 )
 
+                // The hub's id for this turn (hub Craft 120+), so how the reply sounded here can be
+                // sent beside the turn's own steps (task 1107).
+                if (promoted && response != null) {
+                    runCatching { response.timing?.let { org.json.JSONObject(it).optString("turn") } }.getOrNull()
+                        ?.takeIf { it.isNotBlank() }?.let { speechTurn = it; if (!tts.isSpeaking) shipSpeechTimes() }
+                }
                 // A tentative clip the hub answered without streaming (the reply came only in done):
                 // real words for ΠAN all the same, so it takes over.
                 if (!promoted && response != null) {
