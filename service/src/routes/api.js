@@ -38,6 +38,8 @@ import { projectNotes, writeProjectNotes, setProjectNotes } from '../projects.js
 
 const execFilePromise = promisify(execFile);
 warmHubAsr();
+// Voice ID loads with the Craft, not at the first line (voice-id.js warmVoiceId).
+import('../voice-id.js').then((v) => v.warmVoiceId()).catch((e) => console.warn('[voice-id] warm failed:', e.message));
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PHOTOS_DIR = join(__dirname, '..', 'data', 'photos');
 if (!existsSync(PHOTOS_DIR)) mkdirSync(PHOTOS_DIR, { recursive: true });

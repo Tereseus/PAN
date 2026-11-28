@@ -3162,6 +3162,9 @@ the Nov 26 code.
   on the hub. (4) Two indexes the full prompt's reads lacked: `idx_memory_items_confidence`,
   `idx_pan_interjections_created`, built once 3 min after start when nobody talked for 3 min; the
   memory facts block is read at most once a minute.
+  (5) Voice ID loads when the Craft starts (`voice-id.js` warmVoiceId, called from `routes/api.js`
+  beside warmHubAsr), with one silent second through the model: the first line after a swap paid
+  the load, 3.2 s inside a 6.7 s Pixel turn. At start it takes about 0.5 s (Craft 118, Nov 28).
 
 - **Every step of a turn, in order (hub Craft 116, Nov 27; `voice-timing.js` startSteps / step /
   endSteps, marks in `routes/api.js` and `router.js`).** api.js starts a clock when the turn arrives;

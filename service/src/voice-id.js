@@ -138,6 +138,22 @@ export function gateMode() {
 }
 
 /** The voice print of a turn's audio (16 kHz PCM16, base64), or null. */
+// Loaded when the Craft starts, not at the first line (Nov 27): the first line after a swap paid
+// the model and profile load, 3.4 s of a 6.7 s turn on the Pixel, against 0.03 s on the next line.
+// One silent second through the model too, so its first real line is not the first it ever ran.
+export function warmVoiceId() {
+  const t0 = Date.now();
+  if (!load()) return false;
+  try {
+    const s = extractor.createStream();
+    s.acceptWaveform({ samples: new Float32Array(MIN_SAMPLES), sampleRate: 16000 });
+    s.inputFinished();
+    if (extractor.isReady(s)) extractor.compute(s);
+  } catch {}
+  console.log(`[voice-id] loaded at start in ${Date.now() - t0} ms`);
+  return true;
+}
+
 export function voicePrint(b64) {
   if (!b64 || !load()) return null;
   try {
