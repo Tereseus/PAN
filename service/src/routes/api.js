@@ -2158,11 +2158,12 @@ router.get('/brief', async (req, res) => {
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// One profile per device (Nov 28): ?device= reads or resets only that device's.
 router.get('/voice/profile', async (req, res) => {
-  try { res.json((await import('../voice-id.js')).profileState()); } catch (e) { res.status(500).json({ error: e.message }); }
+  try { res.json((await import('../voice-id.js')).profileState(req.query.device || null)); } catch (e) { res.status(500).json({ error: e.message }); }
 });
 router.delete('/voice/profile', async (req, res) => {
-  try { const v = await import('../voice-id.js'); v.resetProfile(); res.json(v.profileState()); } catch (e) { res.status(500).json({ error: e.message }); }
+  try { const v = await import('../voice-id.js'); v.resetProfile(req.query.device || null); res.json(v.profileState(req.query.device || null)); } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 router.post('/query/stream', async (req, res) => {
@@ -2289,11 +2290,11 @@ router.post('/query/stream', async (req, res) => {
     try {
       voice = await import('../voice-id.js');
       const print = voice.voicePrint(audio);
-      const who = voice.whoseVoice(print);
+      const who = voice.whoseVoice(print, realId);   // this device's own profile (Nov 28)
       voicePrintNow = print;   // a module namespace is not extensible: voice.print threw on every turn (Nov 14)
       voiceWearer = who.wearer;
       voiceWho = who;
-      if (who.likeness !== null) console.log(`[voice-id] likeness ${who.likeness.toFixed(2)} -> ${who.verdict === undefined ? 'unsure' : who.verdict ? 'his voice' : 'someone else'} (gate ${voice.gateMode()})`);
+      if (who.likeness !== null) console.log(`[voice-id] likeness ${who.likeness.toFixed(2)} -> ${who.verdict === undefined ? 'unsure' : who.verdict ? 'his voice' : 'someone else'} (gate ${voice.gateMode()}, ${who.from === realId ? 'own profile' : `profile of ${who.from}`})`);
     } catch (e) { console.warn('[voice-id] skipped:', e.message); voice = null; }
   }
   // A person's device takes its own person's voice and nobody else's (person-voices.js; the
@@ -2367,6 +2368,25 @@ router.post('/query/stream', async (req, res) => {
     if (req.body.words_unheard && !String(better || '').trim()) {
       console.log(`[hub-asr] no words in ${Math.round(Buffer.byteLength(String(audio), 'base64') / 32)} ms of sound the device could not write down either`);
       send({ type: 'done', result: { intent: 'ambient', response: '', reason: 'nothing_heard' } });
+      clearInterval(keepaliveInterval);
+      slot.release();
+      if (!res.writableEnded) res.end();
+      return;
+    }
+  }
+
+  // Noise and ΠAN's own echo written up as words (voice-id.js shortNoise, Nov 28, task 1104). In the
+  // car the phone heard nearly nothing ("…" or one word), the hub wrote a whole sentence from it and
+  // ΠAN answered it. Dropped here, after the hub's words, so a call by name that only the hub heard
+  // (the phone sent "…") still counts. On the hub's 116 logged
+  // turns of Nov 24 to 28: 24 of 27 noise or echo lines caught (9 of the 10 that ΠAN answered), one
+  // real line lost (one word, on the Pixel, whose profile the car had taken).
+  if (voice && voiceWho && !interp) {
+    const named = /\b(pan|pam|pann)\b/i.test(`${phoneText} ${text}`) || callsOwnName(phoneText, req.body?.pan_name) || callsOwnName(text, req.body?.pan_name);
+    if (voice.shortNoise({ phoneText, likeness: voiceWho.likeness, named }) && voice.shortNoiseGateOn()) {
+      console.log(`[voice-id] short and not sure it is him (his ${voiceWho.likeness.toFixed(2)}, ${voice.wordsIn(phoneText)} words from the phone) -> DROPPED as noise: ${JSON.stringify(String(phoneText).slice(0, 40))} -> ${JSON.stringify(String(text).slice(0, 60))}`);
+      recordTiming({ turn: turnId, stage: 'short_noise', ms: Date.now() - turnStart });
+      send({ type: 'done', result: { intent: 'ambient', response: '', reason: 'short_noise' } });
       clearInterval(keepaliveInterval);
       slot.release();
       if (!res.writableEnded) res.end();
@@ -2582,7 +2602,7 @@ router.post('/query/stream', async (req, res) => {
           // its speaker tests taught his voice profile other voices (Nov 15).
           if (voicePrintNow && !forget && !voiceTestDevice(realId)) {
             const r = event.result || {};
-            try { voice.learnWearer(voicePrintNow, text, r.intent !== 'ambient' && !!String(r.response || '').trim()); } catch {}
+            try { voice.learnWearer(voicePrintNow, realId); } catch {}   // into this device's own pool (Nov 28)
           }
           break;
         }

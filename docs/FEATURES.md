@@ -2088,6 +2088,29 @@ children can have adult-sounding voices and vice versa).
   people: his lines 0.63 to 0.81, the others 0.06 to 0.17. The ambient veto now also counts a
   line that starts with PAN's name (`saysPanName`), so a named line in a language without English
   question words or "?" (Thai) is answered.
+
+- **One voice profile per device, and short noise dropped (hub, staged Nov 28, not live yet; task
+  1104; `voice-id.js`, `routes/api.js` /query/stream).** (1) One shared pool let the device that
+  talks most take the profile over: on Nov 21, 136 car lines in an hour made it his voice through
+  the car's mic, and 0 of 28 later Pixel lines counted as him (the same voice through two mics
+  matched 0.59). Now each device keeps its own pool (last 100) and profile (`whoseVoice(print,
+  device)`, `learnWearer(print, device)`); a device without a profile yet (under 10 alike lines)
+  is checked against the best of his other profiles, and a call with no device (a person's device
+  asking about the owner) uses the best of all. At most 12 devices, the least recently heard goes.
+  The old shared file has no device on its lines, so on first load its pool becomes the frozen
+  `unlabelled` profile (a fallback only, it never learns) and the old file is kept as
+  `voice-profile.v1-backup.json`. `GET`/`DELETE /api/v1/voice/profile?device=` for one device; the
+  state lists `devices`. PAN's own voice stays out of every pool (checked at learn and load). On
+  the hub's 200 pool lines (devices matched from the logs): Pixel 2 -> 23 of 26 counted as him
+  (leave one out), car 109 -> 104 of 145, all 130 -> 143 of 200. (2) Short noise: when the phone
+  heard 3 words or fewer (`wordsIn`, letters or digits; `…` is none), voice ID is under 0.6, and
+  neither the phone's nor the hub's words name ΠAN, the turn ends after the hub's transcription
+  (`shortNoise`; done ambient, reason `short_noise`, timing stage `short_noise`, log
+  `[voice-id] short and not sure it is him ... -> DROPPED as noise`). Setting `short_noise_gate` =
+  off turns it off; env `PAN_SHORT_WORDS`, `PAN_SHORT_SURE`. On the hub's 116 logged turns of Nov
+  24 to 28: 24 of 27 noise or echo lines caught (9 of the 10 ΠAN answered), 1 real line lost (one
+  word on the Pixel); his real short car lines scored 0.62 and up. Dropped lines are never learned.
+  Tests: `node service/src/__tests__/voice-id-devices.test.js` (13).
 - **The brief** (2026-11-23, `intuition/brief.js`, docs/INTUITION-STATE.md section 11.2): the
   situation line plus his threads (newest ask to each in 3 hours, its answer or none yet), the
   things in play (shelf notes with state and next) and the talk's summary. Thread times read
