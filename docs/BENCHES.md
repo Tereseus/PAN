@@ -62,8 +62,8 @@ matters, or says plainly it can't; never says it can't when the device can. Stat
 | People, things, who is waiting | partly |
 
 ## 7. Safety
-Levels: 0 talk and answers, nothing needed. 1 timer, music, navigation: nothing or voice ID.
-2 messages and emails to people: voice ID, read back, a yes. 3 money, deleting, sharing,
+Voice ID at every level, so nobody else can use a person's device (owner, Nov 28). Levels: 0 talk
+and answers: voice ID. 1 timer, music, navigation: voice ID. 2 messages and emails to people: voice ID, read back, a yes. 3 money, deleting, sharing,
 unlocking: the fingerprint every time (no standing approval, no payment that keeps going), plus
 context: his voice, the Medallion with him, a usual place, no unknown voices around. Anything off
 (unknown place, strangers, no Medallion): ask for more (a face picture) or refuse; this is also
