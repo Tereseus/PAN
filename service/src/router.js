@@ -31,6 +31,7 @@ import { cleanName as cleanPanName, mapName as mapPanName, callsOwnName, nameLin
 import { smartModel } from './smart-model-pick.js';
 import { projectTurn, projectAnswerModel, projectReply } from './projects.js';
 import { recordTiming, step } from './voice-timing.js';
+import { noteAnswer } from './turn-parts.js';
 import { noteMealMention } from './intuition/nourishment.js';
 import { noteSignalsInUtterance } from './intuition/signals.js';
 import { getCurrentSnapshot } from './intuition/index.js';
@@ -4252,7 +4253,7 @@ answer an earlier question, and do not narrate what the context blocks mention.`
   // going?" into room talk (hub bench, 2026-11-11, and 2026-11-03).
   const studentPrompt = [situationForStudent ? situationLine : '', studentHistory, String(memoryContext || '').trim(), selfAsked ? buildSelfLine({ viaLink: context.via_link, deviceId: context.device_id }) : '', nowLine(),
     `${isDash ? 'User typed' : 'Mic heard'}: "${clipToTokens(safeText, HEARD_TOKENS)}"`].filter(Boolean).join('\n\n');
-  const streamOpts = { callerClass: 'voice', caller: 'router', maxTokens: 300, _skipAnonymize: true, source: context.source, device_id: context.device_id, signal: context.signal || null, readerOpts: { minPan: forcePan ? 0 : talking ? MIN_PAN_IN_TALK : undefined, copy: ASKS_BACK.test(String(text)), probe: readerProbe, ...(claudeQuiet ? { needPan: CLAUDE_QUIET_MIN_PAN } : {}), ...(/-bench$/.test(String(context.device_id || '')) ? { whoMs: 30_000 } : {}) } };
+  const streamOpts = { callerClass: 'voice', caller: 'router', maxTokens: 300, _skipAnonymize: true, source: context.source, device_id: context.device_id, signal: context.signal || null, onModel: (m) => noteAnswer(context.turn_id, m), readerOpts: { minPan: forcePan ? 0 : talking ? MIN_PAN_IN_TALK : undefined, copy: ASKS_BACK.test(String(text)), probe: readerProbe, ...(claudeQuiet ? { needPan: CLAUDE_QUIET_MIN_PAN } : {}), ...(/-bench$/.test(String(context.device_id || '')) ? { whoMs: 30_000 } : {}) } };
   // A bench turn arrives cold (nothing read ahead): give the reader the time it needs, so the bench
   // measures the reader's own decision and not the backup's (2026-11-12, see voice-reader.js whoMs).
   const studentOpts = { ...streamOpts, chain: studentChain(studentModel, studentBackup), watchFirstToken: !!studentBackup,

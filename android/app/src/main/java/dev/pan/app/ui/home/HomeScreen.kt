@@ -386,8 +386,47 @@ private fun wordByWord(d: org.json.JSONObject?): List<Triple<String, String, Str
     }
 }
 
+/**
+ * A tapped reply in four parts (app 0.5.70, the owner Nov 28: "phone time, hub time, model time"):
+ * your phone (deciding you stopped, sending the sound, the way back), the hub (hearing you again,
+ * voice ID and its checks), the model (which one, first words, whole reply, and why when it was not
+ * the voice model) and speaking (the pauses between pieces). Null when the line has no hub parts
+ * (older lines, older hubs): those show the older breakdown.
+ */
+internal fun replyParts(d: org.json.JSONObject): List<String>? {
+    val parts = d.optJSONObject("parts") ?: return null
+    fun ms(o: org.json.JSONObject?, key: String) = o?.let { if (it.has(key)) it.optLong(key, -1L).takeIf { v -> v >= 0 } else null }
+    val phone = d.optJSONObject("phone")
+    val out = mutableListOf<String>()
+    val stop = ms(phone, "stop_ms"); val up = ms(phone, "up_ms"); val back = ms(phone, "back_ms")
+    val first = ms(d, "first_ms"); val done = ms(d, "done_ms")
+    if (first != null) out += "First word " + secs((stop ?: 0L) + first) + " after you stopped" +
+        (done?.let { ", finished after " + secs((stop ?: 0L) + it) } ?: "")
+    val phoneBits = listOfNotNull(stop?.let { "hearing you stop " + secs(it) }, up?.let { "sending " + secs(it) }, back?.let { "back " + secs(it) })
+    if (phoneBits.isNotEmpty()) out += "Your phone " + secs((stop ?: 0L) + (up ?: 0L) + (back ?: 0L)) + " (" + phoneBits.joinToString(", ") + ")"
+    ms(parts, "hub_ms")?.let { hub ->
+        val bits = listOfNotNull(ms(parts, "hear_ms")?.let { "hearing you again " + secs(it) }, ms(parts, "checks_ms")?.let { "checks " + secs(it) })
+        out += "Hub " + secs(hub) + if (bits.isNotEmpty()) " (" + bits.joinToString(", ") + ")" else ""
+    }
+    val modelFirst = ms(parts, "model_first_ms"); val modelWhole = ms(parts, "model_whole_ms")
+    if (modelFirst != null || modelWhole != null) {
+        val name = parts.optString("model", "").takeIf { it.isNotBlank() }
+        out += "Model " + (modelFirst?.let { secs(it) + " to the first word" } ?: "") +
+            (modelWhole?.let { (if (modelFirst != null) ", " else "") + secs(it) + " whole" } ?: "") +
+            (name?.let { ", $it" } ?: "")
+    }
+    parts.optString("why", "").takeIf { it.isNotBlank() }?.let { out += "Why: $it" }
+    ms(d, "speak_pause_ms")?.let { total ->
+        out += if (total < 100L) "Speaking: no pauses" else "Speaking " + secs(total) + " of pauses" +
+            (ms(d, "speak_pause_max_ms")?.takeIf { it >= 300L }?.let { ", the longest " + secs(it) } ?: "")
+    }
+    d.optString("read", "").takeIf { it.isNotBlank() }?.let { out += "ΠAN's read then: $it" }
+    return out
+}
+
 /** A tapped reply, in plain lines: how long, where the time went, who answered, what PAN thought was going on. */
 private fun replyBreakdown(d: org.json.JSONObject): List<String> {
+    replyParts(d)?.let { return it }
     fun ms(key: String) = if (d.has(key)) d.optLong(key, -1L).takeIf { it >= 0 } else null
     val out = mutableListOf<String>()
     val first = ms("first_ms"); val done = ms("done_ms")

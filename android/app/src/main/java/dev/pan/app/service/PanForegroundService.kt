@@ -1631,6 +1631,38 @@ class PanForegroundService : Service() {
         return if (at > 0L && fallback - at < 30_000L) at else fallback
     }
 
+    // The stored reply line of each recent turn, so the pauses while speaking can be added to what a
+    // tap on it shows (phone, hub, model, speaking: the owner, Nov 28). Pauses that come before the
+    // line is stored wait here by turn.
+    private val lineForTurn = java.util.Collections.synchronizedMap(object : LinkedHashMap<String, Pair<Long, String>>() {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Pair<Long, String>>?) = size > 20
+    })
+    private val pauseForTurn = java.util.Collections.synchronizedMap(object : LinkedHashMap<String, Pair<Long, Long>>() {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Pair<Long, Long>>?) = size > 20
+    })
+
+    /** Adds the speaking pauses (total, longest) to a stored reply line's detail. */
+    private fun putPause(turn: String, total: Long, longest: Long) {
+        val line = lineForTurn[turn]
+        if (line == null) { pauseForTurn[turn] = total to longest; return }
+        val d = runCatching { org.json.JSONObject(line.second) }.getOrElse { org.json.JSONObject() }
+        d.put("speak_pause_ms", total); d.put("speak_pause_max_ms", longest)
+        lineForTurn[turn] = line.first to d.toString()
+        serviceScope.launch(Dispatchers.IO) { runCatching { dataRepository.setLineDetail(line.first, d.toString()) } }
+    }
+
+    /** A reply line was stored: remember it for its pauses, and send the phone's part of the turn. */
+    private fun replyStored(turn: String?, id: Long, detail: String?, phone: org.json.JSONObject) {
+        if (turn.isNullOrBlank()) return
+        if (id > 0 && detail != null) {
+            lineForTurn[turn] = id to detail
+            pauseForTurn.remove(turn)?.let { (total, longest) -> putPause(turn, total, longest) }
+        }
+        if (TestAudio.active) return
+        val body = org.json.JSONObject().apply { put("turn", turn); put("phone", phone) }
+        serviceScope.launch { runCatching { serverClient.hubJson("POST", "/api/v1/voice/speech-timing", body) } }
+    }
+
     // The pieces ΠAN's own voice said since it last went quiet, and the turn they answer (task 1107).
     private val speechPieces = java.util.Collections.synchronizedList(mutableListOf<dev.pan.app.tts.PiperTtsEngine.Piece>())
     @Volatile private var speechTurn: String? = null
@@ -1655,6 +1687,7 @@ class PanForegroundService : Service() {
         if (rows.isEmpty() || TestAudio.active) return
         val gaps = dev.pan.app.tts.SpeechTimes.gaps(rows)
         if (gaps.isNotEmpty()) panLog("Spoke ${rows.size} pieces, gaps ${gaps.joinToString(",")} ms")
+        putPause(turn, gaps.sumOf { it.toLong().coerceAtLeast(0L) }, gaps.maxOfOrNull { it.toLong() }?.coerceAtLeast(0L) ?: 0L)
         val body = org.json.JSONObject().apply {
             put("turn", turn)
             put("build_ratio", dev.pan.app.tts.VoiceTiming.stats(applicationContext).ratio)
@@ -2575,14 +2608,29 @@ class PanForegroundService : Service() {
                         persistHistoryTurn("assistant", responseText)
                         // With the reply: how long he waited for the first word, where the hub says
                         // the time went, and what PAN thought was going on. Home shows it on a tap.
+                        // The phone's own part (app 0.5.70): from deciding he stopped to sending, the
+                        // sound's upload, and the way back (first words here, less the upload and the
+                        // hub's own time to its first words out).
+                        val timingJson = runCatching { response.timing?.let { org.json.JSONObject(it) } }.getOrNull() ?: org.json.JSONObject()
+                        val stopMs = if (voiceFrom in 1..startTime) startTime - voiceFrom else -1L
+                        val hubFirstOut = timingJson.optJSONObject("parts")?.optLong("first_out_ms", -1L) ?: -1L
+                        val backMs = if (firstChunkTime > 0L && hubFirstOut >= 0L && sentMs > 0L)
+                            (firstWordMs - sentMs - hubFirstOut).coerceAtLeast(0L) else -1L
+                        val phone = org.json.JSONObject().apply {
+                            put("stop_ms", stopMs); put("up_ms", if (sentMs > 0L) sentMs else -1L); put("back_ms", backMs)
+                            put("first_ms", firstWordMs); put("done_ms", elapsed)
+                        }
                         val detail = runCatching {
-                            (response.timing?.let { org.json.JSONObject(it) } ?: org.json.JSONObject()).apply {
+                            timingJson.apply {
                                 put("first_ms", firstWordMs)
                                 put("done_ms", elapsed)
+                                put("phone", phone)
                                 intuitionSummary?.let { put("read", it) }
                             }.toString()
                         }.getOrNull()
-                        attachReading(dataRepository.addPanResponse(responseText, ms = firstWordMs, detail = detail), responseText, detail)
+                        val lineId = dataRepository.addPanResponse(responseText, ms = firstWordMs, detail = detail)
+                        replyStored(timingJson.optString("turn").takeIf { it.isNotBlank() }, lineId, detail, phone)
+                        attachReading(lineId, responseText, detail)
                         // Surface to native PanThinkingCard — shows the reply text +
                         // ↳ X.Xs response-time badge, beside what the hub heard.
                         lastQueryText.value = heardText

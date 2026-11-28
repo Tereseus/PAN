@@ -13,6 +13,7 @@ import { transcribePcm16, transcribeAnyLanguage, warmHubAsr } from '../hub-asr.j
 import { pauseForTalk, listThings, getThing, writeThingNow } from '../memory/things.js';
 import { benchContext } from '../bench-context.js';
 import { recordTiming, turnTimings, startSteps, step, stepsSoFar, endSteps, speechGaps } from '../voice-timing.js';
+import { turnParts, answeredBy } from '../turn-parts.js';
 import { setPhoneTimeZone } from '../intuition/time.js';
 import { followUpOf, historyLines } from '../intuition/conversation.js';
 import { plainLook, spokenLook } from '../camera-ask.js';
@@ -2594,7 +2595,7 @@ router.post('/query/stream', async (req, res) => {
         // path and model answered. Times are ms; first_chunk_sent and total count from the
         // moment his line arrived.
         if (event.type === 'done' && event.result) {
-          try { step(turnId, 'reply_done'); event.result.timing = { ...turnTimings(turnId), total_ms: Date.now() - turnStart, steps: stepsSoFar(turnId), turn: turnId }; } catch {}
+          try { step(turnId, 'reply_done'); event.result.timing = { ...turnTimings(turnId), total_ms: Date.now() - turnStart, steps: stepsSoFar(turnId), turn: turnId, parts: turnParts(stepsSoFar(turnId), turnTimings(turnId), answeredBy(turnId)) || undefined }; } catch {}
         }
         send(event);
         if (event.type === 'done') {
@@ -2676,7 +2677,9 @@ router.post('/query/stream', async (req, res) => {
     // making the next utterance unable to cancel it.
     slot.release();
     recordTiming({ turn: turnId, stage: 'total', ms: Date.now() - turnStart, bench: !!bench || undefined });
-    endSteps(turnId, { device: deviceName, bench: !!bench || undefined });
+    let parts;
+    try { parts = turnParts(stepsSoFar(turnId), turnTimings(turnId), answeredBy(turnId)) || undefined; } catch {}
+    endSteps(turnId, { device: deviceName, bench: !!bench || undefined, parts });
   }
 
   if (!res.writableEnded) res.end();
@@ -3035,10 +3038,18 @@ router.post('/voice/speech-timing', express.json({ limit: '64kb' }), (req, res) 
       queued: n(l?.queued), built_from: n(l?.built_from), built: n(l?.built), play: n(l?.play), end: n(l?.end),
       audio: n(l?.audio), chars: n(l?.chars), cut: l?.cut === true || undefined,
     }));
-    if (!turn || !lines.length) return res.status(400).json({ ok: false });
-    const gaps = speechGaps(lines);
-    recordTiming({ turn, stage: 'speech', device: String(req.headers['x-device-name'] || b.device || '').slice(0, 60),
-      lines, gaps, max_gap_ms: gaps.length ? Math.max(...gaps.map((g) => g.ms)) : null, build_ratio: n(b.build_ratio) });
+    // The phone's own part of the turn (app 0.5.70+, turn-parts.js): hearing him stop, sending the
+    // sound, the way back, first words and the whole reply on its clock.
+    const p = b.phone && typeof b.phone === 'object' ? b.phone : null;
+    const phone = p ? { stop_ms: n(p.stop_ms), up_ms: n(p.up_ms), back_ms: n(p.back_ms), first_ms: n(p.first_ms), done_ms: n(p.done_ms) } : null;
+    if (!turn || (!lines.length && !phone)) return res.status(400).json({ ok: false });
+    const device = String(req.headers['x-device-name'] || b.device || '').slice(0, 60);
+    if (phone) recordTiming({ turn, stage: 'phone', device, ...phone });
+    if (lines.length) {
+      const gaps = speechGaps(lines);
+      recordTiming({ turn, stage: 'speech', device,
+        lines, gaps, max_gap_ms: gaps.length ? Math.max(...gaps.map((g) => g.ms)) : null, build_ratio: n(b.build_ratio) });
+    }
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });

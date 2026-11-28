@@ -244,6 +244,8 @@ export async function askAIWithFallback(prompt, opts = {}) {
     chain: chainOverride,
     signal: externalSignal = null,
     outMeta = null,
+    // Told which model answered (turn-parts.js: the phone's tap shows who answered the turn).
+    onModel = null,
     ...passthrough
   } = opts;
 
@@ -345,6 +347,7 @@ export async function askAIWithFallback(prompt, opts = {}) {
         outMeta.attempts = attempts;
         outMeta.model = model;
       }
+      if (onModel) { try { onModel(model); } catch {} }
       return text;
     } catch (err) {
       const ms = Date.now() - t0;
@@ -390,6 +393,7 @@ export async function* askAIStreamWithFallback(prompt, opts = {}) {
     // Holds local models to firstTokenMs too, all but the last in the chain: a sleeping voice box
     // would otherwise hold the turn for the full local budget.
     watchFirstToken = false,
+    onModel = null,
     ...passthrough
   } = opts;
 
@@ -536,6 +540,7 @@ export async function* askAIStreamWithFallback(prompt, opts = {}) {
           break;
         }
         // Got a chunk — commit to this backend.
+        if (!yieldedAny && onModel) { try { onModel(model); } catch {} }
         yieldedAny = true;
         yield next.value;
       }

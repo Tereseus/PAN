@@ -3285,6 +3285,29 @@ the Nov 26 code.
   device) and the rest (the speaker). Tests: `__tests__/speech-gaps.test.js` (4), app
   SpeechTimesTest (4) and VoiceTimingTest slowBuilder; all 147 app unit tests pass.
 
+- **A turn's time in four parts: phone, hub, model, speaking (app 0.5.70 / 199; hub `turn-parts.js`,
+  `llm-fallback.js` onModel, `router.js` streamOpts, `routes/api.js` done event, endSteps and
+  /voice/speech-timing `phone`; app `PanForegroundService.kt` replyStored / putPause, `HomeScreen.kt`
+  replyParts; built Nov 28, not on a device or live yet).** The owner, Nov 28: the tapped reply's
+  number did not say where the time went; "just say phone time, hub time, cloud model time". Before,
+  a tap showed the first word and finish time from the moment the line was sent, the hub's hearing,
+  model start and first words out, the way to and from the device, and a path name. Now: the first
+  word and the finish counted from when he stopped talking; **Your phone** (deciding he stopped,
+  sending the sound, the way back); **Hub** (hearing him again, then voice ID and every check);
+  **Model** (to its first words and the whole reply, and which model answered, by name); **Why**
+  when the voice model did not answer (it missed its time and the backup answered, a question that
+  needs knowledge, a project question); **Speaking** (the pauses between pieces, and the longest).
+  The hub builds `timing.parts` from the turn's steps: a step that is a model working
+  (voice_model_first_words, voice_model_gave_up, projects_answer, first_words_sent, reply_done) is
+  the model's, every other step the hub's. The model that answered is the last one that committed in
+  `askAIStreamWithFallback` / `askAIWithFallback` (`onModel`), so a backup after the voice model is
+  named. The parts also go in the turn's `steps` row in voice-timing. The phone sends its own part
+  (`phone`: stop_ms, up_ms, back_ms, first_ms, done_ms) to /voice/speech-timing, recorded as stage
+  `phone`; the speaking pauses are added to the stored line when the voice goes quiet. Older lines
+  and hubs keep the older breakdown. Tests: `__tests__/turn-parts.test.js` (5, the three slow Pixel
+  turns of Nov 28 among them); all 147 app unit tests pass; dev 7781: parts on every turn, the
+  phone row recorded. A Japanese line's reading can overwrite its pauses (both rewrite the detail).
+
 - **Every step of a turn, in order (hub Craft 116, Nov 27; `voice-timing.js` startSteps / step /
   endSteps, marks in `routes/api.js` and `router.js`).** api.js starts a clock when the turn arrives;
   each step marks when it ends: turn_opened, voice_id, hub_hears_again, same_line_check,
