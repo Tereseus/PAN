@@ -3294,6 +3294,31 @@ the Nov 26 code.
   (`stage: 'steps'`, `steps: [[name, ms since the turn arrived, ms the step took], ...]`), and the
   done event's `result.timing.steps` carries the same list. Marking never waits.
 
+- **A time budget for every step, checked each day (Nov 28; `step-budget.js`, `voice-report.js`,
+  `fault-reports.js` part 'speed').** Each step of the steps clock has a budget: the p90 of his
+  real turns while the hub was quiet (Nov 27 to 28, 18 of 21 turns; a turn with a bench row from 3
+  min before to 30 s after is busy and left out). voice_id 100 ms, hub_hears_again 600,
+  rules_before_model 40, tool_blocks 100, projects_check 200, voice_model_first_words 1100,
+  world_lookup 500, projects_answer 4000, full_prompt_built 1500, any voice_model_gave_up, and
+  first words from the turn's start 1500. They guard against getting slower; first words under a
+  second is the target. The nightly voice report adds "Real turns per device" (first words and
+  whole reply, p50 and p90, hub side) and "Steps against their budgets", and each device's speed
+  and every step over budget go to Memory > Reports as part 'speed' (only steps, devices and
+  times). The phone's own part is not in it yet. Test `__tests__/step-budget.test.js`.
+
+- **The audio bench: lines as sound, the phone's way (Nov 28; `bench-audio.mjs`,
+  `bench-audio-cases.json`, `routes/api.js`).** Each line is sent as the turn's audio to
+  `/query/stream` with `bench: true, bench_audio: true`, so the hub hears it again, runs voice ID,
+  the check for ΠAN's own voice, the noise drop and own-tail, then the model; such a turn learns
+  nothing (no voice pool, no echo pool). `bench_as` picks whose device profile voice ID uses,
+  `bench_voice_his` true or false stands in for his voice (the bench voice is synthetic; the real
+  score is logged). 28 made-up cases (asks, actions, small talk, follow ups, long requests, lines
+  to someone else, synthetic road noise, a call by name) written by an open model, spoken by the
+  computer's own text to speech (Windows SAPI), nothing leaves the computer and the hub.
+  `--lines` speaks his own lines for his own bench, sent only to his hub. Before every line it asks
+  `GET /api/v1/voice/last-turn` (when he last talked; after a swap the newest real turn in the
+  month's timing file) and waits until it is 10 minutes ago; if it cannot ask, it stops.
+
 - **Each device's own name for ΠAN (app 0.5.61 / versionCode 190, hub Craft 107, Nov 26; task
   1082).** Settings > Voice and sounds > ΠAN's name (`ui/settings/PanNameField.kt`,
   `util/PanName.kt`, prefs `pan_name`), per phone or pendant; empty = ΠAN. Sent with every turn

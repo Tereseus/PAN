@@ -17,6 +17,8 @@ import { join } from 'path';
 import { all, get } from './db.js';
 import { getDataDir } from './platform.js';
 import { timingFilesFor } from './voice-timing.js';
+import { checkSteps, readSteps, busyCheck, reportLines } from './step-budget.js';
+import { noteFault } from './fault-reports.js';
 
 const DIR = join(getDataDir(), 'voice-reports');
 const JUDGE_MODELS = ['gemini:gemini-3.5-flash-lite', 'gemini:gemini-3.1-flash-lite', 'ollama:gemma4:e4b'];
@@ -267,7 +269,11 @@ export async function buildReport(day = yesterday(), { judge = true, log = conso
     voices: readVoices(day),
     slowest: spoken.filter((t) => Number.isFinite(t.phone.first)).sort((a, b) => b.phone.first - a.phone.first).slice(0, 5)
       .map((t) => ({ at: new Date(t.at).toLocaleTimeString(), said: t.text.slice(0, 80), phone_first: t.phone.first, hub_first_sent: t.hub.first_chunk_sent ?? null, path: t.hub.path || null })),
+    budget: stepBudget(day),
   };
+  // Over budget and each device's speed go to Memory > Reports too (part 'speed'), where he sees
+  // them; nothing personal in them, only steps, devices and times.
+  for (const l of reportLines(day, report.budget)) noteFault('speed', l.what, l.detail);
 
   mkdirSync(DIR, { recursive: true });
   writeFileSync(join(DIR, `${day}.json`), JSON.stringify(report, null, 2));
@@ -280,6 +286,14 @@ export async function buildReport(day = yesterday(), { judge = true, log = conso
     end_of_speech_p50: report.speed_ms.phone_end_of_speech?.p50 ?? null, reader: report.versions.reader }) + '\n');
   log(`[voice-report] ${day}: ${report.turns} turns, ${report.spoke} replies, quality ${report.quality.mean ?? '-'}, missed ${report.quality.missed}`);
   return report;
+}
+
+/** Every step of the day's real turns against its budget (step-budget.js). Never throws. */
+function stepBudget(day) {
+  try {
+    const { rows, bench } = readSteps(day, localDay);
+    return checkSteps(rows, busyCheck(bench));
+  } catch (e) { return { error: e.message, turns: 0, quiet: 0, devices: {}, steps: {}, over: [] }; }
 }
 
 function previous(day) {
@@ -307,6 +321,14 @@ function toMarkdown(r, prev) {
     ...Object.keys(r.speed_ms).map((k) => `| ${k} | ${s(k)} | ${ps(k) ?? '-'} |`),
     '',
   ];
+  const b = r.budget;
+  if (b && b.turns) {
+    const sec = (x) => (x == null ? '-' : (x / 1000).toFixed(1));
+    lines.push('## Real turns per device (hub side, quiet turns)', '', '| Device | Turns | First words p50 / p90 (s) | Whole reply p50 / p90 (s) |', '|---|---|---|---|',
+      ...Object.entries(b.devices).map(([d, x]) => `| ${d} | ${x.turns}${x.busy ? ` (${x.busy} during a bench)` : ''} | ${sec(x.first?.p50)} / ${sec(x.first?.p90)} | ${sec(x.whole?.p50)} / ${sec(x.whole?.p90)} |`), '');
+    lines.push('## Steps against their budgets (step-budget.js)', '', '| Step | Budget ms | p50 / p90 ms | Over |', '|---|---|---|---|',
+      ...Object.entries(b.steps).map(([k, x]) => `| ${k} | ${x.budget ?? '-'} | ${x.p50 ?? '-'} / ${x.p90 ?? '-'} | ${x.over ? `${x.over} of ${x.n}, worst +${x.worst_over}` : '-'} |`), '');
+  }
   const wrong = (r.voices || []).filter((v) => v.problems.length);
   if (wrong.length) lines.push('## Voices: NOT all on PAN\'s voice', '', ...wrong.flatMap((v) => v.problems.map((p) => `- ${v.device}: ${p}`)), '');
   else if ((r.voices || []).length) lines.push(`Voices: every device that started was on its set voice (${r.voices.length}).`, '');

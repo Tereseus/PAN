@@ -2158,6 +2158,21 @@ router.get('/brief', async (req, res) => {
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// When he last talked (any device, not a bench turn): the audio bench waits on this before every
+// line, so a bench never runs over his talk (the owner, Nov 28).
+router.get('/voice/last-turn', async (req, res) => {
+  let at = globalThis.__panLastVoiceAt || null;
+  if (!at) {   // nothing since this Craft started: the newest real turn in this month's timing file
+    try {
+      const { timingFile } = await import('../voice-timing.js');
+      const { readFileSync } = await import('fs');
+      for (const l of readFileSync(timingFile(), 'utf8').trim().split('\n').slice(-400)) {
+        try { const j = JSON.parse(l); if (!j.bench && j.at > (at || 0)) at = j.at; } catch {}
+      }
+    } catch {}
+  }
+  res.json({ ok: true, at, ago_ms: at ? Date.now() - at : null });
+});
 // One profile per device (Nov 28): ?device= reads or resets only that device's.
 router.get('/voice/profile', async (req, res) => {
   try { res.json((await import('../voice-id.js')).profileState(req.query.device || null)); } catch (e) { res.status(500).json({ error: e.message }); }
@@ -2286,11 +2301,20 @@ router.post('/query/stream', async (req, res) => {
   let voiceWearer;
   let voiceWho = null;
   let voicePrintNow = null;
-  if (audio && !bench && !person) {
+  // The audio bench (evals bench-audio.mjs, Nov 28): a bench turn with sound runs the hearing
+  // checks too (voice ID, ΠAN's own voice, the noise drop, own-tail), as the device bench_as would,
+  // and learns nothing. bench_voice_his true/false stands in for his voice (a bench voice is a
+  // synthetic one); the real score is still logged.
+  const audioBench = !!bench && req.body.bench_audio === true;
+  if (audio && (!bench || audioBench) && !person) {
     try {
       voice = await import('../voice-id.js');
       const print = voice.voicePrint(audio);
-      const who = voice.whoseVoice(print, realId);   // this device's own profile (Nov 28)
+      const who = voice.whoseVoice(print, audioBench && req.body.bench_as ? String(req.body.bench_as) : realId);   // this device's own profile (Nov 28)
+      if (audioBench && typeof req.body.bench_voice_his === 'boolean') {
+        console.log(`[voice-id] bench voice: real likeness ${who.likeness?.toFixed(2) ?? '-'}, standing in as ${req.body.bench_voice_his ? 'his' : 'someone else'}`);
+        who.verdict = req.body.bench_voice_his; who.likeness = req.body.bench_voice_his ? 0.9 : 0.1;
+      }
       voicePrintNow = print;   // a module namespace is not extensible: voice.print threw on every turn (Nov 14)
       voiceWearer = who.wearer;
       voiceWho = who;
@@ -2448,7 +2472,7 @@ router.post('/query/stream', async (req, res) => {
     if (own === '') {
       // Only PAN's own last words came back, heard while it was still talking: end quietly.
       // The device's echo pool learns what ΠAN sounds like through its speaker (Nov 28).
-      if (voice && voicePrintNow && !voiceTestDevice(realId)) { try { voice.learnEcho(voicePrintNow, realId); } catch {} }
+      if (voice && voicePrintNow && !bench && !voiceTestDevice(realId)) { try { voice.learnEcho(voicePrintNow, realId); } catch {} }
       console.log(`[own-tail] only PAN's own words, heard ${began} ms after it stopped: ${JSON.stringify(String(text).slice(0, 60))} -> nothing`);
       recordTiming({ turn: turnId, stage: 'own_echo', ms: Date.now() - turnStart, bench: !!bench || undefined });
       send({ type: 'done', result: { intent: 'ambient', response: '', reason: 'own_echo' } });
@@ -2619,7 +2643,7 @@ router.post('/query/stream', async (req, res) => {
           }
           // Not from a test bench device (setting voice_test_devices, default the OnePlus Pad):
           // its speaker tests taught his voice profile other voices (Nov 15).
-          if (voicePrintNow && !forget && !voiceTestDevice(realId)) {
+          if (voicePrintNow && !forget && !bench && !voiceTestDevice(realId)) {
             const r = event.result || {};
             try { voice.learnWearer(voicePrintNow, realId); } catch {}   // into this device's own pool (Nov 28)
           }

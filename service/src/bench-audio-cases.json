@@ -1,0 +1,219 @@
+{
+ "about": "The audio bench (bench-audio.mjs): made-up lines written by an open model (DeepSeek V4.1 Flash, Nov 28, no real data in the prompt), spoken on this computer by its own text to speech, plus synthetic road noise. Shared numbers come only from these.",
+ "cases": [
+  {
+   "id": "ask-1",
+   "kind": "ask",
+   "say": "What's the weather like in Fairhaven today?",
+   "voice": "his",
+   "expect": "answer"
+  },
+  {
+   "id": "ask-2",
+   "kind": "ask",
+   "say": "What time is it in Cedar Hollow?",
+   "voice": "his",
+   "expect": "answer"
+  },
+  {
+   "id": "ask-3",
+   "kind": "ask",
+   "say": "How many ounces are in a pound?",
+   "voice": "his",
+   "expect": "answer"
+  },
+  {
+   "id": "ask-4",
+   "kind": "ask",
+   "say": "What's the boiling point of water in Fahrenheit?",
+   "voice": "his",
+   "expect": "answer"
+  },
+  {
+   "id": "act-5",
+   "kind": "act",
+   "say": "Start navigation to Maple Street Books.",
+   "voice": "his",
+   "expect": "navigate"
+  },
+  {
+   "id": "act-6",
+   "kind": "act",
+   "say": "Set a timer for ten minutes.",
+   "voice": "his",
+   "expect": "answer"
+  },
+  {
+   "id": "act-7",
+   "kind": "act",
+   "say": "Play some jazz music.",
+   "voice": "his",
+   "expect": "answer"
+  },
+  {
+   "id": "act-8",
+   "kind": "act",
+   "say": "Call Dana.",
+   "voice": "his",
+   "expect": "answer"
+  },
+  {
+   "id": "talk-9",
+   "kind": "talk",
+   "say": "I'm heading home now.",
+   "voice": "his",
+   "expect": "any"
+  },
+  {
+   "id": "talk-10",
+   "kind": "talk",
+   "say": "You're pretty good at keeping me organized.",
+   "voice": "his",
+   "expect": "any"
+  },
+  {
+   "id": "talk-11",
+   "kind": "talk",
+   "say": "I had a long day today.",
+   "voice": "his",
+   "expect": "any"
+  },
+  {
+   "id": "talk-12",
+   "kind": "talk",
+   "say": "Thanks, that's all I needed.",
+   "voice": "his",
+   "expect": "any"
+  },
+  {
+   "id": "follow-13",
+   "kind": "follow",
+   "say": "And tomorrow?",
+   "voice": "his",
+   "expect": "answer",
+   "context": "User: What's the weather like in Fairhaven today?\nPAN: Sunny and mild, about eighteen degrees.",
+   "since_pan_ms": 3000
+  },
+  {
+   "id": "follow-14",
+   "kind": "follow",
+   "say": "How far is that?",
+   "voice": "his",
+   "expect": "answer",
+   "context": "User: Start navigation to Maple Street Books.\nPAN: Navigating to Maple Street Books.",
+   "since_pan_ms": 3000
+  },
+  {
+   "id": "follow-15",
+   "kind": "follow",
+   "say": "What about in Celsius?",
+   "voice": "his",
+   "expect": "answer",
+   "context": "User: What's the boiling point of water in Fahrenheit?\nPAN: Two hundred twelve degrees Fahrenheit.",
+   "since_pan_ms": 3000
+  },
+  {
+   "id": "follow-16",
+   "kind": "follow",
+   "say": "Is it supposed to rain then?",
+   "voice": "his",
+   "expect": "answer",
+   "context": "User: What's the weather like in Fairhaven today?\nPAN: Sunny and mild, about eighteen degrees.",
+   "since_pan_ms": 3000
+  },
+  {
+   "id": "long-17",
+   "kind": "long",
+   "say": "Um, can you set a timer for, like, twenty minutes and then remind me to check the oven before I forget about the bread?",
+   "voice": "his",
+   "expect": "answer"
+  },
+  {
+   "id": "long-18",
+   "kind": "long",
+   "say": "Hey, um, could you play that playlist I made for the drive, you know, the one with the soft songs, and turn the volume up a little?",
+   "voice": "his",
+   "expect": "answer"
+  },
+  {
+   "id": "long-19",
+   "kind": "long",
+   "say": "Um, I need directions to, like, the little hardware store on Pine Avenue, the one near the old bakery, and can you avoid the highway?",
+   "voice": "his",
+   "expect": "answer"
+  },
+  {
+   "id": "long-20",
+   "kind": "long",
+   "say": "Okay, um, send a message to Jamie that says I'm running late, and, like, ask if we can push dinner back to seven thirty instead.",
+   "voice": "his",
+   "expect": "answer"
+  },
+  {
+   "id": "other-21",
+   "kind": "other",
+   "say": "Can you pass me the water?",
+   "voice": "other",
+   "expect": "quiet",
+   "context": "Mira: We should leave soon.\nUser: Yeah, give me a minute."
+  },
+  {
+   "id": "other-22",
+   "kind": "other",
+   "say": "Did you lock the door?",
+   "voice": "other",
+   "expect": "quiet",
+   "context": "Mira: We should leave soon.\nUser: Yeah, give me a minute."
+  },
+  {
+   "id": "other-23",
+   "kind": "other",
+   "say": "I think it's your turn to pick dinner.",
+   "voice": "other",
+   "expect": "quiet",
+   "context": "Mira: We should leave soon.\nUser: Yeah, give me a minute."
+  },
+  {
+   "id": "other-24",
+   "kind": "other",
+   "say": "Are you ready to go?",
+   "voice": "other",
+   "expect": "quiet",
+   "context": "Mira: We should leave soon.\nUser: Yeah, give me a minute."
+  },
+  {
+   "id": "noise-1",
+   "kind": "noise",
+   "noise": "road",
+   "ms": 1800,
+   "phone": ".",
+   "voice": null,
+   "expect": "quiet"
+  },
+  {
+   "id": "noise-2",
+   "kind": "noise",
+   "noise": "road",
+   "ms": 2400,
+   "phone": "no",
+   "voice": null,
+   "expect": "quiet"
+  },
+  {
+   "id": "noise-3",
+   "kind": "noise",
+   "noise": "hum",
+   "ms": 1500,
+   "phone": "sister",
+   "voice": null,
+   "expect": "quiet"
+  },
+  {
+   "id": "named-1",
+   "kind": "ask",
+   "say": "Hey Pan, what time is it?",
+   "voice": "his",
+   "expect": "answer"
+  }
+ ]
+}
