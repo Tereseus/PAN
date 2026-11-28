@@ -126,6 +126,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
+        visible = true
         // ACTION_SCREEN_OFF is not sent to manifest-declared receivers, so it
         // has to be registered at runtime.
         registerReceiver(screenOffReceiver, android.content.IntentFilter(Intent.ACTION_SCREEN_OFF))
@@ -133,7 +134,14 @@ class MainActivity : ComponentActivity() {
 
     override fun onStop() {
         super.onStop()
+        visible = false
         try { unregisterReceiver(screenOffReceiver) } catch (_: IllegalArgumentException) {}
+    }
+
+    companion object {
+        /** True while ΠAN's own screen is on view: Android lets the service open another app only then
+         *  (or with "Display over other apps"), so navigation knows when it needs a notification instead. */
+        @Volatile var visible = false
     }
 
     private fun startPanService() {

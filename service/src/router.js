@@ -61,6 +61,7 @@ import { warmForLanguage, languageNamed, languageName } from './hub-asr.js';
 import { translateLocal, translatorUp, pairInstalled } from './translate-local.js';
 import { studentChain } from './llm.js';
 import { warmReader, keepReaderWarm } from './voice-reader.js';
+import { navigationTurn } from './navigate-ask.js';
 
 // The voice model stays warm while ΠAN runs (voice-reader.js keepReaderWarm, Nov 27).
 try { keepReaderWarm(); } catch {}
@@ -3483,6 +3484,18 @@ export async function* routeStream(text, context = {}) {
     yield { type: 'chunk', text: '' };
     yield { type: 'done', result: withProsody({ intent: 'ambient', response: '', addressed: 0.05, importance: 0.1, reason: 'other_voice' }) };
     return;
+  }
+  // "Take me to <place>": the app opens Google Maps navigation (navigate-ask.js, task 1106). No
+  // model: the place is read off the line. Not while interpreting (his line is for the other person).
+  if (!interpreting && context.voice_his !== false) {
+    const nav = navigationTurn(text, context);
+    if (nav) {
+      console.log(`[routeStream] navigate: ${JSON.stringify(nav.query || '')}${nav.reason ? ` (${nav.reason})` : ''}`);
+      insertRouterEvent(text, nav.intent, nav.response, context);
+      yield { type: 'chunk', text: nav.response };
+      yield { type: 'done', result: withProsody(nav) };
+      return;
+    }
   }
   // The program's shape rule (docs/INTUITION-STATE.md section 16), only with `situation_rules`
   // on (or 'bench' for bench turns only). Right after PAN answered, in a voice not known to be

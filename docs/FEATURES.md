@@ -3199,6 +3199,25 @@ the Nov 26 code.
   are you", the meaning of life, sums, translate...) skip the meaning check, so no embedding: 12 of the
   162 meaning checks on his real lines of Nov 17 to 28, none of them a project line.
 
+- **"Take me to <place>" starts navigation (task 1106, Nov 28; hub `navigate-ask.js` + `router.js`,
+  app 0.5.68 / 197).** In the car "Take me to <place>" and "Put a GPS to <place>" got "I can't do that"
+  four times: the voice model answered the line itself, and the app's stream reader dropped the done
+  event's actions anyway (`PanServerClient.kt` always set `actions = emptyList()`). Now a fast path in
+  `routeStream`, after the other-voice checks and before the shape rule, reads an order at the start of
+  a sentence ("take me to", "navigate to", "directions to", "drive me to", "put a GPS to", "take me
+  home", with "can you / please" before them) and answers "Navigating to <place>." with the action
+  `{target:'device', device_type:'phone', type:'navigate', args:{destination}}`. No model. Not on the
+  dashboard, not while interpreting, not when voice ID says it is someone else. An app older than
+  0.5.68 (from its own `Build: versionCode=` log line) is told the truth instead: "I can start
+  navigation once the ΠAN app on this device is updated to 0.5.68". On the app, `actionsOf` reads the
+  actions and `startNavigation` opens Google Maps navigation (any maps app through a geo: link when
+  Google Maps is missing). Android lets the service open another app only while ΠAN's own screen is
+  on view (`MainActivity.visible`) or with "Display over other apps"; otherwise a heads-up "Navigate
+  to <place>, tap to start the route" notification carries it. The self line says ΠAN can start
+  navigation. Parser: 0 of his 1,006 real November lines read as an order; unit test
+  `__tests__/navigate-ask.test.js` (15). Dev 7781: the four orders answered in under 2 s with the
+  action, "He took me to the market yesterday" stayed talk. Not tried on a device yet.
+
 - **No cold first line, and a fast backup (hub Craft 117, Nov 27; `voice-reader.js` keepReaderWarm,
   `llm.js` callReaderStream, `router.js`).** In the car the first line after a quiet spell waited 10.6 s
   on the voice model, past its 4 s limit, and the backup took 20 and 36 s. (1) Keep warm: every 2 min

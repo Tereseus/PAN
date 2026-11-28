@@ -109,6 +109,7 @@ class PanForegroundService : Service() {
         // queue as Slack but rendered as PLAIN notifications (no reply box).
         // Distinct channel + notif-id namespace so they never collide with Slack.
         const val ALERT_CHANNEL_ID = "pan_alerts"
+        const val NAV_NOTIF_ID = 47_106                  // "take me to <place>" when Android blocks opening Maps
         const val ALERT_NOTIF_BASE = 3000                // notification-id namespace for alerts
         const val CALL_CHANNEL_ID = "pan_calls"          // someone on this ΠAN is calling, ΠAN muted: rings
         const val CALL_QUIET_CHANNEL_ID = "pan_calls_quiet"   // the same, ΠAN listening: it says who, the phone vibrates
@@ -317,6 +318,41 @@ class PanForegroundService : Service() {
     private fun getPanDeviceId(): String =
         android.os.Build.MODEL.lowercase().replace(" ", "-")
 
+    /**
+     * Google Maps navigation to [dest] (the hub's navigate action, "take me to <place>", task 1106).
+     * Android lets a service open another app only while ΠAN's own screen is on view or with
+     * "Display over other apps"; otherwise the start is blocked without an error, so a heads-up
+     * notification carries the same navigation for one tap. Any maps app is used when Google Maps
+     * is missing (geo: link).
+     */
+    private fun startNavigation(dest: String) {
+        val maps = "com.google.android.apps.maps"
+        val hasMaps = try { packageManager.getPackageInfo(maps, 0); true } catch (_: Exception) { false }
+        val nav = if (hasMaps) Intent(Intent.ACTION_VIEW, Uri.parse("google.navigation:q=${Uri.encode(dest)}")).setPackage(maps)
+            else Intent(Intent.ACTION_VIEW, Uri.parse("geo:0,0?q=${Uri.encode(dest)}"))
+        nav.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        if (nav.resolveActivity(packageManager) == null) { panLog("Navigation: no maps app for '$dest'"); return }
+        val mayOpen = MainActivity.visible || android.provider.Settings.canDrawOverlays(this)
+        try { startActivity(nav) } catch (e: Exception) { panLog("Navigation start failed: ${e.message}") }
+        panLog("Navigation to '$dest' (${if (hasMaps) "Google Maps" else "maps app"}, ${if (mayOpen) "opened" else "notification"})")
+        if (mayOpen) return
+        try {
+            ensureAlertChannel()
+            val pending = PendingIntent.getActivity(this, NAV_NOTIF_ID, nav,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+            val n = NotificationCompat.Builder(this, ALERT_CHANNEL_ID)
+                .setContentTitle("Navigate to $dest")
+                .setContentText("Tap to start the route")
+                .setSmallIcon(android.R.drawable.ic_dialog_map)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setCategory(NotificationCompat.CATEGORY_NAVIGATION)
+                .setAutoCancel(true)
+                .setContentIntent(pending)
+                .build()
+            notificationManager?.notify(NAV_NOTIF_ID, n)
+        } catch (e: Exception) { panLog("Navigation notification failed: ${e.message}") }
+    }
+
     /** Dispatch actions from server response — handles new actions[] and backward-compat route field */
     private fun dispatchActions(actions: List<Action>?, route: String?, query: String?, text: String) {
         val deviceId = getPanDeviceId()
@@ -337,14 +373,7 @@ class PanForegroundService : Service() {
                 }
                 "navigate" -> {
                     val dest = action.args?.get("destination") ?: query ?: text
-                    try {
-                        val navIntent = Intent(Intent.ACTION_VIEW,
-                            Uri.parse("google.navigation:q=${Uri.encode(dest)}"))
-                        navIntent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                        startActivity(navIntent)
-                    } catch (e: Exception) {
-                        panLog("Navigation failed: ${e.message}")
-                    }
+                    startNavigation(dest)
                 }
                 "show_notification" -> {
                     // Future: show system notification with action.args["title"] / action.args["body"]

@@ -563,7 +563,9 @@ class PanServerClient @Inject constructor(
                                     intent = result.optString("intent", "query"),
                                     route = result.optString("intent", null),
                                     query = result.optString("query", null),
-                                    actions = emptyList(),
+                                    // What the hub wants this device to do with the reply (the navigate
+                                    // action for "take me to <place>", hub of Nov 28 on). Before 0.5.68 they were always dropped.
+                                    actions = actionsOf(result),
                                     addressed = if (result.has("addressed") && !result.isNull("addressed")) result.optDouble("addressed") else null,
                                     hold_ms = result.optLong("hold_ms", 0L),
                                     camera = result.optBoolean("camera", false),
@@ -588,6 +590,23 @@ class PanServerClient @Inject constructor(
         } catch (e: Exception) {
             Log.e(TAG, "Stream failed: ${e.message}")
             null
+        }
+    }
+
+    /** The done event's actions array as [Action]s; empty when there is none or it is broken. */
+    private fun actionsOf(result: JSONObject): List<Action> {
+        val arr = result.optJSONArray("actions") ?: return emptyList()
+        return (0 until arr.length()).mapNotNull { i ->
+            val o = arr.optJSONObject(i) ?: return@mapNotNull null
+            val type = o.optString("type", "").ifBlank { return@mapNotNull null }
+            val args = o.optJSONObject("args")?.let { a -> a.keys().asSequence().associateWith { k -> a.optString(k) } }
+            Action(
+                target = o.optString("target", "device"),
+                device_id = o.optString("device_id", "").ifBlank { null },
+                device_type = o.optString("device_type", "").ifBlank { null },
+                type = type,
+                args = args,
+            )
         }
     }
 }

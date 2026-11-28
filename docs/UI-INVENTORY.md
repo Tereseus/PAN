@@ -213,6 +213,7 @@ Accessories screen in Hub; those live in Settings.
 | 8 | Slack message with Reply (voice or text) | Slack through the hub; reply goes back | service/PanForegroundService.kt:1286 to 1330 | Everyone, when the hub forwards Slack | yes | **developer**: the owner's Slack bridge, strangers have none |
 | 9 | Call ring: "X wants to talk" with Not now / Answer | A call from someone on this ΠAN | service/PanForegroundService.kt:1375 to 1410 | Everyone | yes | **regular**: calls must ring |
 | 10 | Alert notifications (meetings, messages set to show only, a thread's late answer) | Shown; a tap opens the app | service/PanForegroundService.kt:1415 to 1442 | Everyone | yes | **regular**: but thread answers are developer things |
+| 10b | "Navigate to <place>" with "Tap to start the route" (alerts channel), app 0.5.68 | Opens Google Maps navigation; shown only when Android blocks ΠAN from opening Maps itself (its screen not on view, no "Display over other apps") | service/PanForegroundService.kt startNavigation | Everyone | yes | **regular**: the car needs it |
 | 11 | Notification channels in Android settings: ΠAN, Slack, Calls, Calls (ΠAN says who), alerts | Lets Android mute each kind | service/PanForegroundService.kt:1120, :1271, :1383, :3648 | Everyone | yes | **regular**: but drop Slack for strangers |
 
 ## Hub web pages
