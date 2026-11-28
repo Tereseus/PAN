@@ -3102,6 +3102,20 @@ the Nov 26 code.
   `service/src/bench-reference.json` holds the made-up twin of the project bench per picker id, and
   `benchLine(id)` makes "Our test: 19 of 20 project questions right, about 6.5 s an answer." The app
   shows it under the note. No number for a choice we have not run (local Ollama models).
+  **Test it on this computer** (app 0.5.67 / 196, hub Craft not yet swapped, Nov 28; task 1098 step 3;
+  `service/src/smart-model-test.js`, `routes/smart-model.js`, `ui/settings/SmartModel.kt`): a button under
+  each choice runs the standard made-up twin project bench (the same 20 questions as our reference)
+  on this hub with that choice. `POST /api/v1/setup/smart-model/test {id}` starts it in the background
+  (409 while one runs; only ids the picker offers), `GET .../test` gives done / of / right / waiting /
+  finished, and the choices answer carries `test` too. It waits while the owner talks (5 min after his
+  last voice turn, like the nightly bench). Only the twin goes to the model. The result stays in the
+  data dir (`bench-own.json`: right, of, median whole answer, first word when it streamed, date,
+  processor, threads and memory) and comes back on each choice as `own`: "Your test: 19 of 20 right,
+  about 3 s an answer, Nov 28.", with `test_min` (minutes, from our reference time). The app shows
+  "Testing, about N minutes (n of 20 done)" while it runs and asks the hub every 10 s. Nothing is sent
+  anywhere (Reports with a yes is the next step). The twin file is `bench-twin.json` beside the code
+  when ΠAN ships one, else in the data dir; today it is only in the hub's data dir, not in the repo.
+  Dev hub: 19 of 20 with Claude Sonnet, about 3 s an answer. Tests: `__tests__/smart-model-test.test.js`.
 
 - **Memory's drop down: Memory, Data dividend, Reports (app 0.5.63 / versionCode 192, hub Craft 110,
   Nov 27; tasks 1092, 1093, 1095).** The Memory title is a drop down once Memory is open (same lock;

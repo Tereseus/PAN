@@ -8,6 +8,7 @@
 import { readFileSync } from 'fs';
 import { get, run, getOllamaUrl } from './db.js';
 import { terminalsHere } from './cli-models.js';
+import { ownLine, testMinutes } from './smart-model-test.js';
 
 export const DEFAULT_SMART_MODEL = 'anthropic:claude-sonnet-5-5';
 
@@ -67,7 +68,12 @@ export async function smartModelChoices() {
     }
   }
   out.push(...await localModels());
-  for (const c of out) { const b = benchLine(c.id); if (b) c.bench = b; }
+  for (const c of out) {
+    const b = benchLine(c.id); if (b) c.bench = b;
+    // The person's own test of this choice on this hub (smart-model-test.js), and how long one takes.
+    const own = ownLine(c.id); if (own) c.own = own;
+    c.test_min = testMinutes(c.id, reference());
+  }
   return out;
 }
 
