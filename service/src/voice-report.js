@@ -21,7 +21,9 @@ import { checkSteps, readSteps, busyCheck, reportLines } from './step-budget.js'
 import { noteFault } from './fault-reports.js';
 
 const DIR = join(getDataDir(), 'voice-reports');
-const JUDGE_MODELS = ['gemini:gemini-3.5-flash-lite', 'gemini:gemini-3.1-flash-lite', 'ollama:gemma4:e4b'];
+// Local models only: the judge reads his real lines and ΠAN's replies, and his real data never goes
+// to an outside API (the owner's rule). Gemini was first in this list until Nov 28.
+const JUDGE_MODELS = ['ollama:gemma4:e4b'];
 const MAX_JUDGED = 160;
 
 const pad = (n) => String(n).padStart(2, '0');
