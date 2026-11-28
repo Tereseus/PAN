@@ -2328,12 +2328,17 @@ router.post('/query/stream', async (req, res) => {
   if (voice && voicePrintNow) {
     const self = voice.panVoiceLikeness(voicePrintNow);
     // A line that names PAN is his: PAN does not say its own name.
-    const drop = !!self && self.likeness >= voice.PAN_SELF && voiceWho?.verdict !== true && !/\b(pan|pam|pann)\b/i.test(String(phoneText)) && !callsOwnName(phoneText, req.body?.pan_name) && voice.panSelfGateOn();
+    const namedPan = /\b(pan|pam|pann)\b/i.test(String(phoneText)) || callsOwnName(phoneText, req.body?.pan_name);
+    const drop = !!self && self.likeness >= voice.PAN_SELF && voiceWho?.verdict !== true && !namedPan && voice.panSelfGateOn();
+    // ΠAN's echo as this device's own speaker plays it (voice-id.js learnEcho, Nov 28): the clean
+    // prints above never matched it through the car's speaker. Off until pan_echo_gate = on.
+    const echo = voice.echoLikeness(voicePrintNow, realId);
+    const echoDrop = !drop && !!echo && voice.soundsLikeEcho({ echo, his: voiceWho?.likeness, named: namedPan }) && voice.panEchoGateOn();
     // One line per turn: separate lines went missing from carrier.log (Nov 15).
-    if (self) console.log(`[voice-id] self ${self.likeness.toFixed(2)} his ${voiceWho?.likeness?.toFixed(2) ?? '-'} -> ${drop ? 'DROPPED, PAN heard itself' : 'kept'}: ${JSON.stringify(String(phoneText).slice(0, 60))}`);
-    if (drop) {
-      recordTiming({ turn: turnId, stage: 'pan_own_voice', ms: Date.now() - turnStart });
-      send({ type: 'done', result: { intent: 'ambient', response: '', reason: 'pan_own_voice' } });
+    if (self) console.log(`[voice-id] self ${self.likeness.toFixed(2)} echo ${echo ? `${echo.likeness.toFixed(2)} (${echo.echoes})` : '-'} his ${voiceWho?.likeness?.toFixed(2) ?? '-'} -> ${drop ? 'DROPPED, PAN heard itself' : echoDrop ? "DROPPED, ΠAN's echo on this device" : 'kept'}: ${JSON.stringify(String(phoneText).slice(0, 60))}`);
+    if (drop || echoDrop) {
+      recordTiming({ turn: turnId, stage: drop ? 'pan_own_voice' : 'pan_echo', ms: Date.now() - turnStart });
+      send({ type: 'done', result: { intent: 'ambient', response: '', reason: drop ? 'pan_own_voice' : 'pan_echo' } });
       clearInterval(keepaliveInterval);
       slot.release();
       if (!res.writableEnded) res.end();
@@ -2375,6 +2380,17 @@ router.post('/query/stream', async (req, res) => {
     }
   }
 
+  // A short line dropped as noise below never reaches own-tail; when own-tail would have called it
+  // only ΠAN's own words, the device's echo pool still learns it (Nov 28).
+  const learnEchoIfOwnTail = () => {
+    if (!voice || !voicePrintNow || bench || voiceTestDevice(realId)) return;
+    try {
+      const sincePan = Number(req.body.since_pan_ms);
+      const audioMs = audio ? Math.round(Buffer.byteLength(String(audio), 'base64') / 32) : null;
+      const began = Number.isFinite(sincePan) && audioMs !== null ? sincePan - audioMs : undefined;
+      if (dropOwnTail(streamKey, text, { began_ms: began }) === '') voice.learnEcho(voicePrintNow, realId);
+    } catch {}
+  };
   // Noise and ΠAN's own echo written up as words (voice-id.js shortNoise, Nov 28, task 1104). In the
   // car the phone heard nearly nothing ("…" or one word), the hub wrote a whole sentence from it and
   // ΠAN answered it. Dropped here, after the hub's words, so a call by name that only the hub heard
@@ -2384,6 +2400,7 @@ router.post('/query/stream', async (req, res) => {
   if (voice && voiceWho && !interp) {
     const named = /\b(pan|pam|pann)\b/i.test(`${phoneText} ${text}`) || callsOwnName(phoneText, req.body?.pan_name) || callsOwnName(text, req.body?.pan_name);
     if (voice.shortNoise({ phoneText, likeness: voiceWho.likeness, named }) && voice.shortNoiseGateOn()) {
+      learnEchoIfOwnTail();
       console.log(`[voice-id] short and not sure it is him (his ${voiceWho.likeness.toFixed(2)}, ${voice.wordsIn(phoneText)} words from the phone) -> DROPPED as noise: ${JSON.stringify(String(phoneText).slice(0, 40))} -> ${JSON.stringify(String(text).slice(0, 60))}`);
       recordTiming({ turn: turnId, stage: 'short_noise', ms: Date.now() - turnStart });
       send({ type: 'done', result: { intent: 'ambient', response: '', reason: 'short_noise' } });
@@ -2430,6 +2447,8 @@ router.post('/query/stream', async (req, res) => {
     const own = dropOwnTail(tailKey, text, { began_ms: began });
     if (own === '') {
       // Only PAN's own last words came back, heard while it was still talking: end quietly.
+      // The device's echo pool learns what ΠAN sounds like through its speaker (Nov 28).
+      if (voice && voicePrintNow && !voiceTestDevice(realId)) { try { voice.learnEcho(voicePrintNow, realId); } catch {} }
       console.log(`[own-tail] only PAN's own words, heard ${began} ms after it stopped: ${JSON.stringify(String(text).slice(0, 60))} -> nothing`);
       recordTiming({ turn: turnId, stage: 'own_echo', ms: Date.now() - turnStart, bench: !!bench || undefined });
       send({ type: 'done', result: { intent: 'ambient', response: '', reason: 'own_echo' } });

@@ -102,6 +102,7 @@ function loadProfiles() {
       changed = true;
     }
   }
+  if (!profiles.echo || typeof profiles.echo !== 'object') profiles.echo = {};
   for (const [d, p] of Object.entries(profiles.devices)) {   // drop PAN's own voice from every pool (Nov 15)
     if (!Array.isArray(p?.pool)) { delete profiles.devices[d]; changed = true; continue; }
     const n = p.pool.length;
@@ -210,6 +211,69 @@ export function shortNoiseGateOn() {
   catch { return true; }
 }
 
+// ΠAN's own voice as each device's speaker plays it back (Nov 28). Through the car's speaker its
+// echo scored only 0.19 to 0.32 against ΠAN's clean voice prints, the same range as his own lines
+// there (up to 0.31), so the clean check (PAN_SELF) never caught it. Each device learns its own echo
+// instead, from the lines own-tail already knows were only ΠAN's own words coming back. No turn
+// audio or prints were kept before this, so there was nothing labelled to tune the drop on: the
+// learning ships with the drop off (setting pan_echo_gate = on turns it on) and every turn logs its
+// echo score, so the line can be set from the car's real numbers.
+export const ECHO_SAME = Number(process.env.PAN_ECHO_SAME || 0.6);
+const ECHO_POOL_MAX = Number(process.env.PAN_ECHO_POOL || 40);   // env: tests only
+const ECHO_MIN = Number(process.env.PAN_ECHO_MIN || 5);          // echoes before a device's echo print counts
+
+function echoCentre(pool) {
+  if (pool.length < ECHO_MIN) return null;
+  const c = new Array(pool[0].length).fill(0);
+  for (const x of pool) for (let i = 0; i < c.length; i++) c[i] += x[i];
+  return unit(c);
+}
+
+/** How much a print sounds like ΠAN's echo on this device: { likeness, echoes }, or null while the
+ *  device has fewer than ECHO_MIN echoes. */
+export function echoLikeness(print, device = null) {
+  if (!print) return null;
+  const e = loadProfiles().echo[deviceKey(device)];
+  if (!e?.centre) return null;
+  return { likeness: dot(print, e.centre), echoes: e.pool.length };
+}
+
+/** A line own-tail found was only ΠAN's own words: this device's echo pool learns it, and his pool
+ *  on the device loses any line that sounds like that echo. */
+export function learnEcho(print, device = null) {
+  if (!print) return;
+  const key = deviceKey(device);
+  const all = loadProfiles();
+  const e = all.echo[key] || (all.echo[key] = { pool: [], centre: null, added: 0, last: 0 });
+  e.pool.push(Array.from(print, (x) => Math.round(x * 1e4) / 1e4));
+  if (e.pool.length > ECHO_POOL_MAX) e.pool.splice(0, e.pool.length - ECHO_POOL_MAX);
+  e.added = (e.added || 0) + 1;
+  e.last = Date.now();
+  const had = !!e.centre;
+  e.centre = echoCentre(e.pool);
+  if (!had && e.centre) console.log(`[voice-id] learned ΠAN's echo on ${key} from ${e.pool.length} lines`);
+  const p = all.devices[key];
+  if (e.centre && p?.pool?.length) {
+    const n = p.pool.length;
+    p.pool = p.pool.filter((x) => dot(unit(x), e.centre) < ECHO_SAME);
+    if (p.pool.length < n) { console.log(`[voice-id] dropped ${n - p.pool.length} lines that sound like ΠAN's echo from ${key}`); regroup(p); }
+  }
+  save();
+}
+
+/** On with setting pan_echo_gate = on. Off until the car's logged echo scores set the line. */
+export function panEchoGateOn() {
+  try { return String(get("SELECT value FROM settings WHERE key = 'pan_echo_gate'")?.value || 'off').replace(/^"|"$/g, '').trim().toLowerCase() === 'on'; }
+  catch { return false; }
+}
+
+/** The echo drop: close to this device's echo, closer to it than to him, not clearly him, not named. */
+export function soundsLikeEcho({ echo, his, named = false } = {}) {
+  if (named || !echo || !Number.isFinite(echo.likeness)) return false;
+  if (Number.isFinite(his) && his >= SAME) return false;
+  return echo.likeness >= ECHO_SAME && echo.likeness > (Number.isFinite(his) ? his : -1);
+}
+
 export function gateMode() {
   try { return String(get("SELECT value FROM settings WHERE key = 'voice_id_gate'")?.value || 'observe').replace(/^"|"$/g, '').trim().toLowerCase(); }
   catch { return 'observe'; }
@@ -265,6 +329,8 @@ export function learnWearer(print, device = null) {
   if (!print) return;
   // PAN's own voice must never become his: one of his 200 pool turns scored 0.54 against it (Nov 15).
   if ((panVoiceLikeness(print)?.likeness ?? 0) >= PAN_SELF) return;
+  // Nor ΠAN's echo through this device's speaker (Nov 28).
+  if ((echoLikeness(print, device)?.likeness ?? 0) >= ECHO_SAME) return;
   const key = deviceKey(device);
   if (key === UNLABELLED) return;
   const all = loadProfiles().devices;
@@ -297,6 +363,7 @@ function save() {
 export function resetProfile(device = null) {
   if (device != null && String(device).trim()) {
     delete loadProfiles().devices[deviceKey(device)];
+    delete loadProfiles().echo[deviceKey(device)];
     save();
     return;
   }
@@ -313,5 +380,7 @@ export function profileState(device = null) {
     his_group: one ? one.his_group : Math.max(0, ...devices.map((x) => x.his_group)),
     ready: one ? one.ready : devices.some((x) => x.ready),
     devices, gate: gateMode(), same: SAME, other: OTHER,
+    echo: Object.entries(loadProfiles().echo).map(([d, e]) => ({ device: d, lines: e.pool.length, ready: !!e.centre })),
+    echo_gate: panEchoGateOn() ? 'on' : 'off', echo_same: ECHO_SAME,
     needs: `${MIN_GROUP} turns and ${Math.round(MIN_SHARE * 100)}% of that device's pool; until then the best of his other devices` };
 }

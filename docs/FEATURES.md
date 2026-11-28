@@ -2111,6 +2111,21 @@ children can have adult-sounding voices and vice versa).
   24 to 28: 24 of 27 noise or echo lines caught (9 of the 10 ΠAN answered), 1 real line lost (one
   word on the Pixel); his real short car lines scored 0.62 and up. Dropped lines are never learned.
   Tests: `node service/src/__tests__/voice-id-devices.test.js` (13).
+- **ΠAN's echo learned per device (hub, Nov 28, staged; `voice-id.js` learnEcho / echoLikeness /
+  soundsLikeEcho, `routes/api.js` /query/stream).** Through the car's speaker ΠAN's echo scored
+  only 0.19 to 0.32 against its clean voice prints, the same range as his own car lines (up to
+  0.31), so the clean check (`PAN_SELF`) never caught it. Each device now keeps its own echo pool
+  (last 40) and echo print (their mean, from 5 echoes), learned only from lines own-tail found
+  were nothing but ΠAN's own last words (also when the short noise drop ends such a line first).
+  His pool on the device never learns a line at or over `ECHO_SAME` (0.6) against that echo, and
+  lines already in it that sound like the echo are taken out when the echo print forms. The drop:
+  a line at or over 0.6 against the device's echo, closer to the echo than to him, not clearly his
+  (under 0.5) and not naming ΠAN ends as ambient, reason `pan_echo`. It is OFF by default
+  (setting `pan_echo_gate` = on): no turn audio or prints were ever kept, so there was nothing
+  labelled to tune it on. Every turn's `[voice-id] self ... echo <score> (<echoes>) his ...` line
+  logs the echo score from now on, to set the line from the car's own numbers. Voice profile
+  state lists `echo` per device and `echo_gate`. Env `PAN_ECHO_SAME`, `PAN_ECHO_POOL`,
+  `PAN_ECHO_MIN` (tests). Tests: `node service/src/__tests__/voice-id-echo.test.js` (10).
 - **The brief** (2026-11-23, `intuition/brief.js`, docs/INTUITION-STATE.md section 11.2): the
   situation line plus his threads (newest ask to each in 3 hours, its answer or none yet), the
   things in play (shelf notes with state and next) and the talk's summary. Thread times read
