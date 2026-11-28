@@ -2974,6 +2974,11 @@ the Nov 26 code.
   minutes (`OTHER_VOICE_MS`, set by `heardOther` on every turn with `voice_his: false`). Why: a
   plain question about his own day got silence while he was alone. Tests:
   `__tests__/alone.test.js`.
+  Also asked again in a talk with ΠAN (Nov 28, task 1103, hub Craft 120): ΠAN spoke within the talk
+  window, nobody else is in the talk and voice ID did not say it was someone else (`voice_his !== false`;
+  `inTalkWithPan` in router.js). Why: voice ID was unsure on every Pixel line, so the alone check never held
+  and plain follow-up questions went silent. Replay of his 57 real lines: quiet 8 to 6 (the 4 world
+  path silences answered); addressed bench unchanged at 0.98, others after ΠAN spoke still 1.00 quiet.
 
 - **Voice model answers only short talk, off (`service/src/reader-alone.js`; router.js `readerAloneOn` 331, used at 4272; Nov 21, commit b2242285).**
   With setting `voice_reader_alone` = `all` or `bench`, the voice model keeps only lines of 6

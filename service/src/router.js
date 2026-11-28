@@ -4773,7 +4773,14 @@ answer an earlier question, and do not narrate what the context blocks mention.`
         // no other person to answer it (alone.js). A plain question about his own day got silence
         // while he was alone with PAN (Nov 21).
         const aloneNow = !named && alone.aloneWithPan(context, part);
-        if ((!said || said.startsWith('[')) && (named || aloneNow)) {
+        // Also in a talk with PAN: PAN spoke moments ago, nobody else is in the talk and voice ID did
+        // not say it was someone else. Voice ID is unsure on every Pixel line since the car took the
+        // profile (Nov 21), so aloneNow never held there and a plain question in the middle of a
+        // talk went silent (a follow-up question about what the camera saw, replay Nov 28, task 1103). The
+        // re-ask below may still answer [AMBIENT].
+        const inTalkWithPan = !named && !aloneNow && talking && part?.place === 'partner' && (part?.others ?? 1) === 0 && context.voice_his !== false;
+        if (inTalkWithPan) console.log('[routeStream] override in a talk with PAN: asking again');
+        if ((!said || said.startsWith('[')) && (named || aloneNow || inTalkWithPan)) {
           if (context.canCamera && looksVisual(text)) {
             console.log(`[routeStream] override -> camera: ${JSON.stringify(String(text).slice(0, 60))}`);
             yield { type: 'done', result: withProsody({ intent: 'query', addressed: 0.95, camera: true, response: '', importance: 0.5 }) };
@@ -4787,7 +4794,7 @@ answer an earlier question, and do not narrate what the context blocks mention.`
           ].filter(Boolean).join('\n\n');
           let again = '';
           // Not named: the model may still decide it was not for PAN ([AMBIENT]).
-          for await (const c of bigAsk(aloneNow ? directPrompt.replace('He said your name, so he is talking to you: answer him briefly, the way you would say it out loud.', 'Answer from his words alone, in one or two short spoken sentences. If he was not talking to you, reply {"intent":"ambient","addressed":0.1,"response":"[AMBIENT]"}.') : directPrompt, aloneNow ? 'WORDS_ALONE' : 'NAMED')) again += c;
+          for await (const c of bigAsk((aloneNow || inTalkWithPan) ? directPrompt.replace('He said your name, so he is talking to you: answer him briefly, the way you would say it out loud.', 'Answer from his words alone, in one or two short spoken sentences. If he was not talking to you, reply {"intent":"ambient","addressed":0.1,"response":"[AMBIENT]"}.') : directPrompt, (aloneNow || inTalkWithPan) ? 'WORDS_ALONE' : 'NAMED')) again += c;
           const r = (again.match(/"response"\s*:\s*"((?:[^"\\]|\\.)*)"/)?.[1] || '').replace(/\\"/g, '"').trim();
           console.log(`[routeStream] override re-asked the cloud model: ${JSON.stringify(r.slice(0, 80))}`);
           if (r && !r.startsWith('[')) parsed.response = r;
