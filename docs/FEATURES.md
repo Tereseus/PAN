@@ -3150,6 +3150,17 @@ the Nov 26 code.
   Craft 114 (Nov 27): the writer also gets the notes as they stand (`oldForWriter`, no questions, 40k
   chars at most) and keeps every detail still true, so a detail once written is not lost when its
   lines fall out of the window. Live bench after: 19 of 20, median 3.0 s, max 4.5 s.
+  Craft 119 (Nov 28; `service/src/project-focus.js`, pure, used by projects.js and the bench): the
+  answer reads only the project the line is about. A name belongs to the project with it in its name,
+  else in its `words`, else the one that says it at least twice as often as any other; a topic or a
+  meaning match gives its project. Every other project the line names by a topic or a long word of its
+  name is added, and when more than one project is left, or two are within 0.03 in meaning, the answer
+  gets all the notes as before. The two waiting lists come along when the line is about waiting (wait,
+  owe, supposed to, reply, holding...) or the name is in them. Prompt about 43,700 chars down to 4,100
+  to 11,400; the log line gives the scope and size. Live bench 20 of 20 (median 3.27 s to 3.10 s, Haiku 3.27 s to 2.84 s);
+  the made-up twin 14 of 20 either way. Lines plainly about everyday things (weather, the time, "how
+  are you", the meaning of life, sums, translate...) skip the meaning check, so no embedding: 12 of the
+  162 meaning checks on his real lines of Nov 17 to 28, none of them a project line.
 
 - **No cold first line, and a fast backup (hub Craft 117, Nov 27; `voice-reader.js` keepReaderWarm,
   `llm.js` callReaderStream, `router.js`).** In the car the first line after a quiet spell waited 10.6 s

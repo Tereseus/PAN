@@ -4390,7 +4390,7 @@ answer an earlier question, and do not narrate what the context blocks mention.`
           chain: [...new Set([projectAnswerModel(), smartModel()])] }); } catch (e) { console.warn(`[routeStream] project answer failed: ${e.message}`); }
         const said = projectReply(raw);
         mark('projects_answer');
-        console.log(`[routeStream] project question (${proj.why}) - ${projectAnswerModel()} ${said ? 'answered' : 'says not a project one'} in ${Date.now() - t0} ms`);
+        console.log(`[routeStream] project question (${proj.why}, ${proj.scope || 'all'} ${proj.ask.length} chars) - ${projectAnswerModel()} ${said ? 'answered' : 'says not a project one'} in ${Date.now() - t0} ms`);
         if (said) { notePath('project'); yield JSON.stringify({ intent: 'query', addressed: 0.9, response: said }); return; }
       }
     }
