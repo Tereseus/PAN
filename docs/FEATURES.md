@@ -3136,8 +3136,18 @@ the Nov 26 code.
   processor, threads and memory) and comes back on each choice as `own`: "Your test: 19 of 20 right,
   about 3 s an answer, Nov 28.", with `test_min` (minutes, from our reference time). The app shows
   "Testing, about N minutes (n of 20 done)" while it runs and asks the hub every 10 s. Nothing is sent
-  anywhere (Reports with a yes is the next step). The twin file is `bench-twin.json` beside the code
-  when ΠAN ships one, else in the data dir; today it is only in the hub's data dir, not in the repo.
+  anywhere (Reports with a yes is the next step). The bench file is `service/src/bench-twin.json`,
+  shipped with ΠAN (Nov 28, the owner: "make up some generic projects"): nine made-up projects of a
+  made-up person (a kitchen renovation, a car repair, a side business supply order, a family train
+  trip, a school trip form, a health appointment, a garden bench build, a teapot return, a basement
+  water damage claim) plus who is waiting on whom, and 20 questions (single facts, lists, two facts
+  joined, rules, and two the notes do not answer). Written by an open model (DeepSeek V4.1 Flash on
+  OpenRouter) from a prompt with no real data; the earlier twin of the owner's own notes with names
+  swapped never ships. A `bench-twin.json` in the data dir is read only when the shipped one is
+  missing. `evals/projects/twin_run.mjs` runs the same file (TWIN_OLD=1 for the old twin). The
+  reference numbers were run again on it (`bench-reference.json`, as of Nov 28): Claude Sonnet 20 of
+  20 about 5.4 s, Codex 18 of 20 about 4.6 s, Antigravity 20 of 20 about 12.4 s, Antigravity with
+  Gemini 4 Hydrogen low 20 of 20 about 5.6 s (whole answer, on the G16, one model at a time).
   Dev hub: 19 of 20 with Claude Sonnet, about 3 s an answer. Tests: `__tests__/smart-model-test.test.js`.
 
 - **Memory's drop down: Memory, Data dividend, Reports (app 0.5.63 / versionCode 192, hub Craft 110,

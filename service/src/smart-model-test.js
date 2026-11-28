@@ -8,7 +8,9 @@
 // One test at a time, in the background. It stands aside while the owner is talking, the same
 // rule as the nightly bench (benchmark.js): it waits until 5 min after his last real voice turn.
 //
-// The twin bench file: bench-twin.json next to this file when ΠAN ships one, else in the data dir.
+// The bench file: bench-twin.json next to this file, shipped with ΠAN (Nov 28): made-up projects of a
+// made-up person, written by an open model with no real data in its prompt, so it can go to anyone.
+// A bench-twin.json in the data dir is only read when the shipped one is missing.
 
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';

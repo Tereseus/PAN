@@ -1,31 +1,31 @@
 {
-  "as_of": "2026-11-27",
-  "bench": "project questions on the made-up twin (service/src/evals/projects/twin.mjs), 20 questions, whole answer timed",
+  "as_of": "2026-11-28",
+  "bench": "the standard project bench (service/src/bench-twin.json): made-up projects of a made-up person written by an open model, 20 questions, whole answer timed",
   "bench_short": "project questions",
   "models": {
     "anthropic:claude-sonnet-5-5": {
-      "right": 19,
+      "right": 20,
       "of": 20,
       "first_s": null,
-      "whole_s": 6.5
+      "whole_s": 5.4
     },
     "cli:codex": {
-      "right": 16,
+      "right": 18,
       "of": 20,
       "first_s": null,
-      "whole_s": 4.4
+      "whole_s": 4.6
     },
     "cli:agy": {
-      "right": 19,
+      "right": 20,
       "of": 20,
       "first_s": null,
-      "whole_s": 13.7
+      "whole_s": 12.4
     },
     "cli:agy:gemini-4-hydrogen-low": {
-      "right": 19,
+      "right": 20,
       "of": 20,
       "first_s": null,
-      "whole_s": 6.1
+      "whole_s": 5.6
     }
   }
 }

@@ -1,0 +1,494 @@
+{
+ "about": "The standard project bench: made-up notes of a made-up person (written by an open model, DeepSeek V4.1 Flash, from a prompt with no real data, Nov 28 2026), 20 questions with the one right answer and loose regexes. The same for everyone, so numbers compare across people and models (task 1098).",
+ "as_of": "2026-11-28",
+ "today": "Wednesday, March 11, 2026",
+ "notes": {
+  "waiting_on_owner": [
+   "Marco Delgado at Mapleford Home Renovations is waiting for you to choose the kitchen grout colour (asked March 6; needed by March 13).",
+   "Ms. Elara Finch at Mapleford Primary School is waiting for Maya's signed Spring Trip Permission Form and $45 fee (sent home March 4; due March 20).",
+   "Tessa Rowan at Mapleford Mutual Insurance is waiting for the missing claim documents (requested March 5; due March 18).",
+   "Sam Reed is waiting for his clamps back (lent March 1; asked for them by March 14).",
+   "Northline Craft Supply is waiting for payment of invoice NC-2291 (invoice dated March 10; due March 20).",
+   "Mill Road Garage is waiting for you to drop off the Fenwick Arlo for the wheel bearing repair (booked March 9; drop-off March 16 at 8:00 AM)."
+  ],
+  "owner_waiting_on": [
+   "You are waiting on Briar Tile Supply to deliver the kitchen tile order #BT-4821 (scheduled March 18; since March 2).",
+   "You are waiting on Midtown Parts Depot to deliver the front-left wheel hub assembly order #MP-7734 (expected March 13; since March 9).",
+   "You are waiting on Northline Craft Supply to ship the birch boxes and labels order #NC-2291 (shipping March 24; since March 10).",
+   "You are waiting on Willow Home Goods to process the teapot refund (return dropped March 10; refund expected March 18).",
+   "You are waiting on Mapleford Mutual Insurance to review the water damage claim after you send missing items (claim filed February 24; missing items due March 18).",
+   "You are waiting on Northside Family Clinic to send the pre-visit lab form (requested March 3)."
+  ],
+  "projects": [
+   {
+    "name": "Kitchen Renovation",
+    "summary": "Renovating the kitchen with Mapleford Home Renovations, including tile delivery and final payment.",
+    "facts": [
+     "Contractor: Mapleford Home Renovations, lead Marco Delgado, phone 555-0142.",
+     "Tile order: 42 boxes of Sandstone Ridge tile from Briar Tile Supply, order #BT-4821.",
+     "Tile delivery is scheduled for Wednesday, March 18, 2026.",
+     "Deposit paid: $4,500 on February 20, 2026.",
+     "Balance due: $6,750 on April 10, 2026, when work is complete.",
+     "Demolition started March 2, 2026; base cabinets were installed March 9, 2026.",
+     "Marco asked you on March 6, 2026, to choose the grout colour by March 13, 2026.",
+     "Countertop template is scheduled for March 20, 2026."
+    ],
+    "qa": [
+     {
+      "q": "When are the kitchen tiles arriving?",
+      "a": "Wednesday, March 18, 2026."
+     },
+     {
+      "q": "How much is left to pay on the kitchen?",
+      "a": "$6,750, due April 10, 2026."
+     },
+     {
+      "q": "What does Marco need from me?",
+      "a": "Choose the grout colour by March 13, 2026."
+     }
+    ]
+   },
+   {
+    "name": "Car Repair",
+    "summary": "Repairing the front-left wheel bearing on the family car at Mill Road Garage.",
+    "facts": [
+     "Garage: Mill Road Garage, 14 Mill Road, Mapleford; contact Dana Whitlock, phone 555-0188.",
+     "Car: 2017 Fenwick Arlo, plate MFR 482.",
+     "Fault: grinding noise from front left; diagnosed as a failing wheel bearing.",
+     "Quote: $780 including labour and tax.",
+     "Part ordered: front-left wheel hub assembly from Midtown Parts Depot, order #MP-7734, ordered March 9, 2026.",
+     "Part expected March 13, 2026.",
+     "Drop-off is Monday, March 16, 2026, at 8:00 AM; pickup is same day at 5:00 PM."
+    ],
+    "qa": [
+     {
+      "q": "What is wrong with the car?",
+      "a": "The front-left wheel bearing is failing."
+     },
+     {
+      "q": "How much is the repair quote?",
+      "a": "$780 including labour and tax."
+     },
+     {
+      "q": "When do I pick up the car?",
+      "a": "Monday, March 16, 2026, at 5:00 PM."
+     }
+    ]
+   },
+   {
+    "name": "Side Business Supply Order",
+    "summary": "Ordering birch boxes and labels from Northline Craft Supply for Vale Woodworks.",
+    "facts": [
+     "Side business: Vale Woodworks, an online shop.",
+     "Supplier: Northline Craft Supply.",
+     "Order #NC-2291 placed March 10, 2026.",
+     "120 unfinished birch recipe boxes at $7.25 each, subtotal $870.",
+     "200 kraft labels at $0.12 each, subtotal $24.",
+     "Shipping charge $36; total invoice $930.",
+     "Shipping date: March 24, 2026, via Mapleford Freight.",
+     "Expected arrival: March 27, 2026.",
+     "Invoice due March 20, 2026."
+    ],
+    "qa": [
+     {
+      "q": "How many birch boxes did I order?",
+      "a": "120 boxes."
+     },
+     {
+      "q": "What is the price per box?",
+      "a": "$7.25 each."
+     },
+     {
+      "q": "When will Northline ship the order?",
+      "a": "March 24, 2026."
+     }
+    ]
+   },
+   {
+    "name": "Family Trip to Pinecrest",
+    "summary": "A family train trip to Pinecrest with hotel stay from May 1 to May 5, 2026.",
+    "facts": [
+     "Destination: Pinecrest; travel dates May 1-5, 2026.",
+     "Train: Mapleford Rail, depart Mapleford Central May 1 at 8:10 AM, arrive Pinecrest 12:40 PM.",
+     "Return train: May 5 at 4:15 PM from Pinecrest, arrive Mapleford 8:45 PM.",
+     "Booking reference: MR-6Q4M2; 4 tickets; total $312.",
+     "Hotel: Lakeview Lodge, confirmation LL-88431.",
+     "Hotel cost: $185 per night for 4 nights, total $740, two rooms.",
+     "Going: Jordan, Riley, Maya, and Elaine."
+    ],
+    "qa": [
+     {
+      "q": "What is the train booking reference?",
+      "a": "MR-6Q4M2."
+     },
+     {
+      "q": "Where are we staying?",
+      "a": "Lakeview Lodge, confirmation LL-88431."
+     },
+     {
+      "q": "Who is going on the trip?",
+      "a": "Jordan, Riley, Maya, and Elaine."
+     }
+    ]
+   },
+   {
+    "name": "Maya's School Trip Form",
+    "summary": "Signing Maya's permission form and paying the fee for the Cedar Ridge Nature Center trip.",
+    "facts": [
+     "Child: Maya Vale, Grade 5 at Mapleford Primary School.",
+     "Teacher: Ms. Elara Finch, room 12.",
+     "Form: Spring Trip Permission Form.",
+     "Fee: $45 payable to Mapleford Primary Activity Fund.",
+     "Deadline: March 20, 2026.",
+     "Trip: May 14, 2026, to Cedar Ridge Nature Center.",
+     "Bus leaves at 8:30 AM and returns at 3:30 PM.",
+     "Maya needs a packed lunch and water bottle; no glass containers."
+    ],
+    "qa": [
+     {
+      "q": "What form do I need to sign?",
+      "a": "The Spring Trip Permission Form."
+     },
+     {
+      "q": "When is the form and fee due?",
+      "a": "March 20, 2026."
+     },
+     {
+      "q": "How much is the school trip fee?",
+      "a": "$45."
+     }
+    ]
+   },
+   {
+    "name": "Health Appointment",
+    "summary": "Annual check and blood pressure review with Dr. Priya Nandak at Northside Family Clinic.",
+    "facts": [
+     "Clinic: Northside Family Clinic, 88 Birch Street, Mapleford; phone 555-0136.",
+     "Doctor: Dr. Priya Nandak.",
+     "Appointment: Thursday, March 19, 2026, at 2:30 PM.",
+     "Reason: annual check and blood pressure review.",
+     "Bring: insurance card, current medication list, and blood pressure log.",
+     "Follow-up: Thursday, April 16, 2026, at 9:00 AM.",
+     "Pre-visit lab form requested March 3, 2026; not yet received."
+    ],
+    "qa": [
+     {
+      "q": "When is my appointment with Dr. Nandak?",
+      "a": "Thursday, March 19, 2026, at 2:30 PM."
+     },
+     {
+      "q": "What should I bring to the clinic?",
+      "a": "Insurance card, current medication list, and blood pressure log."
+     },
+     {
+      "q": "When is the follow-up?",
+      "a": "Thursday, April 16, 2026, at 9:00 AM."
+     }
+    ]
+   },
+   {
+    "name": "Cedar Planter Bench",
+    "summary": "Building a cedar planter bench for the backyard, with sanding and finishing left.",
+    "facts": [
+     "Project: build a cedar planter bench for the backyard.",
+     "Plans bought from Mapleford Lumber & Hardware on January 28, 2026, for $18.",
+     "Materials: 8 cedar boards bought February 7, 2026, for $142.60.",
+     "Done: boards cut February 15, 2026; frame assembled March 1, 2026.",
+     "Left: sand by March 15, 2026.",
+     "Left: stain by March 22, 2026.",
+     "Left: attach planter boxes by March 29, 2026.",
+     "Left: seal by April 5, 2026.",
+     "Borrowed clamps from neighbor Sam Reed; return by March 14, 2026."
+    ],
+    "qa": [
+     {
+      "q": "What is left on the planter bench?",
+      "a": "Sand by March 15, stain by March 22, attach planter boxes by March 29, and seal by April 5."
+     },
+     {
+      "q": "What is already done?",
+      "a": "The boards are cut and the frame is assembled."
+     },
+     {
+      "q": "When do I need to return Sam's clamps?",
+      "a": "By March 14, 2026."
+     }
+    ]
+   },
+   {
+    "name": "Teapot Return",
+    "summary": "Returning a chipped glass teapot to Willow Home Goods for a refund.",
+    "facts": [
+     "Store: Willow Home Goods.",
+     "Item: Aster 6-cup glass teapot, bought February 28, 2026.",
+     "Reason for return: lid arrived chipped.",
+     "Refund amount: $38.50 to original card.",
+     "Return deadline: March 21, 2026.",
+     "Return tracking number: WHG-7742-1180.",
+     "Dropped at Mapleford Post Hub on March 10, 2026.",
+     "Refund expected by March 18, 2026."
+    ],
+    "qa": [
+     {
+      "q": "What am I returning to Willow Home Goods?",
+      "a": "The Aster 6-cup glass teapot."
+     },
+     {
+      "q": "How much is the refund?",
+      "a": "$38.50 to the original card."
+     },
+     {
+      "q": "What is the return tracking number?",
+      "a": "WHG-7742-1180."
+     }
+    ]
+   },
+   {
+    "name": "Basement Water Damage Claim",
+    "summary": "Home insurance claim with Mapleford Mutual Insurance for basement water damage.",
+    "facts": [
+     "Insurer: Mapleford Mutual Insurance.",
+     "Claim number: MM-2026-0417.",
+     "Adjuster: Tessa Rowan, phone 555-0173.",
+     "Claim filed February 24, 2026, for basement water damage.",
+     "Cause: burst pipe under utility sink on February 22, 2026.",
+     "Amount claimed: $2,850.",
+     "Submitted: plumber estimate $1,200 and dehumidifier receipt $240.",
+     "Still missing: final plumber invoice, dated photos of damaged drywall, and contractor repair quote.",
+     "Adjuster requested missing items by March 18, 2026."
+    ],
+    "qa": [
+     {
+      "q": "What is my insurance claim number?",
+      "a": "MM-2026-0417."
+     },
+     {
+      "q": "Who is the adjuster?",
+      "a": "Tessa Rowan."
+     },
+     {
+      "q": "What is still missing for the claim?",
+      "a": "Final plumber invoice, dated photos of damaged drywall, and contractor repair quote."
+     }
+    ]
+   }
+  ]
+ },
+ "cases": [
+  {
+   "id": "kitchen_tile_delivery",
+   "ask": "When are the kitchen tiles arriving?",
+   "answer": "Wednesday, March 18, 2026.",
+   "need": [
+    "march\\s*18|18th"
+   ],
+   "wrong": [
+    "march\\s*13|13th"
+   ]
+  },
+  {
+   "id": "car_repair_quote",
+   "ask": "How much is the car repair quote?",
+   "answer": "$780 including labour and tax.",
+   "need": [
+    "\\$?780|780\\s*dollars"
+   ],
+   "wrong": [
+    "\\$?6,?750|6750"
+   ]
+  },
+  {
+   "id": "train_booking_reference",
+   "ask": "What's the train booking reference?",
+   "answer": "MR-6Q4M2.",
+   "need": [
+    "MR-?6Q4M2"
+   ],
+   "wrong": [
+    "LL-?88431"
+   ]
+  },
+  {
+   "id": "health_appointment_time",
+   "ask": "When is my appointment with Dr. Nandak?",
+   "answer": "Thursday, March 19, 2026, at 2:30 PM.",
+   "need": [
+    "march\\s*19|19th",
+    "2:30|two thirty|2 30"
+   ],
+   "wrong": [
+    "march\\s*16|16th"
+   ]
+  },
+  {
+   "id": "teapot_refund_amount",
+   "ask": "How much is the teapot refund?",
+   "answer": "$38.50 to the original card.",
+   "need": [
+    "\\$?38\\.50|38\\s*dollars\\s*50|38\\.50"
+   ],
+   "wrong": [
+    "\\$?45|45\\s*dollars"
+   ]
+  },
+  {
+   "id": "northline_invoice_total",
+   "ask": "What's the total on the Northline invoice?",
+   "answer": "$930.",
+   "need": [
+    "\\$?930|930\\s*dollars|nine hundred (and )?thirty"
+   ],
+   "wrong": []
+  },
+  {
+   "id": "northline_order_items",
+   "ask": "What did I order from Northline Craft Supply?",
+   "answer": "120 unfinished birch recipe boxes at $7.25 each and 200 kraft labels at $0.12 each.",
+   "need": [
+    "\\b120\\b",
+    "\\b200\\b",
+    "birch|labels"
+   ],
+   "wrong": []
+  },
+  {
+   "id": "deliveries_waiting_on",
+   "ask": "What deliveries am I waiting on?",
+   "answer": "Briar Tile Supply kitchen tile order, Midtown Parts Depot wheel hub assembly, and Northline Craft Supply birch boxes and labels.",
+   "need": [
+    "briar",
+    "midtown",
+    "northline"
+   ],
+   "wrong": [
+    "mapleford mutual|tessa|sam|mill road"
+   ]
+  },
+  {
+   "id": "who_waiting_on_me",
+   "ask": "Who is waiting on me?",
+   "answer": "Marco Delgado at Mapleford Home Renovations, Ms. Elara Finch at Mapleford Primary School, Tessa Rowan at Mapleford Mutual Insurance, Sam Reed, Northline Craft Supply, and Mill Road Garage.",
+   "need": [
+    "marco|mapleford home",
+    "elara|finch|school",
+    "tessa|insurance|sam|northline|mill road"
+   ],
+   "wrong": [
+    "briar|midtown"
+   ]
+  },
+  {
+   "id": "due_by_march_15",
+   "ask": "What's due by March 15?",
+   "answer": "Choose the kitchen grout colour by March 13, return Sam's clamps by March 14, and sand the planter bench by March 15.",
+   "need": [
+    "grout",
+    "clamp",
+    "sand"
+   ],
+   "wrong": [
+    "invoice|permission"
+   ]
+  },
+  {
+   "id": "total_kitchen_cost",
+   "ask": "What's the total kitchen cost including deposit and balance?",
+   "answer": "$11,250.",
+   "need": [
+    "\\$?11,?250|11250"
+   ],
+   "wrong": []
+  },
+  {
+   "id": "days_until_grout",
+   "ask": "How many days until the grout colour is due?",
+   "answer": "2 days.",
+   "need": [
+    "\\b2\\b|two"
+   ],
+   "wrong": [
+    "\\b3\\b|three"
+   ]
+  },
+  {
+   "id": "car_part_vs_tiles",
+   "ask": "Which comes first, the car part or the kitchen tiles?",
+   "answer": "The car part, expected March 13.",
+   "need": [
+    "car|part|wheel hub|midtown",
+    "march\\s*13|13th"
+   ],
+   "wrong": []
+  },
+  {
+   "id": "train_hotel_total",
+   "ask": "What's the total for the train and hotel?",
+   "answer": "$1,052.",
+   "need": [
+    "\\$?1,?052|1052"
+   ],
+   "wrong": []
+  },
+  {
+   "id": "teapot_return_possible",
+   "ask": "Can I still return the teapot?",
+   "answer": "Yes, the return deadline is March 21, 2026.",
+   "need": [
+    "march\\s*21|21st|already|dropped|sent it"
+   ],
+   "wrong": [
+    "expired|too late"
+   ]
+  },
+  {
+   "id": "bring_to_appointment",
+   "ask": "What do I need to bring to my appointment?",
+   "answer": "Insurance card, current medication list, and blood pressure log.",
+   "need": [
+    "insurance",
+    "medication",
+    "blood pressure"
+   ],
+   "wrong": []
+  },
+  {
+   "id": "drop_off_car_march_16",
+   "ask": "Can I drop off the car on March 16?",
+   "answer": "Yes, drop-off is Monday, March 16, 2026, at 8:00 AM.",
+   "need": [
+    "yes",
+    "march\\s*16|16th|monday",
+    "8:00|8\\s*am|eight"
+   ],
+   "wrong": []
+  },
+  {
+   "id": "pay_northline_before_shipping",
+   "ask": "Do I need to pay Northline before they ship?",
+   "answer": "Yes, the invoice is due March 20, before the March 24 shipping date.",
+   "need": [
+    "march\\s*20|20th",
+    "march\\s*24|24th"
+   ],
+   "wrong": []
+  },
+  {
+   "id": "grout_colour_chosen_unknown",
+   "ask": "What grout colour did I choose?",
+   "answer": "I don't know; the notes don't say what grout colour you chose.",
+   "need": [
+    "(don.?t|do not|no).{0,40}(know|say|mention|have|record|information|notes)|not (in|mentioned)|isn.?t (in|mentioned)|haven.?t (yet )?(chosen|picked|decided)|not (yet )?(chosen|picked|decided)|still (need|waiting|to choose)"
+   ],
+   "wrong": []
+  },
+  {
+   "id": "final_plumber_invoice_unknown",
+   "ask": "How much is the final plumber invoice for the water damage claim?",
+   "answer": "I don't know; the notes don't say the final plumber invoice amount.",
+   "need": [
+    "(don.?t|do not|no).{0,40}(know|say|mention|have|record|information|notes)|not (in|mentioned)|isn.?t (in|mentioned)"
+   ],
+   "wrong": []
+  }
+ ]
+}
