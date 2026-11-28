@@ -247,6 +247,7 @@ class LinkManager @Inject constructor(
     private fun registerNetworkCallback() {
         if (callbackRegistered) return
         callbackRegistered = true
+        startWakeWatch()
         val cm = context.getSystemService(ConnectivityManager::class.java) ?: return
         val request = NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
@@ -308,8 +309,9 @@ class LinkManager @Inject constructor(
 
     /**
      * After a network change: logs how the link stands, and restarts it when it has not shaken
-     * hands with the hub since the change (LinkRecovery). Runs every 15 s until a handshake
-     * comes or 10 minutes have passed.
+     * hands with the hub since the change (LinkRecovery). Runs every 15 s, slower after 10 and
+     * 30 minutes, until a handshake comes: it used to stop after 10 minutes, and the car unit
+     * sat unreachable for the rest of the drive (task 1100). Checks the app's Tailscale too.
      */
     private val recheck: Runnable = object : Runnable {
         override fun run() {
@@ -323,6 +325,7 @@ class LinkManager @Inject constructor(
                 return
             }
             note("link: no handshake ${sinceChange / 1000} s after the network change (last ${if (hs < 0) "never" else "$hs s ago"}), via ${s.optString("via")}")
+            checkTailscale(s.optString("tailnet_hub"), sinceChange)
             if (LinkRecovery.shouldRestart(hs, sinceChange, now - restartedAt)) {
                 restartedAt = now
                 note("link: restarting it on the new network")
@@ -333,7 +336,112 @@ class LinkManager @Inject constructor(
                 }
                 startIfPaired()
             }
-            if (sinceChange < LinkRecovery.GIVE_UP_MS) netHandler.postDelayed(this, LinkRecovery.CHECK_MS)
+            netHandler.postDelayed(this, LinkRecovery.nextCheckMs(sinceChange))
         }
+    }
+
+    // ---- The app's own Tailscale (task 1100) ----
+
+    @Volatile private var tailscaleRestartedAt = 0L
+    private val tailscaleBusy = java.util.concurrent.atomic.AtomicBoolean(false)
+    /** The health check pings and a restart blocks up to ~15 s, so neither runs on the network thread. */
+    private val tailscaleThread by lazy { java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "PanLinkTailscale") } }
+
+    /** The device's own clock time for log lines: they reach the hub in batches, stamped when they arrive. */
+    private fun clock(): String = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date())
+
+    /**
+     * The link has no handshake since a change. When remote access is on, read how the app's
+     * Tailscale stands (running, state, address, a ping to the hub's Tailscale address) and
+     * restart it, same node, when it is dead (LinkRecovery.tailscaleUnhealthy). On Nov 27 the car
+     * unit's Tailscale had been dead for hours, its link could only go out that way, and nothing
+     * noticed.
+     */
+    private fun checkTailscale(hubTailnetIp: String, sinceChangeMs: Long) {
+        val wanted = context.getSharedPreferences("pan_vpn", Context.MODE_PRIVATE).getBoolean("enabled", false)
+        if (!wanted || !tailscaleBusy.compareAndSet(false, true)) return
+        tailscaleThread.execute {
+            try {
+                val h = runCatching { JSONObject(Panvpn.tailscaleHealth(hubTailnetIp)) }.getOrNull() ?: JSONObject()
+                val running = h.optBoolean("running")
+                val state = h.optString("state")
+                val ip = h.optString("ip")
+                val ping = h.optLong("ping_ms", -2)
+                val unhealthy = LinkRecovery.tailscaleUnhealthy(running, state, ip, ping)
+                val pingWords = when {
+                    ping >= 0 -> "ping $ping ms"
+                    ping == -1L -> "ping failed (" + h.optString("ping_error").take(60) + ")"
+                    else -> "no ping"
+                }
+                val warnings = h.optJSONArray("warnings")?.length() ?: 0
+                note("tailscale at ${clock()}: ${if (running) state.ifBlank { "unknown" } else "off"}, ip ${ip.ifBlank { "none" }}, online ${h.opt("online") ?: "?"}, derp ${h.optString("derp").ifBlank { "?" }}, $pingWords, $warnings warnings")
+                val now = SystemClock.elapsedRealtime()
+                if (!LinkRecovery.shouldRestartTailscale(unhealthy, sinceChangeMs, now - tailscaleRestartedAt)) return@execute
+                tailscaleRestartedAt = now
+                if (!running) {
+                    // Never started in this run, or stopped: the connection service starts it.
+                    val svc = PanVpnService.instance
+                    note("tailscale at ${clock()}: off while remote access is on, ${if (svc != null) "starting it" else "no connection service to start it"}")
+                    svc?.reconnect()
+                    return@execute
+                }
+                note("tailscale at ${clock()}: restarting it (same node)")
+                val t0 = SystemClock.elapsedRealtime()
+                val err = runCatching { Panvpn.restartTailscale() }.exceptionOrNull()
+                note("tailscale at ${clock()}: ${if (err == null) "restarted" else "restart failed: " + err.message} in ${SystemClock.elapsedRealtime() - t0} ms")
+                // Move the link now, without counting this as a new network change, so the slower
+                // check schedule carries on.
+                netHandler.post(moveLink)
+            } finally {
+                tailscaleBusy.set(false)
+            }
+        }
+    }
+
+    // ---- Waking from sleep (task 1100) ----
+
+    @Volatile private var lastSleepGap = -1L
+    @Volatile private var wakeReceiverRegistered = false
+
+    /**
+     * Every 15 s, and when the screen comes on: elapsedRealtime counts deep sleep and uptimeMillis
+     * doesn't, so a jump in the gap between them means the device slept. Then the link gets a
+     * network change, and the Tailscale check with it: the car unit sleeps when the car is off.
+     */
+    private val wakeTick: Runnable = object : Runnable {
+        override fun run() {
+            sleepCheck("tick")
+            netHandler.postDelayed(this, LinkRecovery.CHECK_MS)
+        }
+    }
+
+    private fun sleepCheck(why: String) {
+        val gap = SystemClock.elapsedRealtime() - SystemClock.uptimeMillis()
+        val prev = lastSleepGap
+        lastSleepGap = gap
+        if (prev < 0) return
+        val slept = LinkRecovery.sleptMs(prev, gap)
+        if (slept > LinkRecovery.SLEEP_MS && _port.value > 0) changed("woke after ${slept / 1000} s asleep ($why, ${clock()})")
+    }
+
+    private fun startWakeWatch() {
+        netHandler.removeCallbacks(wakeTick)
+        netHandler.post(wakeTick)
+        if (wakeReceiverRegistered) return
+        wakeReceiverRegistered = true
+        val filter = android.content.IntentFilter().apply {
+            addAction(android.content.Intent.ACTION_SCREEN_ON)
+            addAction(android.content.Intent.ACTION_USER_PRESENT)
+        }
+        val receiver = object : android.content.BroadcastReceiver() {
+            override fun onReceive(c: Context?, i: android.content.Intent?) {
+                val why = if (i?.action == android.content.Intent.ACTION_SCREEN_ON) "screen on" else "unlocked"
+                netHandler.post { sleepCheck(why) }
+            }
+        }
+        runCatching {
+            androidx.core.content.ContextCompat.registerReceiver(context, receiver, filter, null, netHandler,
+                androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED)
+        }.onFailure { wakeReceiverRegistered = false; Log.w(TAG, "wake receiver not registered: ${it.message}") }
     }
 }

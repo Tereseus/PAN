@@ -3423,6 +3423,22 @@ the "Feature index" at the top points to each.
   minute, and stops checking 10 minutes after the change. Why: in the car the link stayed down
   after the USB tether dropped and the unit moved to a phone's hotspot. Debug:
   `TEST_NET_CHANGE` (`--ez dead true` acts as if no handshake came). Tests: `LinkRecoveryTest`.
+  **App 0.5.66 (195), Nov 28, task 1100:** the checks never stop while the link is down: every 15 s
+  for 10 minutes, then every minute until 30, then every 5 minutes. Each check with no handshake
+  also reads the app's own Tailscale (`Panvpn.tailscaleHealth`: state, address, online, home relay,
+  warnings, a 3 s disco ping to the hub's Tailscale address, which the link now reports as
+  `tailnet_hub`) and logs one line `tailscale at HH:MM:SS: ...` with the device's own time. When it
+  is off, not Running, has no address or the ping fails (a sign in or the admin's approval doesn't
+  count), it is restarted in the same state folder, so the same node with no new sign in
+  (`Panvpn.restartTailscale`), at most every 2 minutes and every 5 after 30 minutes. The
+  Tailscale proxy follows the restarted Tailscale. A sleep counts as a network change: a 15 s
+  tick, and screen on and unlock, compare elapsedRealtime with uptimeMillis, and a jump over 60 s
+  logs `woke after N s asleep`. The connection service no longer gives up when Tailscale gets no
+  address in 20 s: it tries again in 20 s, 60 s, then every 5 minutes. Why: on Nov 27 the car
+  unit woke with its Tailscale dead since the morning, the link could only go out that way, and
+  the checks stopped after 10 minutes. On the unit, `android/car/fix-pan-link.sh` is the app part
+  of Fix PAN (force stop, start the service, listening back on 25 s later), called as the last
+  line of `~/.shortcuts/Fix PAN`. Tests: `LinkRecoveryTest` (8), the Go `linkmode` tests.
 
 - **Full CPU speed for a voice turn (`util/CpuBoost.kt`, called at `service/PanForegroundService.kt:2257`; first in git Nov 3).**
   Just before a turn is sent, the app tells Android (PerformanceHintManager, ADPF) how long the

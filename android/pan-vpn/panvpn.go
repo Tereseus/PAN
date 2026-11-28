@@ -22,6 +22,7 @@ import (
 	"github.com/tailscale/wireguard-go/conn"
 	"github.com/wlynxg/anet"
 	"tailscale.com/net/netmon"
+	"tailscale.com/tailcfg"
 	"tailscale.com/tsnet"
 )
 
@@ -60,6 +61,8 @@ var (
 	mu     sync.Mutex
 	server *tsnet.Server
 	cancel context.CancelFunc
+	// The last Start's folder and name, for RestartTailscale (same state, so the same node).
+	lastDataDir, lastHostname string
 )
 
 // Status holds the current VPN connection state.
@@ -133,6 +136,7 @@ func Start(dataDir, hostname, authKey string) (string, error) {
 	log.Printf("panvpn: tsnet.Start() succeeded")
 
 	server = s
+	lastDataDir, lastHostname = dataDir, hostname
 
 	// If no auth key, poll for the login URL (may take a moment to appear)
 	if authKey == "" {
@@ -224,6 +228,74 @@ func GetStatus() *Status {
 	}
 
 	return st
+}
+
+// TailscaleHealth is a JSON object for the link's check after a network change or a wake
+// (task 1100: the car unit's Tailscale was dead for hours after a sleep and nothing noticed):
+// running, state (Tailscale's backend state), ip, online and derp (as the tailnet sees this
+// device), warnings, and when target is a Tailscale address, ping_ms from a 3 s disco ping to
+// it (-1 when it failed, with ping_error) or -2 when there was nothing to ping.
+func TailscaleHealth(target string) string {
+	mu.Lock()
+	s := server
+	mu.Unlock()
+	h := map[string]any{"running": s != nil, "ping_ms": -2}
+	out := func() string { b, _ := json.Marshal(h); return string(b) }
+	if s == nil {
+		return out()
+	}
+	lc, err := s.LocalClient()
+	if err != nil {
+		h["error"] = err.Error()
+		return out()
+	}
+	ctx, c := context.WithTimeout(context.Background(), 5*time.Second)
+	defer c()
+	if st, err := lc.StatusWithoutPeers(ctx); err == nil {
+		h["state"] = st.BackendState
+		if len(st.TailscaleIPs) > 0 {
+			h["ip"] = st.TailscaleIPs[0].String()
+		}
+		if st.Self != nil {
+			h["online"] = st.Self.Online
+			h["derp"] = st.Self.Relay
+		}
+		if len(st.Health) > 0 {
+			h["warnings"] = st.Health
+		}
+	} else {
+		h["error"] = err.Error()
+	}
+	if ip, err := netip.ParseAddr(target); err == nil {
+		pctx, pc := context.WithTimeout(context.Background(), 3*time.Second)
+		defer pc()
+		t0 := time.Now()
+		r, err := lc.Ping(pctx, ip, tailcfg.PingDisco)
+		switch {
+		case err != nil:
+			h["ping_ms"], h["ping_error"] = -1, err.Error()
+		case r != nil && r.Err != "":
+			h["ping_ms"], h["ping_error"] = -1, r.Err
+		default:
+			h["ping_ms"] = time.Since(t0).Milliseconds()
+		}
+	}
+	return out()
+}
+
+// RestartTailscale stops Tailscale and starts it again in the same state folder, so it comes
+// back as the same node with no new sign in. For a Tailscale that is running but dead (its
+// connections died in a sleep). Blocking, up to about 15 s.
+func RestartTailscale() error {
+	mu.Lock()
+	dir, name := lastDataDir, lastHostname
+	mu.Unlock()
+	if dir == "" {
+		return fmt.Errorf("tailscale was never started")
+	}
+	_ = Stop()
+	_, err := Start(dir, name, "")
+	return err
 }
 
 // ListPeers returns a string with all tailnet peers (hostname:ip:online) for debugging.
@@ -427,7 +499,15 @@ func StartProxy(peerHostname string, peerPort int) (int, error) {
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()
 				dialStart := time.Now()
-				remote, err := s.Dial(ctx, "tcp", target)
+				// The Tailscale running now: after RestartTailscale the one this proxy
+				// started on is closed.
+				mu.Lock()
+				cur := server
+				mu.Unlock()
+				if cur == nil {
+					cur = s
+				}
+				remote, err := cur.Dial(ctx, "tcp", target)
 				dialMs := time.Since(dialStart).Milliseconds()
 				if err != nil {
 					log.Printf("panvpn: proxy dial %s failed after %dms: %v", target, dialMs, err)

@@ -314,6 +314,7 @@ type Status struct {
 	Hard           bool   `json:"hard,omitempty"`    // this network shows a different IPv4 port to every destination
 	Meet           string `json:"meet,omitempty"`    // the last thing meeting in the middle did
 	Away           string `json:"away,omitempty"`    // how the device stands with its hub, in plain words
+	TailnetHub     string `json:"tailnet_hub,omitempty"` // the hub's Tailscale address, for the app's Tailscale health check
 }
 
 func (c *Conn) Status() (s Status) {
@@ -322,6 +323,12 @@ func (c *Conn) Status() (s Status) {
 	hubAddrs := append([]string(nil), c.st.Endpoints...)
 	c.mu.Unlock()
 	defer func() { s.Away = link.AwayWords(s.Connected, s.Path, c.l.Outside(), hubAddrs) }()
+	for _, e := range hubAddrs {
+		if ap, err := netip.ParseAddrPort(e); err == nil && IsTailnet(ap.Addr()) {
+			s.TailnetHub = ap.Addr().String()
+			break
+		}
+	}
 	o := c.l.Outside()
 	s.Outside, s.Hard = strings.Join(o.Strings(), ", "), o.Hard
 	s.Via = c.via()

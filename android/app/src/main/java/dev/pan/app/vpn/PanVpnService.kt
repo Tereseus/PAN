@@ -177,10 +177,16 @@ class PanVpnService : Service() {
                 delay(500)
             }
             if (myIp.isEmpty()) {
-                Log.e(TAG, "tsnet never reported an IP after 20s")
-                updateNotification("Tailscale did not come up")
+                // It used to stop here for good, and the car unit stayed without Tailscale for the
+                // rest of the day (task 1100). Try again: in 20 s, 60 s, then every 5 minutes.
+                val wait = when (noIpTries++) { 0 -> 20_000L; 1 -> 60_000L; else -> 5 * 60_000L }
+                Log.e(TAG, "tsnet never reported an IP after 20s; trying again in ${wait / 1000} s")
+                updateNotification("Tailscale did not come up, trying again")
+                delay(wait)
+                serviceScope.launch { connect() }
                 return
             }
+            noIpTries = 0
             Log.i(TAG, "Connected. Self=$myIp port=$srvPort")
 
             // PAN Link's packets for the hub's Tailscale addresses ride on this Tailscale and
@@ -288,6 +294,13 @@ class PanVpnService : Service() {
     }
 
     fun getLoginUrl(): String? = loginUrl
+
+    /** Tries to connect again (LinkManager, when Tailscale is off while remote access is on). */
+    fun reconnect() {
+        serviceScope.launch { connect() }
+    }
+
+    @Volatile private var noIpTries = 0
 
     override fun onDestroy() {
         serviceScope.cancel()
